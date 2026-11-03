@@ -549,33 +549,48 @@ def test_past_once_costs_are_not_counted_again():
     assert p.net_at(0) == 5_000_000
 
 
-def test_pending_returns():
-    """기간이 끝난 뒤에 돌아올 보증금. 기간 안에 돌아오는 건 이미 순 자본에 들어 있다."""
+def test_pending_inflows():
+    """기간이 끝난 뒤에 들어올 돈. 기간 안에 들어오는 건 이미 순 자본에 들어 있다."""
     p = Plan(months=6, start_date="2026-01-01")
     p.add(Item("현금", Category.CASH, 1_000_000))
     late = p.add(Item("전셋집", Category.DEPOSIT, 20_000_000, housing_type="jeonse",
                       start_date="2025-01-01", end_date="2027-01-01"))     # 12개월 뒤 반환
     soon = p.add(Item("원룸", Category.DEPOSIT, 5_000_000, housing_type="wolse", monthly=300_000,
                       start_date="2025-06-01", end_date="2026-04-01"))     # 3개월 뒤 반환 (기간 안)
+    loan = p.add(Item("전세자금대출", Category.LOAN, 90_000_000, rate=2.0,
+                      start_date="2026-11-01"))                            # 10개월 뒤 실행
 
     assert late.return_month(p.basis) == 12 and soon.return_month(p.basis) == 3
-    rows = p.pending_returns()
-    assert [r["name"] for r in rows] == ["전셋집"]                  # 기간 안에 돌아오는 건 빠진다
-    assert rows[0]["amount"] == 20_000_000 and rows[0]["month"] == 12
-    assert p.pending_return_total() == 20_000_000
+    rows = p.pending_inflows()
+    assert [(r["name"], r["kind"], r["month"]) for r in rows] == [
+        ("전세자금대출", "loan", 10), ("전셋집", "deposit", 12)]        # 이른 순
+    assert rows[1]["amount"] == 20_000_000
+    assert p.pending_total("deposit") == 20_000_000
+    assert p.pending_total("loan") == 90_000_000
+    assert p.pending_total() == 110_000_000
 
-    # 기간을 늘려 둘 다 기간 안에 들어오면 남는 게 없다
+    # 기간을 늘려 모두 기간 안에 들어오면 남는 게 없다
     p.months = 24
-    assert p.pending_returns() == [] and p.pending_return_total() == 0
+    assert p.pending_inflows() == [] and p.pending_total() == 0
+    p.months = 6
+
+    # 원금을 자본에 넣지 않는 대출은 '들어올 돈'이 아니다 (빌려서 바로 나가는 돈)
+    loan.include_principal = False
+    assert [r["kind"] for r in p.pending_inflows()] == ["deposit"]
+    loan.include_principal = True
+
+    # 중도 상환이 걸려 있으면 실행 시점의 잔액만큼만 센다
+    loan.repayments = [{"date": "2026-11-01", "amount": 10_000_000}]
+    assert [r["amount"] for r in p.pending_inflows() if r["kind"] == "loan"] == [80_000_000]
+    loan.repayments = []
 
     # 반환일이 없거나 이미 지난 보증금은 세지 않는다
-    p.months = 6
     late.end_date = None
-    assert p.pending_returns() == []
+    assert [r["kind"] for r in p.pending_inflows()] == ["loan"]
     late.end_date = "2025-06-01"
-    assert p.pending_returns() == []
+    assert [r["kind"] for r in p.pending_inflows()] == ["loan"]
 
     # 가까운 순으로
     late.end_date = "2028-01-01"
     soon.end_date = "2027-06-01"
-    assert [r["month"] for r in p.pending_returns()] == [17, 24]
+    assert [r["month"] for r in p.pending_inflows()] == [10, 17, 24]

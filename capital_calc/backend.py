@@ -771,32 +771,60 @@ class Backend(QObject):
     def progress(self) -> float:
         return self._s().progress
 
-    @Property("QVariantMap", notify=summaryChanged)
-    def pendingReturn(self) -> dict:
-        """기간이 끝난 뒤에 돌아올 보증금 (목표 바에 따로 표시한다).
+    PENDING_LABELS = {"deposit": "돌려받을 보증금", "loan": "받을 대출"}
 
-        {has, total, count, month, dateText, name, withNet, progress, progressWith}
+    @Property("QVariantMap", notify=summaryChanged)
+    def pendingInflow(self) -> dict:
+        """기간이 끝난 뒤에 들어올 돈 (목표 바에 색을 달리해 이어 붙인다).
+
+        {has, total, count, withNet, shortfall, progress, progressWith,
+         groups: [{kind, label, total, count, month, dateText, name, progressTo}]}
+        groups 의 progressTo 는 순 자본에 이 종류까지 더했을 때의 달성률이다 (바 구간 끝).
         """
-        rows = self._plan.pending_returns()
-        total = sum(r["amount"] for r in rows)
         s = self._s()
-        net = s.net
-        empty = {"has": False, "total": 0.0, "count": 0, "month": -1, "dateText": "",
-                 "name": "", "withNet": net, "progress": s.progress, "progressWith": s.progress}
+        net, target = s.net, self._plan.target
+
+        def frac(v: float) -> float:
+            return max(0.0, v / target) if target > 0 else 1.0
+
+        rows = self._plan.pending_inflows()
+        total = sum(r["amount"] for r in rows)
         if not rows or total <= 0:
-            return empty
-        first = rows[0]
+            return {"has": False, "total": 0.0, "count": 0, "withNet": net,
+                    "shortfall": max(0.0, target - net), "progress": s.progress,
+                    "progressWith": s.progress, "groups": []}
+
+        groups = []
+        running = net
+        for kind in ("deposit", "loan"):                 # 바에 칠하는 순서
+            part = [r for r in rows if r["kind"] == kind]
+            if not part:
+                continue
+            part.sort(key=lambda d: d["month"])
+            amount = sum(r["amount"] for r in part)
+            running += amount
+            first = part[0]
+            groups.append({
+                "kind": kind,
+                "label": self.PENDING_LABELS[kind],
+                "total": amount,
+                "count": len(part),
+                "month": first["month"],
+                "dateText": self._month_text(first["month"]),
+                "name": first["name"] if len(part) == 1 else f"{first['name']} 외 {len(part) - 1}건",
+                "progressTo": frac(running),
+            })
+
         with_net = net + total
         return {
             "has": True,
             "total": total,
             "count": len(rows),
-            "month": first["month"],
-            "dateText": self._month_text(first["month"]),
-            "name": first["name"] if len(rows) == 1 else f"{first['name']} 외 {len(rows) - 1}건",
             "withNet": with_net,
+            "shortfall": max(0.0, target - with_net),
             "progress": s.progress,
-            "progressWith": (max(0.0, with_net / self._plan.target) if self._plan.target > 0 else 1.0),
+            "progressWith": frac(with_net),
+            "groups": groups,
         }
 
     @Property(int, notify=summaryChanged)

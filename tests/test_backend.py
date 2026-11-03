@@ -761,32 +761,48 @@ def test_collapse_keeps_rows_and_headers():
     assert g.rowCount() == n
 
 
-def test_backend_pending_return():
-    keys = {"has", "total", "count", "month", "dateText", "name",
-            "withNet", "progress", "progressWith"}
+def test_backend_pending_inflow():
+    keys = {"has", "total", "count", "withNet", "shortfall", "progress", "progressWith", "groups"}
+    gkeys = {"kind", "label", "total", "count", "month", "dateText", "name", "progressTo"}
+
     b = Backend(Plan(months=6, target=100_000_000, start_date="2026-01-01"))
-    assert set(b.pendingReturn) == keys and not b.pendingReturn["has"]   # 비어도 칸은 다 있다
+    assert set(b.pendingInflow) == keys and not b.pendingInflow["has"]   # 비어도 칸은 다 있다
+    assert b.pendingInflow["groups"] == []
 
     b.addItem("현금", 0, 20_000_000, 0, True)
-    # 9 = 주거. 2025-01 입주(기준일 전) → 낸 돈은 안 세고, 2027-01 반환만 기다린다
+    # 9 = 주거. 2025-01 입주(기준일 전) → 낸 돈은 안 세고 2027-01 반환만 기다린다
     b.addItem("전셋집", 9, 30_000_000, 0, True, "2025-01-01", "2027-01-01")
     assert b.onceCost == 0 and b.net == 20_000_000 and b.progress == 0.2
 
-    pr = b.pendingReturn
-    assert set(pr) == keys and pr["has"]
-    assert pr["total"] == 30_000_000 and pr["count"] == 1 and pr["month"] == 12
-    assert pr["dateText"] == "2027년 1월" and pr["name"] == "전셋집"
-    assert pr["withNet"] == 50_000_000 and pr["progressWith"] == 0.5
-    assert pr["progress"] == 0.2                                   # 순 자본만의 비율은 그대로
+    pi = b.pendingInflow
+    assert set(pi) == keys and pi["has"] and pi["count"] == 1
+    assert pi["total"] == 30_000_000 and pi["withNet"] == 50_000_000
+    assert pi["progress"] == 0.2 and pi["progressWith"] == 0.5
+    assert pi["shortfall"] == 50_000_000
+    g = pi["groups"][0]
+    assert set(g) == gkeys and g["kind"] == "deposit" and g["label"] == "돌려받을 보증금"
+    assert g["month"] == 12 and g["dateText"] == "2027년 1월" and g["progressTo"] == 0.5
 
-    # 기간이 반환일을 넘으면 순 자본에 이미 들어 있으므로 따로 세지 않는다
+    # 3 = 대출/이자. 기간 뒤에 실행되는 대출도 들어올 돈이다
+    b.addItem("전세자금대출", 3, 40_000_000, 0, True, "2026-09-01", "")   # 이율 0 (이자는 이 테스트의 관심사가 아니다)
+    pi = b.pendingInflow
+    assert pi["count"] == 2 and pi["total"] == 70_000_000
+    assert pi["withNet"] == 90_000_000 and pi["shortfall"] == 10_000_000
+    kinds = [g["kind"] for g in pi["groups"]]
+    assert kinds == ["deposit", "loan"]                       # 바에 칠하는 순서
+    assert pi["groups"][0]["progressTo"] == 0.5               # 순 자본 + 보증금
+    assert pi["groups"][1]["progressTo"] == 0.9               # 거기에 대출까지
+    assert pi["groups"][1]["label"] == "받을 대출" and pi["groups"][1]["month"] == 8
+
+    # 기간이 둘 다 품으면 순 자본에 이미 들어 있으므로 따로 세지 않는다
     b.months = 12
-    assert b.net == 50_000_000 and not b.pendingReturn["has"]
-    assert b.pendingReturn["progressWith"] == b.progress == 0.5
+    assert b.net == 90_000_000 and not b.pendingInflow["has"]
+    assert b.pendingInflow["progressWith"] == b.progress == 0.9
+    assert b.pendingInflow["shortfall"] == 10_000_000
 
     # 여러 건이면 가장 이른 것과 건수를 알려준다
     b.months = 6
     b.addItem("원룸", 9, 5_000_000, 0, True, "2025-01-01", "2027-06-01")
-    pr = b.pendingReturn
-    assert pr["count"] == 2 and pr["total"] == 35_000_000
-    assert pr["month"] == 12 and "외 1건" in pr["name"]
+    dep = b.pendingInflow["groups"][0]
+    assert dep["count"] == 2 and dep["total"] == 35_000_000
+    assert dep["month"] == 12 and "외 1건" in dep["name"]

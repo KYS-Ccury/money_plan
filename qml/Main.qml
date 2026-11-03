@@ -709,66 +709,90 @@ ApplicationWindow {
                                 }
                             }
                             // 아직 묶여 있지만 돌려받을 보증금 — 다른 색으로 이어 붙인다
-                            Rectangle {
-                                id: pendingBar
-                                readonly property var pr: backend.pendingReturn
-                                visible: pr.has && backend.target > 0
-                                x: bar.width
-                                width: Math.max(0, parent.width * Math.min(1, pr.progressWith) - bar.width)
-                                height: parent.height
-                                radius: height / 2
-                                color: Theme.accent
-                                opacity: 0.5
-                                Behavior on width { NumberAnimation { duration: 800; easing.type: Easing.OutCubic } }
+                            // 아직 안 들어왔지만 들어올 돈 — 종류마다 색을 달리해 이어 붙인다
+                            Repeater {
+                                model: backend.pendingInflow.groups
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    required property int index
+                                    readonly property var pi: backend.pendingInflow
+                                    readonly property real fromFrac:
+                                        Math.min(1, index === 0 ? pi.progress : pi.groups[index - 1].progressTo)
+                                    readonly property real toFrac: Math.min(1, modelData.progressTo)
+                                    visible: backend.target > 0 && toFrac > fromFrac
+                                    x: Math.max(bar.width, parent.width * fromFrac)
+                                    width: Math.max(0, parent.width * toFrac - x)
+                                    height: parent.height
+                                    radius: height / 2
+                                    color: Theme.pendingColor(modelData.kind)
+                                    opacity: 0.5
+                                    Behavior on width { NumberAnimation { duration: 800; easing.type: Easing.OutCubic } }
+                                }
                             }
                             Text {
                                 anchors.centerIn: parent
                                 text: backend.target <= 0 ? "목표 자본금을 입력하세요"
-                                    : pendingBar.pr.has
+                                    : backend.pendingInflow.has
                                       ? (backend.progress * 100).toFixed(1) + "%  →  "
-                                        + (pendingBar.pr.progressWith * 100).toFixed(1) + "%"
+                                        + (backend.pendingInflow.progressWith * 100).toFixed(1) + "%"
                                       : (backend.progress * 100).toFixed(1) + "%"
                                 color: Theme.text; font.pixelSize: 13; font.bold: true
                                 style: Text.Outline; styleColor: "#80000000"
                             }
                         }
 
-                        // ── 돌려받을 보증금 설명 ──
+                        // ── 앞으로 들어올 돈 ──
                         ColumnLayout {
-                            readonly property var pr: backend.pendingReturn
+                            readonly property var pi: backend.pendingInflow
                             Layout.fillWidth: true
-                            visible: pr.has && backend.target > 0
-                            spacing: 2
+                            visible: pi.has && backend.target > 0
+                            spacing: 3
 
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 6
-                                Rectangle { width: 10; height: 10; radius: 2; color: Theme.accent; opacity: 0.5 }
-                                Text {
-                                    text: "돌려받을 보증금"
-                                    color: Theme.textDim; font.pixelSize: 12
-                                }
-                                Item { Layout.fillWidth: true }
-                                Text {
-                                    text: "+" + backend.won(parent.parent.pr.total)
-                                    color: Theme.accent; font.pixelSize: 13; font.bold: true
+                            Repeater {
+                                model: backend.pendingInflow.groups
+                                delegate: ColumnLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 0
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Rectangle {
+                                            width: 10; height: 10; radius: 2
+                                            color: Theme.pendingColor(modelData.kind); opacity: 0.6
+                                        }
+                                        Text {
+                                            text: modelData.label
+                                            color: Theme.textDim; font.pixelSize: 12
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                        Text {
+                                            text: "+" + backend.won(modelData.total)
+                                            color: Theme.pendingColor(modelData.kind)
+                                            font.pixelSize: 13; font.bold: true
+                                        }
+                                    }
+                                    Text {
+                                        text: modelData.name + "  ·  " + modelData.dateText
+                                              + " (" + modelData.month + "개월 뒤)"
+                                        color: Theme.textDim; font.pixelSize: 11
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true; Layout.preferredWidth: 1
+                                        Layout.bottomMargin: 2
+                                    }
                                 }
                             }
+
                             Text {
-                                text: parent.pr.name + "  ·  " + parent.pr.dateText
-                                      + " (" + parent.pr.month + "개월 뒤)"
-                                color: Theme.textDim; font.pixelSize: 11
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true; Layout.preferredWidth: 1
-                            }
-                            Text {
-                                text: parent.pr.withNet >= backend.target
-                                      ? "돌려받으면 목표를 넘어섭니다"
-                                      : "돌려받아도 " + backend.won(backend.target - parent.pr.withNet) + " 모자랍니다"
-                                color: parent.pr.withNet >= backend.target ? Theme.green : Theme.textDim
-                                font.pixelSize: 11
+                                text: parent.pi.shortfall <= 0
+                                      ? "다 들어오면 목표를 넘어섭니다"
+                                      : "다 들어와도 " + backend.won(parent.pi.shortfall) + " 모자랍니다"
+                                color: parent.pi.shortfall <= 0 ? Theme.green : Theme.text
+                                font.pixelSize: 12
                                 wrapMode: Text.Wrap
                                 Layout.fillWidth: true; Layout.preferredWidth: 1
+                                Layout.topMargin: 2
                             }
                         }
 

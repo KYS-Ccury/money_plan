@@ -705,26 +705,33 @@ class Plan:
                 inc += i.once_cost()
         return inc
 
-    def pending_returns(self) -> list[dict]:
-        """아직 돌려받지 않은 보증금 (기간이 끝난 뒤에 돌아오는 것만).
+    def pending_inflows(self) -> list[dict]:
+        """기간이 끝난 뒤에 들어올 돈. 지금 순 자본에는 안 잡히지만 목표에 보탬이 된다.
 
-        기간 안에 돌아오는 보증금은 이미 순 자본에 들어 있으므로 여기서 뺀다.
-        [{name, amount, month}] — month 는 기준일로부터의 개월.
+        - deposit: 돌려받을 보증금 (반환일이 기간 뒤)
+        - loan: 받을 대출 (원금을 자본에 넣는 대출이 기간 뒤에 실행)
+
+        기간 안에 들어오는 것은 이미 순 자본에 있으므로 뺀다.
+        [{name, amount, month, kind}] — month 는 기준일로부터의 개월, 이른 순.
         """
         b = self.basis
         out = []
         for i in self.items:
             r = i.return_month(b)
-            if r is None or r < 0 or r <= self.months:
-                continue
-            c = i.once_cost()
-            if c > 0:
-                out.append({"name": i.name, "amount": c, "month": r})
-        out.sort(key=lambda d: d["month"])
+            if r is not None and r > self.months and i.once_cost() > 0:
+                out.append({"name": i.name, "amount": i.once_cost(), "month": r, "kind": "deposit"})
+            if i.category == Category.LOAN and i.include_principal:
+                start_m, end_m = i.active_range(b)
+                if start_m > self.months and (end_m is None or start_m < end_m):
+                    amount = i.remaining_at(start_m, b)
+                    if amount > 0:
+                        out.append({"name": i.name, "amount": amount, "month": start_m, "kind": "loan"})
+        out.sort(key=lambda d: (d["month"], d["name"]))
         return out
 
-    def pending_return_total(self) -> float:
-        return sum(d["amount"] for d in self.pending_returns())
+    def pending_total(self, kind: str = "") -> float:
+        """종류를 주면 그 종류만, 비우면 전부."""
+        return sum(d["amount"] for d in self.pending_inflows() if not kind or d["kind"] == kind)
 
     SHORTFALL_HORIZON = 36      # 부족 경고는 최소 3년까지 살펴본다
 
