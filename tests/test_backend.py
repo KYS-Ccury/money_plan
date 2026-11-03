@@ -666,3 +666,61 @@ def test_setbudget_does_not_rebuild_ledger():
     # 내역이 바뀌면 둘 다 알린다
     b.addEntry("2026-01-11", "교통", 5_000)
     assert ledger_hits and len(budget_hits) == 6
+
+
+def test_source_row_renumbering_is_announced():
+    """SourceRowRole 은 행 번호 그 자체라 삭제·이동만으로 값이 달라진다.
+    알리지 않으면 QML 델리게이트가 예전 번호를 들고 있다가 엉뚱한 항목을 지운다."""
+    b = Backend(sample_plan())
+    m = b.items
+    hits = []
+    m.dataChanged.connect(lambda tl, br, roles: hits.append((tl.row(), br.row(), [int(r) for r in roles])))
+
+    n = m.rowCount()
+    m.remove(2)
+    assert hits == [(2, n - 2, [int(m.SourceRowRole)])]      # 2번부터 끝까지 번호가 밀렸다
+
+    hits.clear()
+    m.move(1, 1)
+    assert hits == [(1, m.rowCount() - 1, [int(m.SourceRowRole)])]
+
+    # 마지막 줄을 지우면 밀릴 행이 없다
+    hits.clear()
+    m.remove(m.rowCount() - 1)
+    assert hits == []
+
+    # 어떤 경우에도 번호는 자기 자리와 같다
+    assert [m.data(m.index(r, 0), m.SourceRowRole) for r in range(m.rowCount())] == list(range(m.rowCount()))
+
+
+def test_source_row_at_maps_visible_to_real():
+    b = Backend(sample_plan())
+    g, m = b.groupedItems, b.items
+
+    def visible():
+        return [(g.data(g.index(r, 0), m.NameRole), b.sourceRowAt(r)) for r in range(g.rowCount())]
+
+    # 묶어 보기는 분류 순으로 재배치되므로 화면 순서 != 원본 순서
+    rows = visible()
+    assert [name for name, _ in rows][:3] == ["보유 현금", "예금 (3.5%)", "청약 적금 (3%)"]
+    for name, src in rows:
+        assert m.data(m.index(src, 0), m.NameRole) == name    # 가리키는 원본이 맞는다
+
+    assert b.sourceRowAt(99) == -1 and b.sourceRowAt(-1) == -1
+
+    # 화면 두 번째 줄을 지우면 그 항목만 사라지고, 나머지 매핑은 그대로 맞는다
+    gone = rows[1][0]
+    b.removeItem(b.sourceRowAt(1))
+    rows = visible()
+    assert gone not in [name for name, _ in rows]
+    for name, src in rows:
+        assert m.data(m.index(src, 0), m.NameRole) == name
+
+    # 같은 화면 줄 번호로 계속 지워도 그 줄의 항목만 사라진다 (예전 번호를 쓰면 엉뚱한 게 지워졌다)
+    for _ in range(3):
+        target = visible()[1][0]
+        b.removeItem(b.sourceRowAt(1))
+        names = [name for name, _ in visible()]
+        assert target not in names
+        for name, src in visible():
+            assert m.data(m.index(src, 0), m.NameRole) == name

@@ -452,6 +452,7 @@ ApplicationWindow {
 
                         delegate: Rectangle {
                             id: rowItem
+                            objectName: "itemRow"
                             required property int index
                             required property string name
                             required property string category
@@ -491,7 +492,7 @@ ApplicationWindow {
 
                             HoverHandler { id: hover }
                             TapHandler {
-                                onDoubleTapped: itemDialog.openForEdit(rowItem.sourceRow, rowItem.name, rowItem.categoryIndex,
+                                onDoubleTapped: itemDialog.openForEdit(backend.sourceRowAt(rowItem.index), rowItem.name, rowItem.categoryIndex,
                                                                        rowItem.amount, rowItem.rate, rowItem.includePrincipal,
                                                                        rowItem.startDate, rowItem.endDate, rowItem.repayments,
                                                                        rowItem.monthlyRepayRate, rowItem.repayMethod,
@@ -527,13 +528,14 @@ ApplicationWindow {
                                 RowLayout {
                                     spacing: 0
                                     Layout.preferredWidth: 104
-                                    ToolButton { text: "▲"; font.pixelSize: 11; implicitWidth: 32; enabled: !backend.groupByCategory && rowItem.sourceRow > 0; onClicked: backend.moveItem(rowItem.sourceRow, -1) }
-                                    ToolButton { text: "▼"; font.pixelSize: 11; implicitWidth: 32; enabled: !backend.groupByCategory && rowItem.sourceRow < backend.itemCount - 1; onClicked: backend.moveItem(rowItem.sourceRow, 1) }
+                                    ToolButton { text: "▲"; font.pixelSize: 11; implicitWidth: 32; enabled: !backend.groupByCategory && rowItem.index > 0; onClicked: backend.moveItem(backend.sourceRowAt(rowItem.index), -1) }
+                                    ToolButton { text: "▼"; font.pixelSize: 11; implicitWidth: 32; enabled: !backend.groupByCategory && rowItem.index < backend.itemCount - 1; onClicked: backend.moveItem(backend.sourceRowAt(rowItem.index), 1) }
                                     ToolButton {
                                         text: "✕"; font.pixelSize: 12; implicitWidth: 32
                                         Material.foreground: Theme.red
                                         onClicked: {
-                                            deleteDialog.row = rowItem.sourceRow
+                                            // 저장해 둔 번호는 그 사이 삭제가 있었으면 밀려 있다. 누르는 순간 다시 확인한다
+                                            deleteDialog.row = backend.sourceRowAt(rowItem.index)
                                             deleteDialog.message = "'" + rowItem.name + "' 항목을 삭제할까요?"
                                             deleteDialog.open()
                                         }

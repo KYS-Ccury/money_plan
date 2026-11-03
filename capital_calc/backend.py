@@ -198,6 +198,16 @@ class ItemListModel(QAbstractListModel):
             return text if role == self.MonthlyTextRole else kind
         return None
 
+    def _renumbered_from(self, start: int) -> None:
+        """start 이후 행의 번호가 밀렸다고 알린다.
+
+        SourceRowRole 은 '행 번호' 그 자체라서 삭제·이동만으로 값이 달라진다.
+        알리지 않으면 QML 델리게이트가 예전 번호를 들고 있다가 엉뚱한 항목을 지운다.
+        """
+        n = len(self._plan.items)
+        if 0 <= start < n:
+            self.dataChanged.emit(self.index(start), self.index(n - 1), [self.SourceRowRole])
+
     def refresh_all(self) -> None:
         """기준일이 바뀌면 표시 문자열이 전부 달라지므로 전체 갱신."""
         if self._plan.items:
@@ -227,6 +237,7 @@ class ItemListModel(QAbstractListModel):
         self.beginRemoveRows(QModelIndex(), row, row)
         removed = self._plan.remove(row)
         self.endRemoveRows()
+        self._renumbered_from(row)
         return removed
 
     def move(self, row: int, delta: int) -> bool:
@@ -240,6 +251,7 @@ class ItemListModel(QAbstractListModel):
             return False
         self._plan.move(row, delta)
         self.endMoveRows()
+        self._renumbered_from(min(row, dst))
         return True
 
     def clear(self) -> None:
@@ -503,6 +515,17 @@ class Backend(QObject):
             self.groupsChanged.emit()
 
     groupByCategory = Property(bool, _get_group_by, _set_group_by, notify=groupsChanged)
+
+    @Slot(int, result=int)
+    def sourceRowAt(self, visible_row: int) -> int:
+        """목록에서 보이는 N번째 줄이 원본에서 몇 번째인지. 없으면 -1.
+
+        삭제·순서 변경처럼 되돌릴 수 없는 동작은 저장해 둔 번호 대신 이걸로 그 자리에서 확인한다.
+        """
+        idx = self._grouped.index(visible_row, 0)
+        if not idx.isValid():
+            return -1
+        return self._grouped.mapToSource(idx).row()
 
     @Slot(int)
     def toggleGroup(self, cat_index: int) -> None:
