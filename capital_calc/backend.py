@@ -73,6 +73,8 @@ class ItemListModel(QAbstractListModel):
         MonthlyRepayRateRole: b"monthlyRepayRate",
         SourceRowRole: b"sourceRow",
         RepayMethodRole: b"repayMethod",
+        HousingTypeRole: b"housingType",
+        MonthlyRole: b"monthly",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -145,6 +147,9 @@ class ItemListModel(QAbstractListModel):
             start = (it.start_date or self._plan.start_date)[:7]
             end = it.end_date[:7] if it.end_date else "계속"
             parts = [f"{start} ~ {end}"]
+            if it.category == Category.SAVING:
+                k = it.saving_months(self._plan.months, self._plan.basis)
+                parts.append(f"{self._plan.months}개월 후 {won(it.saving_balance_at(self._plan.months, self._plan.basis))} ({k}회 납입)")
             if it.category == Category.LOAN:
                 basis = self._plan.basis
                 label = REPAY_METHODS.get(it.repay_method, "")

@@ -23,6 +23,7 @@ class Category(str, Enum):
     # ── 자본 (가지고 있는 것) ──
     CASH = "현금/자산"          # 자본
     BANK = "은행 예금"          # 원금은 자본, 이자는 월 수입
+    SAVING = "적금/저축(월)"    # 매달 넣는 돈. 나간 만큼 자본으로 쌓인다
     LOAN = "대출/이자"          # 원금은 자본(대출 기간 동안), 이자는 월 지출(대출 기간 동안)
     # ── 수입 (들어오는 것) ──
     INCOME = "월 수입"          # 월 수입 (적용 기간)
@@ -83,6 +84,9 @@ CATEGORY_INFO: dict[Category, dict] = {
     Category.BANK: {"group": GROUP_CAPITAL, "amount_label": "예금액", "uses_rate": True,
                     "date_mode": "", "flow": "",
                     "hint": "원금은 자본에 포함, 이자는 매달 수입"},
+    Category.SAVING: {"group": GROUP_CAPITAL, "amount_label": "월 납입액", "uses_rate": True,
+                      "date_mode": "range", "flow": "cost",
+                      "hint": "매달 넣는 적금·저축. 납입 기간 동안 매달 나가고 그만큼 자본으로 쌓입니다 (연이율을 넣으면 이자도 붙습니다)"},
     Category.LOAN: {"group": GROUP_CAPITAL, "amount_label": "대출 원금", "uses_rate": True,
                     "date_mode": "range", "flow": "",
                     "hint": "대출 기간 동안 원금은 자본에 포함, 이자는 잔액 기준 매달 지출. 정기·중도 상환으로 잔액을 줄일 수 있고 종료일에 잔액 상환"},
@@ -206,6 +210,31 @@ class Item:
     def group(self) -> str:
         """자본 | 수입 | 지출"""
         return CATEGORY_INFO[self.category]["group"]
+
+    # ---- 적금/저축 ----
+    def saving_months(self, m: int, basis: date) -> int:
+        """m개월 시점까지 넣은 횟수 (납입 기간을 넘지 않는다)."""
+        if self.category != Category.SAVING:
+            return 0
+        start_m, end_m = self.active_range(basis)
+        k = m - start_m
+        if end_m is not None:
+            k = min(k, end_m - start_m)
+        return max(0, k)
+
+    def saving_balance_at(self, m: int, basis: date) -> float:
+        """m개월 시점의 적금 잔액 = 납입 누계 + 단리 이자 (만기 뒤에는 이자가 더 붙지 않는다)."""
+        k = self.saving_months(m, basis)
+        if k <= 0:
+            return 0.0
+        principal = self.amount * k
+        mr = self.monthly_rate()
+        if mr <= 0:
+            return principal
+        start_m, end_m = self.active_range(basis)
+        mm = m if end_m is None else min(m, end_m)
+        months_held = k * (mm - start_m) - k * (k - 1) / 2   # 각 납입분이 묶여 있던 개월 수의 합
+        return principal + self.amount * mr * max(0.0, months_held)
 
     @property
     def is_housing(self) -> bool:
@@ -404,6 +433,8 @@ class Item:
         """m개월 시점에 보유 자금에 더해지는 금액."""
         if self.category in (Category.CASH, Category.BANK):
             return self.amount
+        if self.category == Category.SAVING:
+            return self.saving_balance_at(m, basis)   # 넣은 만큼 쌓인다
         if self.category == Category.LOAN and self.include_principal and self.is_active(m, basis):
             return self.remaining_at(m, basis)   # 상환한 만큼 보유 자금에서 빠진다
         return 0.0
@@ -438,6 +469,8 @@ class Item:
         return c if m >= self.once_month(basis) else 0.0
 
     def monthly_cost_at(self, m: int, basis: date) -> float:
+        if self.category == Category.SAVING:
+            return self.amount if self.is_active(m, basis) else 0.0
         if self.is_housing:
             rent = self.housing_rent()
             return rent if rent > 0 and self.housing_active(m, basis) else 0.0
@@ -789,7 +822,8 @@ def sample_plan() -> Plan:
     """처음 실행 시 보여줄 예시 데이터."""
     p = Plan(months=12, target=30_000_000)
     p.add(Item("보유 현금", Category.CASH, 20_000_000))
-    p.add(Item("적금 (3.5%)", Category.BANK, 10_000_000, rate=3.5))
+    p.add(Item("예금 (3.5%)", Category.BANK, 10_000_000, rate=3.5))
+    p.add(Item("청약 적금 (3%)", Category.SAVING, 300_000, rate=3.0, start_date=p.start_date))
     p.add(Item("전셋집", Category.DEPOSIT, 10_000_000, housing_type="banjeonse", monthly=500_000,
                end_date=add_months(p.basis, 24).isoformat()))
     p.add(Item("관리비", Category.MAINT, 100_000))

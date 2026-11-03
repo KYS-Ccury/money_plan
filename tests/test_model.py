@@ -450,3 +450,36 @@ def test_housing_types():
     assert Item.from_dict(j.to_dict()).housing_type == "buy"
     old = Item.from_dict({"name": "옛날", "category": "보증금", "amount": 1_000})
     assert old.category is Category.DEPOSIT and old.housing_type == "jeonse"
+
+
+def test_saving():
+    p = Plan(months=24, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 10_000_000))
+    sv = p.add(Item("적금", Category.SAVING, 500_000,
+                    start_date="2026-01-01", end_date="2027-01-01"))   # 12개월 납입
+
+    assert sv.saving_months(0, p.basis) == 0 and sv.saving_months(5, p.basis) == 5
+    assert sv.saving_months(12, p.basis) == 12
+    assert sv.saving_months(24, p.basis) == 12                 # 만기 뒤엔 더 안 넣는다
+
+    assert p.monthly_cost_at(0) == 500_000                     # 납입 기간 동안 매달 나가고
+    assert p.monthly_cost_at(12) == 0
+    assert p.capital_at(6) == 10_000_000 + 500_000 * 6         # 그만큼 자본으로 쌓인다
+    assert p.net_at(6) == 10_000_000                           # 순 자본은 그대로 (돈이 옮겨간 것뿐)
+    assert p.net_at(12) == 10_000_000 and p.net_at(24) == 10_000_000
+    assert sv.saving_balance_at(12, p.basis) == 6_000_000
+
+    # 이율을 넣으면 이자만큼 순 자본이 는다
+    sv.rate = 3.0
+    mr = 0.03 / 12
+    # 0개월에 넣은 돈은 1개월 시점에 한 달치 이자가 붙는다
+    assert abs(sv.saving_balance_at(1, p.basis) - 500_000 * (1 + mr)) < 1e-6
+    assert abs(sv.saving_balance_at(2, p.basis) - (1_000_000 + 500_000 * mr * 3)) < 1e-6   # 2 + 1
+    bal = sv.saving_balance_at(12, p.basis)
+    assert abs(bal - (6_000_000 + 500_000 * mr * 78)) < 1e-6   # 12+11+...+1 = 78개월분
+    assert sv.saving_balance_at(24, p.basis) == bal            # 만기 뒤엔 이자도 멈춘다
+    assert abs(p.net_at(24) - (10_000_000 + 500_000 * mr * 78)) < 1e-6
+
+    # 종료일이 없으면 계속 넣는다
+    sv.end_date = None
+    assert sv.saving_months(24, p.basis) == 24
