@@ -879,10 +879,38 @@ ApplicationWindow {
 
                 Card {
                     id: pieCard
-                    property string group: "보유 자금"
+                    property string group: "목표 구성"
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 250
+                    Layout.preferredHeight: 310
                     title: "비중"
+
+                    // 목표를 무엇으로 채우는지 — 목표 바와 같은 색을 쓴다
+                    function goalSlices() {
+                        var pi = backend.pendingInflow
+                        var out = []
+                        var net = Math.max(0, backend.net)
+                        if (net > 0)
+                            out.push({ label: "순 자본", value: net, color: Theme.green })
+                        // 범례 칸이 좁아 짧은 이름을 쓴다
+                        var shortName = { deposit: "보증금 반환", saving: "적금 만기", loan: "받을 대출" }
+                        for (var i = 0; i < pi.groups.length; i++)
+                            out.push({ label: shortName[pi.groups[i].kind] || pi.groups[i].label,
+                                       value: pi.groups[i].total,
+                                       color: Theme.pendingColor(pi.groups[i].kind) })
+                        if (pi.shortfall > 0)
+                            out.push({ label: "아직 모자람", value: pi.shortfall, color: "#39405a" })
+                        var total = 0
+                        for (var j = 0; j < out.length; j++) total += out[j].value
+                        for (var k = 0; k < out.length; k++)
+                            out[k].share = total > 0 ? out[k].value / total : 0
+                        return out
+                    }
+                    function goalTotal() {
+                        var t = 0
+                        var sl = goalSlices()
+                        for (var i = 0; i < sl.length; i++) t += sl[i].value
+                        return t
+                    }
 
                     ColumnLayout {
                         anchors.fill: parent
@@ -894,7 +922,7 @@ ApplicationWindow {
                             Text { text: "구성"; color: Theme.textDim; font.pixelSize: 12 }
                             Item { Layout.fillWidth: true }
                             Repeater {
-                                model: ["보유 자금", "월 지출", "월 수입"]
+                                model: ["목표 구성", "보유 자금", "월 지출", "월 수입"]
                                 delegate: Rectangle {
                                     required property string modelData
                                     readonly property bool on: pieCard.group === modelData
@@ -912,9 +940,24 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             // backend.net 참조로 요약이 바뀔 때마다 다시 계산
-                            slices: (backend.net, backend.compositionOf(pieCard.group))
-                            total: (backend.net, backend.compositionTotal(pieCard.group))
-                            centerTitle: pieCard.group
+                            slices: pieCard.group === "목표 구성"
+                                    ? (backend.net, backend.target, pieCard.goalSlices())
+                                    : (backend.net, backend.compositionOf(pieCard.group))
+                            total: pieCard.group === "목표 구성"
+                                   ? (backend.net, backend.target, pieCard.goalTotal())
+                                   : (backend.net, backend.compositionTotal(pieCard.group))
+                            // 모자랄 때는 조각 합이 목표와 같고, 넘칠 때는 목표보다 크다
+                            centerTitle: pieCard.group !== "목표 구성" ? pieCard.group
+                                       : (backend.pendingInflow.shortfall > 0 ? "목표" : "다 모으면")
+                        }
+
+                        // 목표가 없으면 도넛이 비므로 그때만 안내한다
+                        Text {
+                            visible: pieCard.group === "목표 구성" && backend.target <= 0
+                            text: "목표 자본금을 넣으면 무엇으로 채우는지 보여 줍니다."
+                            color: Theme.textDim; font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true; Layout.preferredWidth: 1
                         }
                     }
                 }
