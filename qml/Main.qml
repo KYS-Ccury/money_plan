@@ -396,7 +396,8 @@ ApplicationWindow {
                             border.color: Theme.accentSoft
                             Behavior on color { ColorAnimation { duration: Theme.fast } }
                             HoverHandler { id: secHover }
-                            TapHandler { onTapped: backend.toggleGroup(secHeader.info.catIndex) }
+                            // 탭을 처리하는 도중에 모델을 건드리면 이 헤더 자신이 파괴될 수 있다. 한 박자 미룬다
+                            TapHandler { onTapped: Qt.callLater(backend.toggleGroup, secHeader.info.catIndex) }
 
                             RowLayout {
                                 anchors { fill: parent; leftMargin: 12; rightMargin: 12 }
@@ -474,9 +475,24 @@ ApplicationWindow {
                             required property real monthly
                             required property int sourceRow
 
+                            // 접힌 분류의 줄은 목록에서 빼지 않고 높이만 0 으로 접는다
+                            // (빼 버리면 그 분류의 섹션 헤더까지 사라져 다시 펼 수가 없다)
+                            property bool folded: backend.groupByCategory && backend.isGroupCollapsed(rowItem.categoryIndex)
+                            Connections {
+                                target: backend
+                                function onGroupsChanged() {
+                                    rowItem.folded = backend.groupByCategory
+                                                     && backend.isGroupCollapsed(rowItem.categoryIndex)
+                                }
+                            }
+
                             width: ListView.view.width - 14
-                            height: subText !== "" ? 54 : 44
+                            height: folded ? 0 : (subText !== "" ? 54 : 44)
+                            opacity: folded ? 0 : 1
+                            enabled: !folded
+                            clip: true
                             Behavior on height { NumberAnimation { duration: Theme.fast } }
+                            Behavior on opacity { NumberAnimation { duration: Theme.fast } }
                             radius: 8
                             color: hover.hovered ? Theme.rowHover : Theme.row
                             Behavior on color { ColorAnimation { duration: Theme.fast } }

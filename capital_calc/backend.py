@@ -263,8 +263,12 @@ class ItemListModel(QAbstractListModel):
 
 
 class GroupedItems(QSortFilterProxyModel):
-    """분류별로 묶어 보여주는 프록시. 분류 순서(CATEGORY_LIST)로 정렬하고, 접힌 분류는 숨긴다.
-    같은 분류 안에서는 원본 순서를 유지한다 (안정 정렬)."""
+    """분류별로 묶어 보여주는 프록시. 분류 순서(CATEGORY_LIST)로 정렬한다.
+    같은 분류 안에서는 원본 순서를 유지한다 (안정 정렬).
+
+    접기는 '걸러내기'가 아니라 '화면에서 숨기기'다. 줄을 걸러내면 그 분류의
+    섹션 헤더까지 사라져 다시 펼 수가 없고, 헤더를 누르는 순간 그 헤더 자신이
+    파괴되면서 앱이 죽는다. 그래서 줄은 그대로 두고 QML 이 높이를 0 으로 만든다."""
 
     def __init__(self, source: ItemListModel, parent: QObject | None = None):
         super().__init__(parent)
@@ -285,12 +289,6 @@ class GroupedItems(QSortFilterProxyModel):
             self._grouped = on
             self.invalidate()
 
-    def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:  # noqa: N802
-        if not self._grouped or not self._collapsed:
-            return True
-        idx = self.sourceModel().index(source_row, 0, source_parent)
-        return self.sourceModel().data(idx, ItemListModel.CategoryIndexRole) not in self._collapsed
-
     def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:  # noqa: N802
         if not self._grouped:
             return left.row() < right.row()        # 묶기를 끄면 원본 순서
@@ -304,16 +302,14 @@ class GroupedItems(QSortFilterProxyModel):
         return cat_index in self._collapsed
 
     def toggle(self, cat_index: int) -> None:
+        """접힘 상태만 바꾼다. 줄을 걸러내지 않으므로 모델 구조는 그대로다."""
         if cat_index in self._collapsed:
             self._collapsed.discard(cat_index)
         else:
             self._collapsed.add(cat_index)
-        self.invalidate()
 
     def expand_all(self) -> None:
-        if self._collapsed:
-            self._collapsed.clear()
-            self.invalidate()
+        self._collapsed.clear()
 
 
 

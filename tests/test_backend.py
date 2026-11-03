@@ -172,8 +172,9 @@ def test_grouped_items_proxy():
     assert gs["count"] == 2 and gs["total"] == 300 and gs["monthly"] == -300 and gs["catIndex"] == 6
     assert b.groupSummary("없음")["count"] == 0
 
+    # 접기는 걸러내기가 아니라 화면에서 숨기기다 (줄을 빼면 그 분류의 헤더까지 사라진다)
     b.toggleGroup(6)                                                # 월세 접기
-    assert b.isGroupCollapsed(6) and g.rowCount() == 1
+    assert b.isGroupCollapsed(6) and g.rowCount() == 3
     b.groupByCategory = False                                       # 묶기 해제 → 모두 펼침
     assert not b.isGroupCollapsed(6) and g.rowCount() == 3
     # 묶기를 끄면 같은 프록시가 원본 순서로 돌아간다 (ListView 의 모델은 바꾸지 않는다)
@@ -730,3 +731,31 @@ def test_source_row_at_maps_visible_to_real():
         assert target not in names
         for name, src in visible():
             assert m.data(m.index(src, 0), m.NameRole) == name
+
+
+def test_collapse_keeps_rows_and_headers():
+    """접기로 줄을 걸러내면 그 분류의 섹션 헤더까지 사라져 다시 펼 수가 없다.
+    그래서 접기는 상태만 바꾸고, 숨기는 건 화면이 한다."""
+    b = Backend(sample_plan())
+    g, m = b.groupedItems, b.items
+    n = g.rowCount()
+
+    cats = sorted({m.data(m.index(r, 0), m.CategoryIndexRole) for r in range(m.rowCount())})
+    for c in cats:
+        b.toggleGroup(c)
+        assert b.isGroupCollapsed(c)
+        assert g.rowCount() == n                 # 줄은 그대로 남는다 → 헤더도 남는다
+
+    # 전부 접어도 목록이 비지 않는다 (비면 다시 펼 방법이 없다)
+    assert g.rowCount() == n
+
+    for c in cats:
+        b.toggleGroup(c)
+        assert not b.isGroupCollapsed(c)
+
+    # 묶기를 끄면 접힘이 모두 풀린다
+    b.toggleGroup(cats[0])
+    b.groupByCategory = False
+    assert not b.isGroupCollapsed(cats[0])
+    b.groupByCategory = True
+    assert g.rowCount() == n
