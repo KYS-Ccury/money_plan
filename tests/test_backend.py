@@ -759,3 +759,34 @@ def test_collapse_keeps_rows_and_headers():
     assert not b.isGroupCollapsed(cats[0])
     b.groupByCategory = True
     assert g.rowCount() == n
+
+
+def test_backend_pending_return():
+    keys = {"has", "total", "count", "month", "dateText", "name",
+            "withNet", "progress", "progressWith"}
+    b = Backend(Plan(months=6, target=100_000_000, start_date="2026-01-01"))
+    assert set(b.pendingReturn) == keys and not b.pendingReturn["has"]   # 비어도 칸은 다 있다
+
+    b.addItem("현금", 0, 20_000_000, 0, True)
+    # 9 = 주거. 2025-01 입주(기준일 전) → 낸 돈은 안 세고, 2027-01 반환만 기다린다
+    b.addItem("전셋집", 9, 30_000_000, 0, True, "2025-01-01", "2027-01-01")
+    assert b.onceCost == 0 and b.net == 20_000_000 and b.progress == 0.2
+
+    pr = b.pendingReturn
+    assert set(pr) == keys and pr["has"]
+    assert pr["total"] == 30_000_000 and pr["count"] == 1 and pr["month"] == 12
+    assert pr["dateText"] == "2027년 1월" and pr["name"] == "전셋집"
+    assert pr["withNet"] == 50_000_000 and pr["progressWith"] == 0.5
+    assert pr["progress"] == 0.2                                   # 순 자본만의 비율은 그대로
+
+    # 기간이 반환일을 넘으면 순 자본에 이미 들어 있으므로 따로 세지 않는다
+    b.months = 12
+    assert b.net == 50_000_000 and not b.pendingReturn["has"]
+    assert b.pendingReturn["progressWith"] == b.progress == 0.5
+
+    # 여러 건이면 가장 이른 것과 건수를 알려준다
+    b.months = 6
+    b.addItem("원룸", 9, 5_000_000, 0, True, "2025-01-01", "2027-06-01")
+    pr = b.pendingReturn
+    assert pr["count"] == 2 and pr["total"] == 35_000_000
+    assert pr["month"] == 12 and "외 1건" in pr["name"]

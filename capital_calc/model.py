@@ -705,6 +705,27 @@ class Plan:
                 inc += i.once_cost()
         return inc
 
+    def pending_returns(self) -> list[dict]:
+        """아직 돌려받지 않은 보증금 (기간이 끝난 뒤에 돌아오는 것만).
+
+        기간 안에 돌아오는 보증금은 이미 순 자본에 들어 있으므로 여기서 뺀다.
+        [{name, amount, month}] — month 는 기준일로부터의 개월.
+        """
+        b = self.basis
+        out = []
+        for i in self.items:
+            r = i.return_month(b)
+            if r is None or r < 0 or r <= self.months:
+                continue
+            c = i.once_cost()
+            if c > 0:
+                out.append({"name": i.name, "amount": c, "month": r})
+        out.sort(key=lambda d: d["month"])
+        return out
+
+    def pending_return_total(self) -> float:
+        return sum(d["amount"] for d in self.pending_returns())
+
     SHORTFALL_HORIZON = 36      # 부족 경고는 최소 3년까지 살펴본다
 
     def shortfall(self, horizon: int | None = None) -> dict:

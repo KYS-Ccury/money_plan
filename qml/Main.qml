@@ -708,11 +708,67 @@ ApplicationWindow {
                                     }
                                 }
                             }
+                            // 아직 묶여 있지만 돌려받을 보증금 — 다른 색으로 이어 붙인다
+                            Rectangle {
+                                id: pendingBar
+                                readonly property var pr: backend.pendingReturn
+                                visible: pr.has && backend.target > 0
+                                x: bar.width
+                                width: Math.max(0, parent.width * Math.min(1, pr.progressWith) - bar.width)
+                                height: parent.height
+                                radius: height / 2
+                                color: Theme.accent
+                                opacity: 0.5
+                                Behavior on width { NumberAnimation { duration: 800; easing.type: Easing.OutCubic } }
+                            }
                             Text {
                                 anchors.centerIn: parent
-                                text: backend.target > 0 ? (backend.progress * 100).toFixed(1) + "%" : "목표 자본금을 입력하세요"
+                                text: backend.target <= 0 ? "목표 자본금을 입력하세요"
+                                    : pendingBar.pr.has
+                                      ? (backend.progress * 100).toFixed(1) + "%  →  "
+                                        + (pendingBar.pr.progressWith * 100).toFixed(1) + "%"
+                                      : (backend.progress * 100).toFixed(1) + "%"
                                 color: Theme.text; font.pixelSize: 13; font.bold: true
                                 style: Text.Outline; styleColor: "#80000000"
+                            }
+                        }
+
+                        // ── 돌려받을 보증금 설명 ──
+                        ColumnLayout {
+                            readonly property var pr: backend.pendingReturn
+                            Layout.fillWidth: true
+                            visible: pr.has && backend.target > 0
+                            spacing: 2
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Rectangle { width: 10; height: 10; radius: 2; color: Theme.accent; opacity: 0.5 }
+                                Text {
+                                    text: "돌려받을 보증금"
+                                    color: Theme.textDim; font.pixelSize: 12
+                                }
+                                Item { Layout.fillWidth: true }
+                                Text {
+                                    text: "+" + backend.won(parent.parent.pr.total)
+                                    color: Theme.accent; font.pixelSize: 13; font.bold: true
+                                }
+                            }
+                            Text {
+                                text: parent.pr.name + "  ·  " + parent.pr.dateText
+                                      + " (" + parent.pr.month + "개월 뒤)"
+                                color: Theme.textDim; font.pixelSize: 11
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true; Layout.preferredWidth: 1
+                            }
+                            Text {
+                                text: parent.pr.withNet >= backend.target
+                                      ? "돌려받으면 목표를 넘어섭니다"
+                                      : "돌려받아도 " + backend.won(backend.target - parent.pr.withNet) + " 모자랍니다"
+                                color: parent.pr.withNet >= backend.target ? Theme.green : Theme.textDim
+                                font.pixelSize: 11
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true; Layout.preferredWidth: 1
                             }
                         }
 

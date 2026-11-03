@@ -771,6 +771,34 @@ class Backend(QObject):
     def progress(self) -> float:
         return self._s().progress
 
+    @Property("QVariantMap", notify=summaryChanged)
+    def pendingReturn(self) -> dict:
+        """기간이 끝난 뒤에 돌아올 보증금 (목표 바에 따로 표시한다).
+
+        {has, total, count, month, dateText, name, withNet, progress, progressWith}
+        """
+        rows = self._plan.pending_returns()
+        total = sum(r["amount"] for r in rows)
+        s = self._s()
+        net = s.net
+        empty = {"has": False, "total": 0.0, "count": 0, "month": -1, "dateText": "",
+                 "name": "", "withNet": net, "progress": s.progress, "progressWith": s.progress}
+        if not rows or total <= 0:
+            return empty
+        first = rows[0]
+        with_net = net + total
+        return {
+            "has": True,
+            "total": total,
+            "count": len(rows),
+            "month": first["month"],
+            "dateText": self._month_text(first["month"]),
+            "name": first["name"] if len(rows) == 1 else f"{first['name']} 외 {len(rows) - 1}건",
+            "withNet": with_net,
+            "progress": s.progress,
+            "progressWith": (max(0.0, with_net / self._plan.target) if self._plan.target > 0 else 1.0),
+        }
+
     @Property(int, notify=summaryChanged)
     def monthsToGoal(self) -> int:
         """목표까지 추가로 필요한 개월. 이미 달성 0, 도달 불가 -1."""

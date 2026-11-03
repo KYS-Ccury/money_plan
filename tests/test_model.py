@@ -547,3 +547,35 @@ def test_past_once_costs_are_not_counted_again():
     old.start_date, old.end_date = "2023-12-01", "2025-12-01"
     assert p.once_cost_at(0) == 0 and p.once_income_at(12) == 0
     assert p.net_at(0) == 5_000_000
+
+
+def test_pending_returns():
+    """기간이 끝난 뒤에 돌아올 보증금. 기간 안에 돌아오는 건 이미 순 자본에 들어 있다."""
+    p = Plan(months=6, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 1_000_000))
+    late = p.add(Item("전셋집", Category.DEPOSIT, 20_000_000, housing_type="jeonse",
+                      start_date="2025-01-01", end_date="2027-01-01"))     # 12개월 뒤 반환
+    soon = p.add(Item("원룸", Category.DEPOSIT, 5_000_000, housing_type="wolse", monthly=300_000,
+                      start_date="2025-06-01", end_date="2026-04-01"))     # 3개월 뒤 반환 (기간 안)
+
+    assert late.return_month(p.basis) == 12 and soon.return_month(p.basis) == 3
+    rows = p.pending_returns()
+    assert [r["name"] for r in rows] == ["전셋집"]                  # 기간 안에 돌아오는 건 빠진다
+    assert rows[0]["amount"] == 20_000_000 and rows[0]["month"] == 12
+    assert p.pending_return_total() == 20_000_000
+
+    # 기간을 늘려 둘 다 기간 안에 들어오면 남는 게 없다
+    p.months = 24
+    assert p.pending_returns() == [] and p.pending_return_total() == 0
+
+    # 반환일이 없거나 이미 지난 보증금은 세지 않는다
+    p.months = 6
+    late.end_date = None
+    assert p.pending_returns() == []
+    late.end_date = "2025-06-01"
+    assert p.pending_returns() == []
+
+    # 가까운 순으로
+    late.end_date = "2028-01-01"
+    soon.end_date = "2027-06-01"
+    assert [r["month"] for r in p.pending_returns()] == [17, 24]
