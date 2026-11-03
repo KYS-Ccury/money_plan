@@ -51,6 +51,7 @@ GROUP_CAPITAL, GROUP_INCOME, GROUP_COST = "자본", "수입", "지출"
 #   date_mode    : ""(날짜 없음) | "range"(시작일~종료일) | "once"(하루에 끝나는 돈)
 #   flow         : "cost"(나가는 돈) | "income"(들어오는 돈) | ""(자본·대출처럼 둘 다 아닌 것)
 #   group        : 자본 | 수입 | 지출
+#   returnable   : 돌려받을 수 있는 돈인가 (보증금). 반환일을 넣으면 그 달에 되돌아온다
 CATEGORY_INFO: dict[Category, dict] = {
     Category.CASH: {"group": GROUP_CAPITAL, "amount_label": "보유 금액", "uses_rate": False,
                     "date_mode": "", "flow": "",
@@ -77,8 +78,8 @@ CATEGORY_INFO: dict[Category, dict] = {
                      "date_mode": "range", "flow": "cost",
                      "hint": "보험료·통신비·식비·교통비처럼 적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
     Category.DEPOSIT: {"group": GROUP_COST, "amount_label": "보증금", "uses_rate": False,
-                       "date_mode": "once", "flow": "cost",
-                       "hint": "한 번만 나가는 돈. 지출일을 비우면 기준일에 나갑니다"},
+                       "date_mode": "once", "flow": "cost", "returnable": True,
+                       "hint": "전세·월세 보증금. 지출일을 비우면 기준일에 나가고, 반환일을 넣으면 그 달에 돌려받습니다"},
     Category.EXPENSE: {"group": GROUP_COST, "amount_label": "지출액", "uses_rate": False,
                        "date_mode": "once", "flow": "cost",
                        "hint": "이사비·수수료처럼 한 번만 나가는 돈. 지출일을 비우면 기준일에 나갑니다"},
@@ -174,6 +175,18 @@ class Item:
     def group(self) -> str:
         """자본 | 수입 | 지출"""
         return CATEGORY_INFO[self.category]["group"]
+
+    @property
+    def returnable(self) -> bool:
+        """돌려받을 수 있는 돈인가 (보증금)."""
+        return bool(CATEGORY_INFO[self.category].get("returnable"))
+
+    def return_month(self, basis: date) -> int | None:
+        """보증금을 돌려받는 개월. 반환일이 없으면 None(계속 묶여 있음)."""
+        if not self.returnable:
+            return None
+        d = parse_date(self.end_date)
+        return month_offset(basis, d) if d else None
 
     @property
     def flow(self) -> str:
@@ -345,11 +358,14 @@ class Item:
         return 0.0
 
     def once_cost_at(self, m: int, basis: date) -> float:
-        """m개월 시점까지 이미 나간 일시 지출. 지출일이 아직 안 왔으면 0."""
+        """m개월 시점에 묶여 있는 일시 지출. 지출일 전이면 0, 보증금은 반환일 이후 0(돌려받음)."""
         c = self.once_cost()
-        if c <= 0:
+        if c <= 0 or m < self.once_month(basis):
             return 0.0
-        return c if m >= self.once_month(basis) else 0.0
+        r = self.return_month(basis)
+        if r is not None and m >= r:
+            return 0.0
+        return c
 
     def once_income(self) -> float:
         """일시 수입 금액 (날짜와 무관한 총액)."""

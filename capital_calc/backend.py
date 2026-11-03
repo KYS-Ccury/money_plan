@@ -125,7 +125,11 @@ class ItemListModel(QAbstractListModel):
                 om = it.once_month(self._plan.basis)
                 word = "수입" if it.flow == "income" else "지출"
                 when = f"지난 {word}" if om < 0 else (f"기준일에 {word}" if om == 0 else f"{om}개월 뒤 {word}")
-                return f"{d.isoformat()[:7]}  ·  {when}"
+                parts = [f"{d.isoformat()[:7]}  ·  {when}"]
+                rm = it.return_month(self._plan.basis)
+                if rm is not None:
+                    parts.append(f"{it.end_date[:7]} 반환" + (f" ({rm}개월 뒤)" if rm > 0 else ""))
+                return "  ·  ".join(parts)
             if not it.uses_dates:
                 return ""
             start = (it.start_date or self._plan.start_date)[:7]
@@ -683,6 +687,7 @@ class Backend(QObject):
             "dateMode": info["date_mode"],
             "usesDates": info["date_mode"] == "range",
             "group": info["group"],
+            "returnable": bool(info.get("returnable")),
             "flow": info["flow"],
             "onceWord": "수입" if info["flow"] == "income" else "지출",
         }
@@ -802,7 +807,8 @@ class Backend(QObject):
         cat = CATEGORY_LIST[max(0, min(cat_index, len(CATEGORY_LIST) - 1))]
         mode = CATEGORY_INFO[cat]["date_mode"]
         sd = parse_date(start_date) if mode in ("range", "once") else None   # once 면 지출일·수입일
-        ed = parse_date(end_date) if mode == "range" else None
+        returnable = bool(CATEGORY_INFO[cat].get("returnable"))
+        ed = parse_date(end_date) if mode == "range" or returnable else None   # 보증금이면 반환일
         return Item(
             name.strip() or cat.value, cat, max(0.0, amount), max(0.0, rate), include_principal,
             start_date=sd.isoformat() if sd else None,

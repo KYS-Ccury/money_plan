@@ -327,3 +327,20 @@ def test_backend_income_dates():
     assert b.items.data(idx, b.items.MonthlyKindRole) == "income"
     assert b.onceIncome == 5_000_000 and b.onceCost == 0
     assert b.netAt(4) == 2_000_000 * 2 + 5_000_000
+
+
+def test_backend_deposit_return():
+    b = Backend(Plan(months=36, target=0, start_date="2026-01-01"))
+    assert b.categoryInfo(8)["returnable"] and not b.categoryInfo(9)["returnable"]
+
+    b.addItem("현금", 0, 100_000_000, 0, True)
+    b.addItem("전세 보증금", 8, 80_000_000, 0, True, "2026-04-01", "2028-04-01")   # 8 = 보증금
+    sub = b.items.data(b.items.index(1, 0), b.items.SubTextRole)
+    assert "3개월 뒤 지출" in sub and "2028-04 반환 (27개월 뒤)" in sub
+
+    assert b.netAt(3) == 20_000_000 and b.netAt(26) == 20_000_000
+    assert b.netAt(27) == 100_000_000
+    assert b.onceCost == 0                              # 36개월 시점엔 이미 돌려받음
+
+    b.updateItem(1, "전세 보증금", 8, 80_000_000, 0, True, "2026-04-01", "")
+    assert b.netAt(27) == 20_000_000 and b.onceCost == 80_000_000

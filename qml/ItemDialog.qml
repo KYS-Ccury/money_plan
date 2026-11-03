@@ -95,13 +95,14 @@ Popup {
     function datesValid() {
         if (dlg.info.dateMode === "range" && !(startField.valid && endField.valid)) return false
         if (dlg.info.dateMode === "once" && !onceField.valid) return false
+        if (dlg.info.returnable && !returnField.valid) return false
         if (dlg.info.isLoan && dlg.loanInfo.needsEnd) return false      // 원금·원리금 균등은 만기 필요
         return true
     }
     function submit() {
         if (!datesValid()) return
         var sd = dlg.info.dateMode === "range" ? startDate : (dlg.info.dateMode === "once" ? onceDate : "")
-        var ed = dlg.info.dateMode === "range" ? endDate : ""
+        var ed = (dlg.info.dateMode === "range" || dlg.info.returnable) ? endDate : ""
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
         if (editRow < 0)
@@ -174,6 +175,21 @@ Popup {
                     value: dlg.onceDate
                     optional: true
                     onEdited: (v) => dlg.onceDate = v
+                }
+                DateField {
+                    id: returnField
+                    Layout.fillWidth: true
+                    visible: dlg.info.returnable
+                    label: "반환일"
+                    placeholder: "반환일 (비우면 계속 묶임)"
+                    value: dlg.endDate
+                    optional: true
+                    onEdited: (v) => dlg.endDate = v
+                }
+                Text {
+                    visible: dlg.info.returnable
+                    text: "계약이 끝나 보증금을 돌려받는 달입니다. 그 달부터 순 자본에 다시 들어옵니다."
+                    color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true
                 }
                 Text {
                     text: dlg.info.flow === "income"

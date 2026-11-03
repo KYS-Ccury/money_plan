@@ -133,7 +133,7 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
             ws.cell(row=r, column=7, value=it.end_date or "계속")
         elif it.date_mode == "once":
             ws.cell(row=r, column=6, value=it.start_date or plan.start_date)
-            ws.cell(row=r, column=7, value="일시")
+            ws.cell(row=r, column=7, value=(it.end_date + " 반환") if it.return_month(basis) is not None else "일시")
         if is_loan:
             label = REPAY_METHODS.get(it.repay_method, "")
             if it.repay_method == "rate":

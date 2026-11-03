@@ -390,3 +390,24 @@ def test_income_date_in_sample():
     kinds = {i.category for i in p.items}
     assert Category.INCOME in kinds and Category.INCOME_ONCE in kinds
     assert p.summary().once_income == 3_000_000              # 6개월 뒤 성과급 (12개월 안)
+
+
+def test_deposit_return():
+    p = Plan(months=36, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 100_000_000))
+    dep = p.add(Item("전세 보증금", Category.DEPOSIT, 80_000_000,
+                     start_date="2026-04-01", end_date="2028-04-01"))
+    assert dep.returnable and dep.once_month(p.basis) == 3 and dep.return_month(p.basis) == 27
+
+    assert p.net_at(2) == 100_000_000                 # 아직 안 나감
+    assert p.net_at(3) == 20_000_000                  # 보증금 나감
+    assert p.net_at(26) == 20_000_000                 # 2년 동안 묶여 있다
+    assert p.net_at(27) == 100_000_000                # 계약 끝 → 돌려받음
+
+    # 반환일을 비우면 예전처럼 계속 묶여 있다
+    dep.end_date = None
+    assert dep.return_month(p.basis) is None and p.net_at(27) == 20_000_000
+
+    # 보증금이 아닌 일시 지출은 반환일이 없다
+    exp = Item("이사비", Category.EXPENSE, 1_000_000, end_date="2028-04-01")
+    assert not exp.returnable and exp.return_month(p.basis) is None
