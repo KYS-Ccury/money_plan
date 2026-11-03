@@ -25,7 +25,7 @@ from PySide6.QtCore import (
 
 from .export_excel import composition, export_plan
 from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Ledger,
-                     kind_of, prev_period, sample_ledger, shift_month)
+                     kind_of, prev_period, same_day_in, sample_ledger, shift_month)
 from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
                      REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS, month_offset,
                      Category, Item, Plan, Workspace, add_months, parse_date, sample_plan, won)
@@ -1363,6 +1363,96 @@ class Backend(QObject):
             return
         self._ledger_touched()
         self._set_status(f"지난달({src}) 내역 {len(made)}건을 복사했습니다.")
+
+    # ---- 계획 항목을 가계부로 ----
+    #   계획의 분류 → 가계부 분류. 없는 분류(현금·예금)는 기록할 거리가 아니다
+    PLAN_TO_LEDGER = {
+        Category.RENT: "주거/관리비",
+        Category.MAINT: "주거/관리비",
+        Category.DEPOSIT: "주거/관리비",
+        Category.FIXED: "기타 지출",
+        Category.EXPENSE: "기타 지출",
+        Category.INCOME: "급여",
+        Category.INCOME_ONCE: "기타 수입",
+        Category.LOAN: "대출 상환",
+        Category.SAVING: "저축/투자",
+    }
+
+    def _ledger_date(self) -> str:
+        """가계부에 넣을 날짜. 달을 골라 놨으면 그 달의 오늘 날짜, 아니면 오늘."""
+        today = date.today()
+        if self._ledger_year and self._ledger_month > 0:
+            return same_day_in(f"{self._ledger_year}-{self._ledger_month:02d}", today.day)
+        return today.isoformat()
+
+    def _ledger_amount(self, it: Item) -> float:
+        """그 항목이 한 달에 실제로 오고 가는 돈."""
+        b = self._plan.basis
+        if it.category == Category.LOAN:
+            return it.payment_at(0, b)
+        for v in (it.monthly_cost_at(0, b), it.monthly_income_at(0, b), it.once_cost(), it.once_income()):
+            if v > 0:
+                return v
+        return 0.0
+
+    @Slot(int, result=bool)
+    def toLedger(self, source_row: int) -> bool:
+        """계획 항목 하나를 가계부에 기록한다. 같은 이름이 이미 있으면 넣지 않는다."""
+        if not (0 <= source_row < len(self._plan.items)):
+            return False
+        it = self._plan.items[source_row]
+        cat = self.PLAN_TO_LEDGER.get(it.category)
+        if not cat:
+            self.failed.emit(f"'{it.category.value}' 분류는 가계부에 기록할 수 없습니다.")
+            return False
+        amount = self._ledger_amount(it)
+        if amount <= 0:
+            self.failed.emit(f"'{it.name}' 은(는) 이번 달에 오고 가는 돈이 없습니다.")
+            return False
+
+        day = self._ledger_date()
+        period = day[:7]
+        if self._ws.ledger.has_name(period, it.name):
+            self.failed.emit(f"'{it.name}' 은(는) 이미 {period[:4]}년 {int(period[5:7])}월 가계부에 있습니다.")
+            return False
+
+        self._ws.ledger.add(Entry(day, cat, amount, it.name, note="계획에서 가져옴"))
+        if not self._ledger_year:
+            self._ledger_year, self._ledger_month = period[:4], int(period[5:7])
+            self._ledger_model.set_period(self.ledgerPeriod)
+        self._ledger_touched()
+        self._set_status(f"가계부에 기록: {it.name} {won(amount)}")
+        return True
+
+    @Slot(result=int)
+    def importPlanToLedger(self) -> int:
+        """계획 항목을 한꺼번에 가계부에 기록한다. 이름이 겹치는 것은 건너뛴다."""
+        day = self._ledger_date()
+        period = day[:7]
+        added = skipped = 0
+        for it in list(self._plan.items):
+            cat = self.PLAN_TO_LEDGER.get(it.category)
+            if not cat or self._ledger_amount(it) <= 0:
+                continue
+            if self._ws.ledger.has_name(period, it.name):
+                skipped += 1
+                continue
+            self._ws.ledger.add(Entry(day, cat, self._ledger_amount(it), it.name, note="계획에서 가져옴"))
+            added += 1
+
+        if not added and not skipped:
+            self.failed.emit("가계부에 기록할 항목이 없습니다.")
+            return 0
+        if not added:
+            self.failed.emit(f"{skipped}건 모두 이미 가계부에 있습니다.")
+            return 0
+        if not self._ledger_year:
+            self._ledger_year, self._ledger_month = period[:4], int(period[5:7])
+            self._ledger_model.set_period(self.ledgerPeriod)
+        self._ledger_touched()
+        self._set_status(f"계획에서 {added}건을 가계부에 기록했습니다."
+                         + (f" ({skipped}건은 이미 있어 건너뜀)" if skipped else ""))
+        return added
 
     # ---- 분류별 예산 ----
     @Property(bool, notify=budgetsChanged)

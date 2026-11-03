@@ -220,6 +220,13 @@ class Ledger:
         """그 기간에 실제로 쓴 분류 (가나다순)."""
         return sorted({e.category for e in self.entries if e.in_period(period)})
 
+    def has_name(self, period: str, name: str) -> bool:
+        """그 기간에 같은 이름의 내역이 이미 있는가 (앞뒤 공백·대소문자 무시)."""
+        key = (name or "").strip().lower()
+        if not key:
+            return False
+        return any(e.name.strip().lower() == key for e in self.entries if e.in_period(period))
+
     def day_total(self, day: str) -> float:
         """그 날 하루의 수지 (수입 - 지출)."""
         return sum(e.signed for e in self.entries if e.date == day)

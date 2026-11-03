@@ -190,3 +190,16 @@ def test_budgets():
     back = Ledger.from_dict(lg.to_dict())
     assert back.budgets == {"식비": 400_000, "통신": 90_000}
     assert Ledger.from_dict({"entries": [], "budgets": {"식비": "이상한값", "교통": -1}}).budgets == {}
+
+
+def test_has_name():
+    lg = Ledger()
+    lg.add(Entry("2026-01-10", "주거/관리비", 500_000, "월세"))
+    lg.add(Entry("2026-02-10", "식비", 10_000, ""))
+
+    assert lg.has_name("2026-01", "월세")
+    assert lg.has_name("2026-01", " 월세 ")          # 앞뒤 공백 무시
+    assert lg.has_name("2026", "월세")
+    assert not lg.has_name("2026-02", "월세")        # 다른 달이면 겹치는 게 아니다
+    assert not lg.has_name("2026-01", "관리비")
+    assert not lg.has_name("2026-02", "")            # 이름 없는 것끼리는 안 따진다

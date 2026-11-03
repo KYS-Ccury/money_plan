@@ -546,7 +546,14 @@ ApplicationWindow {
                                 }
                                 RowLayout {
                                     spacing: 0
-                                    Layout.preferredWidth: 104
+                                    Layout.preferredWidth: 136
+                                    ToolButton {
+                                        text: "▤"; font.pixelSize: 12; implicitWidth: 32
+                                        Material.foreground: Theme.accent
+                                        onClicked: backend.toLedger(backend.sourceRowAt(rowItem.index))
+                                        ToolTip.visible: hovered; ToolTip.delay: 500
+                                        ToolTip.text: "이 항목을 가계부에 기록 (이름이 겹치면 넣지 않습니다)"
+                                    }
                                     ToolButton { text: "▲"; font.pixelSize: 11; implicitWidth: 32; enabled: !backend.groupByCategory && rowItem.index > 0; onClicked: backend.moveItem(backend.sourceRowAt(rowItem.index), -1) }
                                     ToolButton { text: "▼"; font.pixelSize: 11; implicitWidth: 32; enabled: !backend.groupByCategory && rowItem.index < backend.itemCount - 1; onClicked: backend.moveItem(backend.sourceRowAt(rowItem.index), 1) }
                                     ToolButton {
@@ -571,7 +578,7 @@ ApplicationWindow {
                             color: Theme.textDim
                         }
                     }
-                    Text { text: "행 더블클릭: 수정   ▲▼: 순서   ✕: 삭제"; color: Theme.textDim; font.pixelSize: 11 }
+                    Text { text: "행 더블클릭: 수정   ▤: 가계부에 기록   ▲▼: 순서   ✕: 삭제"; color: Theme.textDim; font.pixelSize: 11 }
                 }
             }
 

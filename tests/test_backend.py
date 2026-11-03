@@ -836,3 +836,65 @@ def test_backend_growth():
     # 상승률을 안 주는 예전 호출도 그대로 동작한다
     b.addItem("부업", 4, 100_000, 0, True)
     assert b.items.data(b.items.index(1, 0), b.items.GrowthRole) == 0
+
+
+def test_to_ledger_single():
+    b = Backend(sample_plan())
+    fails = []
+    b.failed.connect(fails.append)
+
+    rows = {b.items.data(b.items.index(r, 0), b.items.NameRole): r for r in range(b.itemCount)}
+
+    assert b.toLedger(rows["관리비"]) is True
+    assert b.ledgerSummary["count"] == 1 and not fails
+
+    # 같은 이름을 또 넣으면 거절하고 알린다
+    assert b.toLedger(rows["관리비"]) is False
+    assert b.ledgerSummary["count"] == 1               # 늘지 않는다
+    assert "관리비" in fails[-1] and "이미" in fails[-1]
+
+    # 가계부에 넣을 수 없는 분류
+    assert b.toLedger(rows["보유 현금"]) is False
+    assert "기록할 수 없습니다" in fails[-1]
+
+    # 분류 짝짓기와 금액
+    b2 = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    b2.addItem("급여", 4, 2_000_000, 0, True)
+    b2.addItem("대출", 3, 12_000_000, 12.0, False, "", "", "[]", 0, "bullet")
+    assert b2.toLedger(0) and b2.toLedger(1)
+    m = b2.ledgerItems
+    got = {m.data(m.index(r, 0), m.NameRole): (m.data(m.index(r, 0), m.CategoryRole),
+                                               m.data(m.index(r, 0), m.AmountRole))
+           for r in range(m.rowCount())}
+    assert got["급여"] == ("급여", 2_000_000)
+    assert got["대출"][0] == "대출 상환" and abs(got["대출"][1] - 120_000) < 1   # 그 달 이자
+
+
+def test_import_plan_to_ledger():
+    b = Backend(sample_plan())
+    fails = []
+    b.failed.connect(fails.append)
+
+    added = b.importPlanToLedger()
+    assert added == 7 and b.ledgerSummary["count"] == 7      # 현금·예금은 빠진다
+    names = {b.ledgerItems.data(b.ledgerItems.index(r, 0), b.ledgerItems.NameRole)
+             for r in range(b.ledgerItems.rowCount())}
+    assert "보유 현금" not in names and "급여" in names
+
+    # 두 번째는 전부 건너뛴다
+    assert b.importPlanToLedger() == 0
+    assert "이미 가계부에 있습니다" in fails[-1]
+    assert b.ledgerSummary["count"] == 7
+
+    # 하나를 지우면 그것만 다시 들어온다
+    b.removeEntry(0)
+    assert b.importPlanToLedger() == 1
+    assert b.ledgerSummary["count"] == 7
+
+    # 기록할 게 없으면 알린다
+    b3 = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    msgs = []
+    b3.failed.connect(msgs.append)
+    b3.addItem("현금", 0, 1_000_000, 0, True)
+    assert b3.importPlanToLedger() == 0
+    assert "기록할 항목이 없습니다" in msgs[-1]

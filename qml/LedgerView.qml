@@ -98,6 +98,14 @@ RowLayout {
                     ToolTip.text: "분류마다 한 달에 얼마까지 쓸지 정합니다"
                 }
                 Button {
+                    text: "계획에서 가져오기"; flat: true; leftPadding: 10; rightPadding: 10
+                    Material.foreground: Theme.accent
+                    enabled: backend.itemCount > 0
+                    onClicked: backend.importPlanToLedger()
+                    ToolTip.visible: hovered; ToolTip.delay: 500
+                    ToolTip.text: "계획 항목을 한꺼번에 기록합니다 (이름이 겹치는 것은 건너뜁니다)"
+                }
+                Button {
                     text: "지난달 복사"; flat: true; leftPadding: 10; rightPadding: 10
                     visible: backend.canCopyPreviousMonth
                     onClicked: backend.copyPreviousMonth()
