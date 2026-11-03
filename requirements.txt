@@ -1,0 +1,8 @@
+PySide6>=6.6
+# ---- 아래는 구버전(main_imgui.py) 전용 ----
+glfw>=2.7
+PyOpenGL>=3.1
+imgui-bundle>=1.6
+numpy>=1.26
+pillow>=10.0  # 스크린샷(테스트용)에만 필요
+openpyxl>=3.1

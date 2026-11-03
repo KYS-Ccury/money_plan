@@ -1,0 +1,392 @@
+"""데이터 모델 계산 검증 (UI 없이 실행 가능)."""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from capital_calc.model import Workspace, Category, Item, Plan, add_months, sample_plan, won  # noqa: E402
+
+
+def test_item_derived_values():
+    loan = Item("대출", Category.LOAN, 12_000_000, rate=5.0)
+    assert loan.monthly_interest() == 50_000
+    assert loan.capital() == 12_000_000
+    assert loan.monthly_cost() == 50_000
+
+    loan.include_principal = False
+    assert loan.capital() == 0
+
+    bank = Item("예금", Category.BANK, 12_000_000, rate=3.0)
+    assert bank.monthly_income() == 30_000
+    assert bank.capital() == 12_000_000
+
+    assert Item("보증금", Category.DEPOSIT, 1_000).once_cost() == 1_000
+    assert Item("월세", Category.RENT, 500).monthly_cost() == 500
+    assert Item("관리비", Category.MAINT, 100).monthly_cost() == 100
+
+
+def test_summary_and_goal():
+    p = Plan(months=12, target=30_000_000)
+    p.add(Item("현금", Category.CASH, 20_000_000))
+    p.add(Item("예금", Category.BANK, 10_000_000, rate=3.6))   # 월 30,000 수입
+    p.add(Item("보증금", Category.DEPOSIT, 10_000_000))
+    p.add(Item("월세", Category.RENT, 500_000))
+    p.add(Item("관리비", Category.MAINT, 100_000))
+
+    s = p.summary()
+    assert s.capital == 30_000_000
+    assert s.once_cost == 10_000_000
+    assert s.monthly_cost == 600_000
+    assert abs(s.monthly_income - 30_000) < 1e-6
+    assert s.required == 10_000_000 + 600_000 * 12
+    assert abs(s.net - (30_000_000 - 17_200_000 + 360_000)) < 1e-6
+    assert s.gap == s.net - 30_000_000
+    assert s.gap < 0
+    assert abs(s.progress - s.net / 30_000_000) < 1e-9
+    assert s.months_to_goal() is None  # 월 순수입이 음수
+
+    p.add(Item("부수입", Category.INCOME, 700_000))
+    s = p.summary()
+    assert abs(s.monthly_net - (700_000 + 30_000 - 600_000)) < 1e-6
+    assert s.gap < 0
+    assert s.months_to_goal() is not None and s.months_to_goal() > 0
+
+    p.add(Item("월급", Category.INCOME, 3_000_000))
+    assert p.summary().months_to_goal() == 0
+
+
+def test_add_remove_move_and_io(tmp_path):
+    p = Plan()
+    a = p.add(Item("A", Category.CASH, 1))
+    b = p.add(Item("B", Category.CASH, 2))
+    assert p.items == [a, b]
+    p.move(1, -1)
+    assert p.items == [b, a]
+    assert p.remove(5) is None
+    assert p.remove(0) is b
+    assert p.items == [a]
+
+    path = tmp_path / "data.json"
+    sample_plan().save(path)
+    loaded = Plan.load(path)
+    assert loaded.to_dict() == sample_plan().to_dict()
+    assert json.loads(path.read_text(encoding="utf-8"))["months"] == 12
+
+
+def test_won_format():
+    assert won(1234567) == "1,234,567원"
+    assert won(-5000) == "-5,000원"
+
+
+def test_loan_dates_and_repayments():
+    # 기준일 2026-01, 12개월. 대출 1,200만원 연 10% (월 이자 10만원), 2026-04 ~ 2026-10
+    p = Plan(months=12, target=0, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 10_000_000))
+    loan = p.add(Item("대출", Category.LOAN, 12_000_000, rate=10.0,
+                      start_date="2026-04-01", end_date="2026-10-01"))
+    b = p.basis
+    assert loan.active_range(b) == (3, 9)
+    assert not loan.is_active(2, b) and loan.is_active(3, b) and not loan.is_active(9, b)
+    # 0개월엔 대출 전: 자본은 현금만, 월 지출 0
+    assert p.capital_at(0) == 10_000_000 and p.monthly_cost_at(0) == 0
+    # 대출 기간 중: 원금 포함, 이자 10만원
+    assert p.capital_at(3) == 22_000_000 and p.monthly_cost_at(3) == 100_000
+    # 종료 후: 원금 상환되어 자본에서 빠짐, 이자 없음
+    assert p.capital_at(9) == 10_000_000 and p.monthly_cost_at(9) == 0
+    # 12개월 후 순 자본 = 현금 - 이자 6개월
+    assert abs(p.net_at(12) - (10_000_000 - 600_000)) < 1e-6
+    # 종료일 생략 = 무기한
+    loan.end_date = None
+    assert loan.active_range(b) == (3, None) and loan.is_active(100, b)
+
+    # 중도 상환: 2026-07 에 600만원 → 이후 잔액 600만원, 이자 5만원
+    loan.end_date = "2026-10-01"
+    loan.repayments = [{"date": "2026-07-01", "amount": 6_000_000}]
+    assert loan.remaining_at(5, b) == 12_000_000 and loan.remaining_at(6, b) == 6_000_000
+    assert p.monthly_cost_at(5) == 100_000 and p.monthly_cost_at(6) == 50_000
+    assert p.capital_at(6) == 16_000_000
+    # 순 자본: 이자 3개월 x 10만 + 3개월 x 5만 = 45만
+    assert abs(p.net_at(12) - (10_000_000 - 450_000)) < 1e-6
+
+    # 원금을 자본에 포함하지 않는 경우: 상환액과 만기 잔액이 지출로 잡힌다
+    loan.include_principal = False
+    assert p.capital_at(6) == 10_000_000
+    assert p.monthly_cost_at(6) == 50_000 + 6_000_000
+    assert p.monthly_cost_at(9) == 6_000_000          # 만기 일시 상환
+    assert abs(p.net_at(12) - (10_000_000 - 450_000 - 12_000_000)) < 1e-6
+
+
+def test_plan_dates_roundtrip(tmp_path):
+    p = Plan(start_date="2026-03-01")
+    p.add(Item("대출", Category.LOAN, 1_000, rate=1, start_date="2026-03-01", end_date=None,
+               repayments=[{"date": "2026-06-01", "amount": 100}]))
+    path = tmp_path / "d.json"
+    p.save(path)
+    q = Plan.load(path)
+    assert q.start_date == "2026-03-01"
+    assert q.items[0].end_date is None
+    assert q.items[0].repayments == [{"date": "2026-06-01", "amount": 100.0}]
+    assert q.to_dict() == p.to_dict()
+
+
+def test_months_to_goal_simulated():
+    p = Plan(months=12, target=2_000_000, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 1_000_000))
+    p.add(Item("수입", Category.INCOME, 50_000))
+    s = p.summary()
+    assert s.net == 1_600_000
+    assert s.months_to_goal() == 8
+
+
+def test_rent_and_maint_dates():
+    p = Plan(months=12, target=0, start_date="2026-01-01")
+    p.add(Item("월세", Category.RENT, 500_000, start_date="2026-02-01", end_date="2026-05-01"))
+    p.add(Item("관리비", Category.MAINT, 100_000))                       # 날짜 없음 = 계속
+    assert p.monthly_cost_at(0) == 100_000
+    assert p.monthly_cost_at(1) == 600_000 and p.monthly_cost_at(3) == 600_000
+    assert p.monthly_cost_at(4) == 100_000
+    assert p.summary().required == 500_000 * 3 + 100_000 * 12
+
+
+def test_goal_month_prediction():
+    from datetime import date
+    assert add_months(date(2026, 10, 28), 3) == date(2027, 1, 1)
+    assert add_months(date(2026, 1, 1), 24) == date(2028, 1, 1)
+
+    p = Plan(months=12, target=2_000_000, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 1_000_000))
+    p.add(Item("수입", Category.INCOME, 50_000))
+    assert p.summary().goal_month() == 20          # 1,000,000 + 50,000*20 = 2,000,000
+    p.target = 500_000
+    assert p.summary().goal_month() == 0           # 이미 달성
+    p.items[1].amount = 0
+    p.target = 2_000_000
+    assert p.summary().goal_month() is None        # 불가능
+
+
+def test_monthly_repay_rate():
+    # 대출 1,200만원, 연 12% (월 1%), 매달 원금의 10% (120만원) 정기 상환. 기준일부터 시작, 무기한
+    p = Plan(months=12, target=0, start_date="2026-01-01")
+    loan = p.add(Item("대출", Category.LOAN, 12_000_000, rate=12.0, monthly_repay_rate=10.0))
+    b = p.basis
+    assert loan.monthly_repay_amount() == 1_200_000
+    assert loan.months_to_payoff(b) == 10
+    assert loan.remaining_at(0, b) == 12_000_000
+    assert loan.remaining_at(1, b) == 10_800_000
+    assert loan.remaining_at(10, b) == 0 and loan.remaining_at(11, b) == 0
+    # 이자는 달 초 잔액 기준
+    assert abs(p.monthly_cost_at(0) - 120_000) < 1e-6
+    assert abs(p.monthly_cost_at(1) - 108_000) < 1e-6
+    assert p.monthly_cost_at(10) == 0
+    assert loan.regular_repay_at(9, b) == 1_200_000 and loan.regular_repay_at(10, b) == 0
+    # 원금 포함: 상환은 자본에서 빠진다 → 12개월 후 순자본 = -총이자 (잔액 0)
+    total_interest = sum(12_000_000 * (1 - 0.1 * k) * 0.01 for k in range(10))
+    assert abs(p.net_at(12) - (-total_interest)) < 1e-6
+    # 원금 미포함: 상환이 지출로 잡힌다
+    loan.include_principal = False
+    assert abs(p.monthly_cost_at(0) - (120_000 + 1_200_000)) < 1e-6
+    assert abs(p.net_at(12) - (-total_interest - 12_000_000)) < 1e-6
+
+    # 정기 상환 + 중도 상환 혼합: 3개월째 600만원 중도 상환 후 잔액
+    loan.include_principal = True
+    loan.repayments = [{"date": "2026-04-01", "amount": 6_000_000}]
+    # 3개월 초 잔액 = 1200 - 120*3 = 840만, 중도 600만 → 240만
+    assert loan.remaining_at(3, b) == 2_400_000
+    assert loan.regular_repay_at(4, b) == 1_200_000 and loan.regular_repay_at(5, b) == 0
+    # 저장/불러오기 왕복
+    d = Item.from_dict(loan.to_dict())
+    assert d.monthly_repay_rate == 10.0
+
+
+def test_workspace_scenarios(tmp_path):
+    ws = Workspace([sample_plan()])
+    assert ws.names() == ["시나리오 1"] and ws.active == 0
+    ws.add()                                   # 빈 시나리오, 기간·목표 이어받음
+    assert ws.names() == ["시나리오 1", "시나리오 2"] and ws.active == 1
+    assert ws.plan.items == [] and ws.plan.target == 30_000_000
+    ws.active = 0
+    ws.duplicate()                             # 복제본은 바로 뒤에, 활성
+    assert ws.names() == ["시나리오 1", "시나리오 1 복사 1", "시나리오 2"] and ws.active == 1
+    assert len(ws.plan.items) == len(sample_plan().items) and ws.plan.items is not ws.plans[0].items
+    assert ws.rename(1, "  전세 이사 ") and ws.plans[1].name == "전세 이사"
+    assert not ws.rename(1, "   ")
+    assert ws.remove(0) and ws.active == 0 and ws.names() == ["전세 이사", "시나리오 2"]
+    assert ws.remove(1) and ws.active == 0
+    assert not ws.remove(0)                    # 마지막 하나는 못 지움
+
+    ws.add("B")
+    path = tmp_path / "ws.json"
+    ws.save(path)
+    back = Workspace.load(path)
+    assert back.names() == ["전세 이사", "B"] and back.active == 1
+    assert back.plans[0].to_dict() == ws.plans[0].to_dict()
+    assert Plan.load(path).name == "B"         # 묶음 파일에서 Plan.load 는 활성 시나리오
+
+    legacy = tmp_path / "old.json"
+    sample_plan().save(legacy)                 # 구버전(계획 하나) 파일
+    old = Workspace.load(legacy)
+    assert old.names() == ["시나리오 1"] and len(old.plan.items) == len(sample_plan().items)
+
+
+def test_fixed_cost_category():
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 10_000_000))
+    f = p.add(Item("보험료", Category.FIXED, 100_000))
+    assert f.uses_dates and f.date_mode == "range"
+    assert p.monthly_cost_at(0) == 100_000 and p.monthly_cost_at(50) == 100_000
+
+    f.start_date, f.end_date = "2026-03-01", "2026-06-01"       # 2,3,4,5 개월째만
+    assert p.monthly_cost_at(1) == 0 and p.monthly_cost_at(2) == 100_000
+    assert p.monthly_cost_at(5) == 0
+    assert p.net_at(12) == 10_000_000 - 100_000 * 3
+
+
+def test_once_cost_date():
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 10_000_000))
+    e = p.add(Item("이사비", Category.EXPENSE, 2_000_000))
+    assert e.date_mode == "once" and not e.uses_dates
+    assert e.once_month(p.basis) == 0                            # 날짜 없으면 기준일
+    assert p.net_at(0) == 8_000_000 and p.once_cost_at(0) == 2_000_000
+
+    e.start_date = "2026-05-01"                                  # 4개월째로 미루면
+    assert e.once_month(p.basis) == 4
+    assert p.once_cost_at(3) == 0 and p.once_cost_at(4) == 2_000_000
+    assert p.net_at(3) == 10_000_000 and p.net_at(4) == 8_000_000
+    assert p.summary().once_cost == 2_000_000                    # 12개월 안
+    p.months = 2
+    assert p.summary().once_cost == 0 and p.summary().required == 0
+
+    e.start_date = "2025-06-01"                                  # 기준일 전이면 계속 반영
+    assert p.once_cost_at(0) == 2_000_000
+
+
+def test_category_alias_from_old_file(tmp_path):
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps({"months": 12, "target": 0, "start_date": "2026-01-01",
+                                "items": [{"name": "공과금", "category": "기타 지출(일시)", "amount": 50_000}]},
+                               ensure_ascii=False), encoding="utf-8")
+    p = Plan.load(path)
+    assert p.items[0].category is Category.EXPENSE and p.once_cost() == 50_000
+
+
+def test_repay_methods():
+    from datetime import date as _date
+    b = _date(2026, 1, 1)
+    common = dict(rate=12.0, start_date="2026-01-01", end_date="2027-01-01")   # 12개월, 월 1%
+
+    bullet = Item("만기", Category.LOAN, 12_000_000, **common)
+    assert bullet.repay_method == "bullet" and bullet.term_months(b) == 12
+    assert bullet.remaining_at(6, b) == 12_000_000          # 기간 중엔 원금 그대로
+    assert bullet.interest_at(0, b) == 120_000
+    assert bullet.months_to_payoff(b) is None
+    assert abs(bullet.total_interest(b) - 120_000 * 12) < 1e-6
+
+    eq = Item("원금균등", Category.LOAN, 12_000_000, repay_method="equal_principal", **common)
+    assert eq.regular_repay_at(0, b) == 1_000_000
+    assert eq.remaining_at(6, b) == 6_000_000 and eq.interest_at(6, b) == 60_000
+    assert eq.payment_at(0, b) == 1_120_000                 # 첫 달이 가장 크고
+    assert eq.payment_at(11, b) == 1_010_000                # 마지막 달이 가장 작다
+    assert eq.remaining_at(12, b) == 0 and eq.months_to_payoff(b) == 12
+    assert abs(eq.total_interest(b) - 780_000) < 1e-6
+
+    lv = Item("원리금균등", Category.LOAN, 12_000_000, repay_method="equal_payment", **common)
+    pay = lv.level_payment(b)
+    assert abs(pay - 1_066_190) < 1_000
+    for m in range(12):
+        assert abs(lv.payment_at(m, b) - pay) < 1e-6        # 매달 같은 금액
+    assert abs(lv.remaining_at(12, b)) < 1e-6
+    assert lv.total_interest(b) > eq.total_interest(b) and lv.total_interest(b) < bullet.total_interest(b)
+
+    # 만기가 없으면 균등 상환은 계산되지 않는다 (이자만)
+    noend = Item("만기없음", Category.LOAN, 12_000_000, rate=12.0, start_date="2026-01-01",
+                 repay_method="equal_payment")
+    assert noend.term_months(b) is None and noend.regular_repay_at(3, b) == 0
+    assert noend.remaining_at(36, b) == 12_000_000
+
+    # 저장/불러오기에서 방식이 유지되고, 예전 파일(상환율만 있는 것)은 rate 로 읽힌다
+    assert Item.from_dict(lv.to_dict()).repay_method == "equal_payment"
+    assert Item.from_dict({"name": "옛날", "category": "대출/이자", "amount": 100, "monthly_repay_rate": 10}).repay_method == "rate"
+    assert Item.from_dict({"name": "옛날", "category": "대출/이자", "amount": 100}).repay_method == "bullet"
+
+
+def test_equal_payment_in_plan():
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 20_000_000))
+    loan = p.add(Item("대출", Category.LOAN, 12_000_000, rate=12.0, include_principal=False,
+                      start_date="2026-01-01", end_date="2027-01-01", repay_method="equal_payment"))
+    pay = loan.level_payment(p.basis)
+    assert abs(p.monthly_cost_at(0) - pay) < 1e-6           # 원금 미포함 → 원리금 전체가 월 지출
+    assert abs(p.monthly_cost_at(11) - pay) < 1e-6
+    assert p.monthly_cost_at(12) == 0                       # 만기 뒤엔 끝
+    assert abs(p.net_at(12) - (20_000_000 - pay * 12)) < 1e-6
+
+
+def test_shortfall():
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 3_000_000))
+    rent = p.add(Item("월세", Category.RENT, 500_000))
+    s = p.shortfall()
+    assert s["month"] == 7                                  # 3,000,000 - 500,000 x 7 < 0
+    assert s["horizon"] == 36 and s["months"] == 30
+    assert s["min_month"] == 36 and s["min_net"] == 3_000_000 - 500_000 * 36
+
+    rent.amount = 50_000
+    assert p.shortfall()["month"] is None                    # 36개월 내내 플러스
+    assert p.shortfall(120)["month"] == 61                   # 더 멀리 보면 부족해진다
+
+
+def test_income_period():
+    from datetime import date as _date
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 1_000_000))
+    pay = p.add(Item("급여", Category.INCOME, 3_000_000,
+                     start_date="2026-03-01", end_date="2026-07-01"))
+    assert pay.uses_dates and pay.date_mode == "range" and pay.flow == "income"
+
+    b = _date(2026, 1, 1)
+    assert pay.monthly_income_at(1, b) == 0          # 아직 시작 전
+    assert pay.monthly_income_at(2, b) == 3_000_000  # 3월부터
+    assert pay.monthly_income_at(6, b) == 0          # 7월부터 끝
+    assert p.monthly_income_at(0) == 0 and p.monthly_income_at(3) == 3_000_000
+
+    # 4개월(3~6월)만 들어온다
+    assert p.net_at(2) == 1_000_000
+    assert p.net_at(6) == 1_000_000 + 3_000_000 * 4
+    assert p.net_at(12) == 1_000_000 + 3_000_000 * 4
+    assert p.summary().period_income == 3_000_000 * 4
+
+    # 종료일을 비우면 계속
+    pay.end_date = None
+    assert p.net_at(12) == 1_000_000 + 3_000_000 * 10
+
+
+def test_once_income_date():
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 1_000_000))
+    bonus = p.add(Item("성과급", Category.INCOME_ONCE, 5_000_000, start_date="2026-05-01"))
+    assert bonus.date_mode == "once" and bonus.flow == "income"
+    assert bonus.once_income() == 5_000_000 and bonus.once_cost() == 0
+    assert bonus.monthly_income_at(4, p.basis) == 0          # 월 수입이 아니다
+
+    assert p.once_income_at(3) == 0 and p.once_income_at(4) == 5_000_000
+    assert p.net_at(3) == 1_000_000
+    assert p.net_at(4) == 6_000_000 and p.net_at(12) == 6_000_000
+    assert p.once_income() == 5_000_000
+
+    s = p.summary()
+    assert s.once_income == 5_000_000 and s.period_income == 5_000_000
+    p.months = 3
+    assert p.summary().once_income == 0                      # 기간 밖
+
+    # 수입일을 비우면 기준일에 들어온다
+    bonus.start_date = None
+    assert p.once_income_at(0) == 5_000_000 and p.net_at(0) == 6_000_000
+
+
+def test_income_date_in_sample():
+    p = sample_plan()
+    kinds = {i.category for i in p.items}
+    assert Category.INCOME in kinds and Category.INCOME_ONCE in kinds
+    assert p.summary().once_income == 3_000_000              # 6개월 뒤 성과급 (12개월 안)
