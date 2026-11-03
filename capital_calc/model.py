@@ -492,8 +492,9 @@ class Item:
         if self.category in (Category.CASH, Category.BANK):
             return self.amount
         if self.category == Category.SAVING:
-            # 묶어 둔 적금은 만기가 되어야 보유 자금에 들어온다 (그 전에는 못 쓰는 돈)
-            if self.is_locked(basis) and m < self.maturity_month(basis):
+            # 묶어 둔 적금은 보유 자금에 넣지 않는다.
+            # 만기 수령액은 once_income_at 으로 들어가므로 요약의 '일시 수입' 에 드러난다.
+            if self.is_locked(basis):
                 return 0.0
             return self.saving_balance_at(m, basis)   # 넣은 만큼 쌓인다
         if self.category == Category.LOAN and self.include_principal and self.is_active(m, basis):
@@ -533,11 +534,16 @@ class Item:
         return 0.0
 
     def once_income_at(self, m: int, basis: date) -> float:
-        """m개월 시점까지 들어온 일시 수입 (보증금 반환 포함). 수입일이 아직 안 왔으면 0."""
+        """m개월 시점까지 들어온 일시 수입. 보증금 반환과 묶인 적금의 만기 수령을 포함한다."""
         c = self.once_income()
-        if c <= 0:
-            return self.once_returned_at(m, basis)
-        return c if m >= self.once_month(basis) else 0.0
+        if c > 0:
+            return c if m >= self.once_month(basis) else 0.0
+        got = self.once_returned_at(m, basis)
+        if self.is_locked(basis):                       # 묶인 적금은 만기에 한꺼번에 들어온다
+            mat = self.maturity_month(basis)
+            if m >= mat:
+                got += self.saving_balance_at(mat, basis)
+        return got
 
     def monthly_cost_at(self, m: int, basis: date) -> float:
         if self.category == Category.SAVING:
@@ -767,6 +773,8 @@ class Plan:
                 inc += i.once_income()
             if i.return_month(b) == m:
                 inc += i.once_cost()
+            if i.is_locked(b) and i.maturity_month(b) == m:
+                inc += i.saving_balance_at(m, b)
         return inc
 
     def pending_inflows(self) -> list[dict]:

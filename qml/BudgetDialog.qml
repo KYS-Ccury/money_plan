@@ -119,13 +119,24 @@ Popup {
                             onPressedChanged: if (!pressed) budgetRow.apply(value)
                         }
                         TextField {
+                            id: budgetField
                             Layout.preferredWidth: 130
                             horizontalAlignment: Text.AlignRight
                             text: budgetRow.limit > 0 ? Number(budgetRow.limit).toLocaleString(Qt.locale(), "f", 0) : ""
                             inputMethodHints: Qt.ImhDigitsOnly
+                            // 치는 동안에도 반영 (잠깐 멈추면)
+                            Timer {
+                                id: budgetTimer
+                                interval: 350
+                                onTriggered: {
+                                    budgetRow.apply(parseFloat(budgetField.text.replace(/,/g, "")) || 0)
+                                    budgetSlider.value = budgetRow.limit
+                                }
+                            }
+                            onTextEdited: budgetTimer.restart()
                             onEditingFinished: {
-                                var v = parseFloat(text.replace(/,/g, "")) || 0
-                                budgetRow.apply(v)
+                                budgetTimer.stop()
+                                budgetRow.apply(parseFloat(text.replace(/,/g, "")) || 0)
                                 budgetSlider.value = budgetRow.limit
                             }
                         }

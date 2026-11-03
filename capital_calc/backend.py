@@ -714,6 +714,7 @@ class Backend(QObject):
         v = max(0, int(v))
         if v != self._plan.months:
             self._plan.months = v
+            self._items.refresh_all()      # 목록의 'N개월 후 …' 표시가 기간을 따라간다
             self.monthsChanged.emit()
             self.summaryChanged.emit()
 

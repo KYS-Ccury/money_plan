@@ -695,9 +695,16 @@ def test_locked_saving():
     assert p.capital_at(59) == 10_000_000
     assert p.net_at(12) == 10_000_000 - 200_000 * 12
 
-    # 만기에 한꺼번에 들어온다
-    assert p.capital_at(60) == 10_000_000 + 500_000 * 60
-    assert p.capital_at(72) == p.capital_at(60)           # 만기 뒤엔 그대로
+    # 만기에 한꺼번에 들어온다 — 보유 자금이 아니라 '일시 수입' 으로 들어와 요약에 드러난다
+    assert p.capital_at(60) == 10_000_000
+    assert p.once_income_at(59) == 0
+    assert p.once_income_at(60) == 500_000 * 60
+    assert p.once_income_at(72) == 500_000 * 60           # 만기 뒤엔 그대로
+    assert p.net_at(60) == 10_000_000 + 300_000 * 60      # 지원금만큼 는다
+    p.months = 60
+    assert p.summary().once_income == 500_000 * 60
+    assert p.planned_in_at(60) == 500_000 * 60
+    p.months = 12
 
     # 묶임을 풀면 예전처럼 쌓이는 대로 자본
     sv.locked = False

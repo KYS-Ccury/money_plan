@@ -410,7 +410,11 @@ ApplicationWindow {
                                     rotation: secHeader.collapsed ? -90 : 0
                                     Behavior on rotation { NumberAnimation { duration: Theme.fast } }
                                 }
-                                Text { text: secHeader.section; color: Theme.text; font.pixelSize: 13; font.bold: true }
+                                Text {
+                                    text: secHeader.section; color: Theme.text; font.pixelSize: 13; font.bold: true
+                                    Layout.maximumWidth: 150
+                                    elide: Text.ElideRight
+                                }
                                 Rectangle {
                                     width: cntText.implicitWidth + 12; height: 18; radius: 9
                                     color: Theme.accentSoft
@@ -541,23 +545,51 @@ ApplicationWindow {
                                 anchors.bottomMargin: rowItem.subText !== "" ? 14 : 0
                                 spacing: 8
                                 Text {
-                                    Layout.preferredWidth: 170
+                                    // 칸이 모자라면 이름이 먼저 줄어든다 (금액이 잘리면 쓸모가 없다)
+                                    Layout.fillWidth: true
+                                    Layout.maximumWidth: 170
+                                    Layout.minimumWidth: 90
                                     text: rowItem.name
                                     color: Theme.text; font.pixelSize: 14
                                     elide: Text.ElideRight
                                 }
                                 Rectangle {
-                                    Layout.preferredWidth: 104; height: 22; radius: 11
+                                    // 칩은 글자만큼만 (창이 좁아도 금액 칸을 덜 빼앗는다)
+                                    Layout.preferredWidth: Math.min(104, catText.implicitWidth + 18)
+                                    Layout.minimumWidth: 48
+                                    height: 22; radius: 11
                                     color: Theme.accentSoft
-                                    Text { anchors.centerIn: parent; text: rowItem.category; color: Theme.text; font.pixelSize: 11 }
+                                    clip: true
+                                    Text {
+                                        id: catText
+                                        anchors.centerIn: parent
+                                        width: Math.min(implicitWidth, parent.width - 8)
+                                        text: rowItem.category; color: Theme.text; font.pixelSize: 11
+                                        elide: Text.ElideRight
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
                                 }
-                                Text { text: rowItem.amountText; color: Theme.text; font.pixelSize: 14; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
-                                Text { text: rowItem.rateText; color: Theme.textDim; font.pixelSize: 13; Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight }
+                                Text {
+                                    text: rowItem.amountText; color: Theme.text; font.pixelSize: 14
+                                    Layout.preferredWidth: 120
+                                    Layout.minimumWidth: 104
+                                    horizontalAlignment: Text.AlignRight
+                                    elide: Text.ElideLeft          // 금액은 뒷자리가 중요하다
+                                }
+                                Text {
+                                    text: rowItem.rateText; color: Theme.textDim; font.pixelSize: 13
+                                    Layout.preferredWidth: 60
+                                    Layout.minimumWidth: 34
+                                    horizontalAlignment: Text.AlignRight
+                                    elide: Text.ElideRight
+                                }
                                 Text {
                                     text: rowItem.monthlyText
                                     font.pixelSize: 13
                                     Layout.preferredWidth: 150
+                                    Layout.minimumWidth: 80
                                     horizontalAlignment: Text.AlignRight
+                                    elide: Text.ElideLeft
                                     color: rowItem.monthlyKind === "income" ? Theme.green
                                          : rowItem.monthlyKind === "cost" ? Theme.red
                                          : rowItem.monthlyKind === "once" ? Theme.yellow : Theme.textDim

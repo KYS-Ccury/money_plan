@@ -16,6 +16,7 @@ ColumnLayout {
     property string suffix: ""           // "개월", "%" 등
     property bool money: false           // true 면 오른쪽 표시값을 1,234원 형식으로
     property int fieldWidth: 130
+    property alias inputField: field     // 테스트에서 입력칸을 직접 건드릴 때
     signal edited(real newValue)
 
     spacing: 2
@@ -50,6 +51,21 @@ ColumnLayout {
     }
     onValueChanged: sync()
     Component.onCompleted: field.text = fmtNum(value)
+
+    // 치는 동안에도 반영한다. 글자마다 바로 계산하면 "2 → 20 → 200" 처럼
+    // 중간값이 쏟아지므로 잠깐 멈출 때까지만 기다린다.
+    Timer {
+        id: liveTimer
+        interval: 350
+        onTriggered: root.commitText()
+    }
+    function commitText() {
+        liveTimer.stop()
+        var raw = field.text.replace(/,/g, "")
+        if (raw === "" || raw === ".") return
+        var v = parseFloat(raw)
+        if (!isNaN(v)) root.commit(v)
+    }
 
     RowLayout {
         Layout.fillWidth: true
@@ -111,6 +127,7 @@ ColumnLayout {
             font.pixelSize: 14
             // 정수 입력은 타이핑 중에도 콤마를 바로 넣어준다
             onTextEdited: {
+                liveTimer.restart()
                 if (root.decimals > 0) return
                 var raw = text.replace(/,/g, "")
                 if (raw === "") return
@@ -119,7 +136,7 @@ ColumnLayout {
                 var f = root.fmtNum(n)
                 if (f !== text) { text = f; cursorPosition = text.length }
             }
-            onEditingFinished: root.commit(parseFloat(text.replace(/,/g, "")))
+            onEditingFinished: root.commitText()          // 엔터·포커스 이동은 기다리지 않고 바로
             onActiveFocusChanged: if (!activeFocus) text = root.fmtNum(root.value)
             // 마우스 휠로도 조정
             WheelHandler {

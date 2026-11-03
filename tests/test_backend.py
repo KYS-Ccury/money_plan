@@ -971,3 +971,38 @@ def test_backend_locked_saving():
     # 묶임을 안 주는 예전 호출도 그대로 동작한다
     b.addItem("적금", 2, 100_000, 0, True, "", "")
     assert b.items.data(b.items.index(2, 0), b.items.LockedRole) is False
+
+
+def test_locked_saving_shows_in_summary():
+    """묶인 적금의 만기 수령액이 요약 어디에도 안 나오면 사라진 것처럼 보인다."""
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    b.addItem("현금", 0, 10_000_000, 0, True)
+    b.addItem("청년적금", 2, 200_000, 0, True, "2026-01-01", "2027-01-01",
+              "[]", 0, "", "", 0, 0, 300_000, True)
+
+    # 기간이 만기(12개월)를 품으면 '일시 수입' 으로 드러난다
+    assert b.capital == 10_000_000                    # 보유 자금에는 안 들어간다
+    assert b.onceIncome == 500_000 * 12
+    assert b.periodIncome == 500_000 * 12
+    assert b.net == 10_000_000 + 300_000 * 12
+    assert not b.pendingInflow["has"]                 # 기간 안이라 '들어올 돈' 은 아니다
+
+    # 기간이 만기 전이면 요약에는 안 나오고 목표 바의 '들어올 돈' 이 된다
+    b.months = 6
+    assert b.onceIncome == 0
+    assert [g["kind"] for g in b.pendingInflow["groups"]] == ["saving"]
+    assert b.pendingInflow["groups"][0]["total"] == 500_000 * 12
+
+
+def test_months_change_refreshes_item_text():
+    """목록의 'N개월 후 …' 는 기간을 따라가야 한다."""
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    b.addItem("적금", 2, 100_000, 0, True, "2026-01-01", "")
+    idx = b.items.index(0, 0)
+    assert "12개월 후" in b.items.data(idx, b.items.SubTextRole)
+
+    changed = []
+    b.items.dataChanged.connect(lambda tl, br, roles: changed.append(1))
+    b.months = 30
+    assert changed                                     # 목록에 다시 그리라고 알린다
+    assert "30개월 후" in b.items.data(b.items.index(0, 0), b.items.SubTextRole)
