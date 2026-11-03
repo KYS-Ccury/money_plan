@@ -411,3 +411,42 @@ def test_deposit_return():
     # 보증금이 아닌 일시 지출은 반환일이 없다
     exp = Item("이사비", Category.EXPENSE, 1_000_000, end_date="2028-04-01")
     assert not exp.returnable and exp.return_month(p.basis) is None
+
+
+def test_housing_types():
+    p = Plan(months=36, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 300_000_000))
+
+    # 전세: 보증금만, 만기에 반환
+    j = p.add(Item("전셋집", Category.DEPOSIT, 100_000_000, housing_type="jeonse",
+                   start_date="2026-04-01", end_date="2028-04-01"))
+    assert j.housing_label == "전세" and j.housing_rent() == 0 and j.returnable
+    assert p.monthly_cost_at(6) == 0
+    assert p.net_at(3) == 200_000_000 and p.net_at(27) == 300_000_000
+
+    # 반전세: 보증금 + 월세. 월세는 입주~만기 구간에만
+    j.housing_type, j.monthly = "banjeonse", 600_000
+    assert j.housing_rent() == 600_000
+    assert p.monthly_cost_at(2) == 0           # 입주 전
+    assert p.monthly_cost_at(3) == 600_000
+    assert p.monthly_cost_at(26) == 600_000
+    assert p.monthly_cost_at(27) == 0          # 만기 이후
+    assert p.net_at(27) == 300_000_000 - 600_000 * 24
+
+    # 매매: 돌려받지 않고 월세도 없다
+    j.housing_type = "buy"
+    assert j.is_purchase and not j.returnable and j.housing_rent() == 0
+    assert j.return_month(p.basis) is None     # 만기가 있어도 무시
+    assert p.net_at(27) == 200_000_000
+
+    # 형태를 안 주면 월세 유무로 정해진다
+    assert Item("a", Category.DEPOSIT, 1).housing_type == "jeonse"
+    assert Item("b", Category.DEPOSIT, 1, monthly=500_000).housing_type == "wolse"
+    # 주거가 아닌 분류는 형태·월세를 갖지 않는다
+    other = Item("c", Category.EXPENSE, 1, housing_type="buy", monthly=1)
+    assert other.housing_type == "" and other.monthly == 0
+
+    # 저장/불러오기, 예전 파일의 '보증금' 분류
+    assert Item.from_dict(j.to_dict()).housing_type == "buy"
+    old = Item.from_dict({"name": "옛날", "category": "보증금", "amount": 1_000})
+    assert old.category is Category.DEPOSIT and old.housing_type == "jeonse"

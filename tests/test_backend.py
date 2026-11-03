@@ -336,7 +336,7 @@ def test_backend_deposit_return():
     b.addItem("현금", 0, 100_000_000, 0, True)
     b.addItem("전세 보증금", 8, 80_000_000, 0, True, "2026-04-01", "2028-04-01")   # 8 = 보증금
     sub = b.items.data(b.items.index(1, 0), b.items.SubTextRole)
-    assert "3개월 뒤 지출" in sub and "2028-04 반환 (27개월 뒤)" in sub
+    assert "전세 · 2026-04 입주" in sub and "2028-04 반환 (27개월 뒤)" in sub
 
     assert b.netAt(3) == 20_000_000 and b.netAt(26) == 20_000_000
     assert b.netAt(27) == 100_000_000
@@ -344,3 +344,31 @@ def test_backend_deposit_return():
 
     b.updateItem(1, "전세 보증금", 8, 80_000_000, 0, True, "2026-04-01", "")
     assert b.netAt(27) == 20_000_000 and b.onceCost == 80_000_000
+
+
+def test_backend_housing():
+    b = Backend(Plan(months=36, target=0, start_date="2026-01-01"))
+    assert [h["value"] for h in b.housingTypes] == ["jeonse", "banjeonse", "wolse", "buy"]
+    assert b.housingTypes[3]["label"] == "매매"
+    assert b.categoryInfo(8)["isHousing"] and not b.categoryInfo(9)["isHousing"]
+
+    hi = b.housingInfo("buy")
+    assert hi["amountLabel"] == "매매가" and not hi["returnable"] and not hi["usesRent"]
+    assert b.housingInfo("banjeonse")["usesRent"] and b.housingInfo("")["label"] == "전세"
+
+    b.addItem("현금", 0, 300_000_000, 0, True)
+    # 8 = 주거, 반전세 보증금 1억 + 월세 60만, 2026-04 입주 ~ 2028-04 만기
+    b.addItem("신혼집", 8, 100_000_000, 0, True, "2026-04-01", "2028-04-01", "[]", 0, "", "banjeonse", 600_000)
+    idx = b.items.index(1, 0)
+    assert b.items.data(idx, b.items.HousingTypeRole) == "banjeonse"
+    assert b.items.data(idx, b.items.MonthlyRole) == 600_000
+    sub = b.items.data(idx, b.items.SubTextRole)
+    assert "반전세 · 2026-04 입주" in sub and "월세 600,000원" in sub and "2028-04 반환" in sub
+    assert b.netAt(3) == 200_000_000 and b.netAt(27) == 300_000_000 - 600_000 * 24
+
+    # 매매로 바꾸면 월세가 사라지고 돌려받지 않는다
+    b.updateItem(1, "신혼집", 8, 100_000_000, 0, True, "2026-04-01", "2028-04-01", "[]", 0, "", "buy", 600_000)
+    idx = b.items.index(1, 0)
+    assert b.items.data(idx, b.items.MonthlyRole) == 600_000      # 값은 남아 있지만
+    assert b.netAt(6) == 200_000_000                               # 월세로 나가지 않고
+    assert b.netAt(27) == 200_000_000                              # 돌려받지도 않는다

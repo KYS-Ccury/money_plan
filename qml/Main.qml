@@ -24,7 +24,8 @@ ApplicationWindow {
         itemDialog.openForEdit(row, m.data(idx, Qt.UserRole + 1), m.data(idx, Qt.UserRole + 3),
                                m.data(idx, Qt.UserRole + 4), m.data(idx, Qt.UserRole + 6), m.data(idx, Qt.UserRole + 10),
                                m.data(idx, Qt.UserRole + 12), m.data(idx, Qt.UserRole + 13), m.data(idx, Qt.UserRole + 14),
-                               m.data(idx, Qt.UserRole + 16), m.data(idx, Qt.UserRole + 18))
+                               m.data(idx, Qt.UserRole + 16), m.data(idx, Qt.UserRole + 18),
+                               m.data(idx, Qt.UserRole + 19), m.data(idx, Qt.UserRole + 20))
     }
 
     ItemDialog { id: itemDialog }
@@ -410,6 +411,8 @@ ApplicationWindow {
                             required property string subText
                             required property real monthlyRepayRate
                             required property string repayMethod
+                            required property string housingType
+                            required property real monthly
                             required property int sourceRow
 
                             width: ListView.view.width - 14
@@ -433,7 +436,8 @@ ApplicationWindow {
                                 onDoubleTapped: itemDialog.openForEdit(rowItem.sourceRow, rowItem.name, rowItem.categoryIndex,
                                                                        rowItem.amount, rowItem.rate, rowItem.includePrincipal,
                                                                        rowItem.startDate, rowItem.endDate, rowItem.repayments,
-                                                                       rowItem.monthlyRepayRate, rowItem.repayMethod)
+                                                                       rowItem.monthlyRepayRate, rowItem.repayMethod,
+                                                                       rowItem.housingType, rowItem.monthly)
                             }
 
                             RowLayout {

@@ -123,7 +123,7 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
         info = CATEGORY_INFO[it.category]
         reps = ", ".join(f"{x['date']} {x['amount']:,.0f}원" for x in it.repayments)
         ws.cell(row=r, column=1, value=it.name)
-        ws.cell(row=r, column=2, value=it.category.value)
+        ws.cell(row=r, column=2, value=f"{it.category.value} ({it.housing_label})" if it.is_housing else it.category.value)
         ws.cell(row=r, column=3, value=it.amount).number_format = WON
         ws.cell(row=r, column=4, value=it.rate if info["uses_rate"] else None)
         is_loan = it.category == Category.LOAN

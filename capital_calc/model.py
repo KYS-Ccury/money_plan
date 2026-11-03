@@ -31,7 +31,7 @@ class Category(str, Enum):
     RENT = "월세"               # 월 지출 (적용 기간)
     MAINT = "관리비"            # 월 지출 (적용 기간)
     FIXED = "고정 지출"         # 월 지출 (적용 기간) — 보험료·통신비·식비처럼 매달 나가는 돈
-    DEPOSIT = "보증금"          # 일시 지출 (지출일 지정 가능)
+    DEPOSIT = "주거"            # 전세·반전세·월세·매매. 보증금/매매가는 일시 지출, 월세는 월 지출
     EXPENSE = "일시 지출"       # 일시 지출 (지출일 지정 가능)
 
 
@@ -40,6 +40,30 @@ CATEGORY_ALIASES: dict[str, str] = {
     "기타 지출(일시)": Category.EXPENSE.value,
     "기타 수입(월)": Category.INCOME.value,
     "고정 지출(월)": Category.FIXED.value,
+    "보증금": Category.DEPOSIT.value,
+}
+
+# 주거 형태
+HOUSING_TYPE_LIST: list[tuple[str, str]] = [
+    ("jeonse", "전세"),        # 보증금만, 만기에 반환
+    ("banjeonse", "반전세"),   # 보증금 + 월세, 만기에 반환
+    ("wolse", "월세"),         # 보증금(소액) + 월세, 만기에 반환
+    ("buy", "매매"),           # 매매가. 돌려받는 돈이 아니라 집으로 남는다
+]
+HOUSING_TYPES: dict[str, str] = dict(HOUSING_TYPE_LIST)
+HOUSING_WITH_RENT = ("banjeonse", "wolse")   # 월세를 함께 내는 형태
+HOUSING_BUY = "buy"
+
+# 주거 형태별 입력 안내
+HOUSING_INFO: dict[str, dict] = {
+    "jeonse": {"amount_label": "보증금", "uses_rent": False, "returnable": True,
+               "hint": "보증금만 내고 월세가 없습니다. 만기에 보증금을 돌려받습니다"},
+    "banjeonse": {"amount_label": "보증금", "uses_rent": True, "returnable": True,
+                  "hint": "보증금과 월세를 함께 냅니다. 만기에 보증금을 돌려받습니다"},
+    "wolse": {"amount_label": "보증금", "uses_rent": True, "returnable": True,
+              "hint": "보증금은 적고 월세가 큽니다. 만기에 보증금을 돌려받습니다"},
+    "buy": {"amount_label": "매매가", "uses_rent": False, "returnable": False,
+            "hint": "집값이 그대로 나가고 돌려받지 않습니다. 취득세·중개수수료는 일시 지출로 따로 넣으세요"},
 }
 
 # 분류 묶음 (화면에서 쓰는 큰 구분)
@@ -78,8 +102,8 @@ CATEGORY_INFO: dict[Category, dict] = {
                      "date_mode": "range", "flow": "cost",
                      "hint": "보험료·통신비·식비·교통비처럼 적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
     Category.DEPOSIT: {"group": GROUP_COST, "amount_label": "보증금", "uses_rate": False,
-                       "date_mode": "once", "flow": "cost", "returnable": True,
-                       "hint": "전세·월세 보증금. 지출일을 비우면 기준일에 나가고, 반환일을 넣으면 그 달에 돌려받습니다"},
+                       "date_mode": "once", "flow": "cost", "returnable": True, "housing": True,
+                       "hint": "전세·반전세·월세·매매 중에서 고릅니다. 입주일에 보증금(매매가)이 나가고, 만기에 돌려받습니다"},
     Category.EXPENSE: {"group": GROUP_COST, "amount_label": "지출액", "uses_rate": False,
                        "date_mode": "once", "flow": "cost",
                        "hint": "이사비·수수료처럼 한 번만 나가는 돈. 지출일을 비우면 기준일에 나갑니다"},
@@ -149,10 +173,17 @@ class Item:
     repayments: list[dict] = field(default_factory=list)  # 중도 상환 [{"date": "YYYY-MM-DD", "amount": 원}]
     monthly_repay_rate: float = 0.0  # 매달 원금의 몇 % 씩 정기 상환 ("rate" 방식에서만)
     repay_method: str = ""           # 상환 방식. "" 이면 자동 (상환율이 있으면 rate, 없으면 bullet)
+    housing_type: str = ""           # 주거 형태 (전세/반전세/월세/매매). 주거 항목에서만 사용
+    monthly: float = 0.0             # 주거의 월세 (반전세·월세에서만)
 
     def __post_init__(self) -> None:
         if self.repay_method not in REPAY_METHODS:
             self.repay_method = "rate" if self.monthly_repay_rate > 0 else "bullet"
+        if self.category == Category.DEPOSIT:
+            if self.housing_type not in HOUSING_TYPES:
+                self.housing_type = "wolse" if self.monthly > 0 else "jeonse"
+        else:
+            self.housing_type, self.monthly = "", 0.0
 
     # ---- 기본 파생 값 ----
     def monthly_interest(self) -> float:
@@ -177,9 +208,35 @@ class Item:
         return CATEGORY_INFO[self.category]["group"]
 
     @property
+    def is_housing(self) -> bool:
+        return self.category == Category.DEPOSIT
+
+    @property
+    def is_purchase(self) -> bool:
+        """집을 사는 것인가 (매매)."""
+        return self.is_housing and self.housing_type == HOUSING_BUY
+
+    @property
+    def housing_label(self) -> str:
+        return HOUSING_TYPES.get(self.housing_type, "")
+
+    def housing_rent(self) -> float:
+        """주거 항목의 월세. 전세·매매면 0."""
+        if self.is_housing and self.housing_type in HOUSING_WITH_RENT:
+            return max(0.0, self.monthly)
+        return 0.0
+
+    def housing_active(self, m: int, basis: date) -> bool:
+        """입주 후 만기 전인가 (월세가 나가는 구간)."""
+        if m < self.once_month(basis):
+            return False
+        r = self.return_month(basis)
+        return r is None or m < r
+
+    @property
     def returnable(self) -> bool:
-        """돌려받을 수 있는 돈인가 (보증금)."""
-        return bool(CATEGORY_INFO[self.category].get("returnable"))
+        """돌려받을 수 있는 돈인가 (매매는 아니다)."""
+        return bool(CATEGORY_INFO[self.category].get("returnable")) and not self.is_purchase
 
     def return_month(self, basis: date) -> int | None:
         """보증금을 돌려받는 개월. 반환일이 없으면 None(계속 묶여 있음)."""
@@ -381,6 +438,9 @@ class Item:
         return c if m >= self.once_month(basis) else 0.0
 
     def monthly_cost_at(self, m: int, basis: date) -> float:
+        if self.is_housing:
+            rent = self.housing_rent()
+            return rent if rent > 0 and self.housing_active(m, basis) else 0.0
         if self.category in MONTHLY_COST_CATEGORIES:
             return self.amount if self.is_active(m, basis) else 0.0
         if self.category == Category.LOAN:
@@ -441,6 +501,8 @@ class Item:
             ],
             monthly_repay_rate=float(d.get("monthly_repay_rate", 0.0) or 0.0),
             repay_method=str(d.get("repay_method") or ""),
+            housing_type=str(d.get("housing_type") or ""),
+            monthly=float(d.get("monthly", 0.0) or 0.0),
         )
 
 
@@ -728,8 +790,8 @@ def sample_plan() -> Plan:
     p = Plan(months=12, target=30_000_000)
     p.add(Item("보유 현금", Category.CASH, 20_000_000))
     p.add(Item("적금 (3.5%)", Category.BANK, 10_000_000, rate=3.5))
-    p.add(Item("전세/월세 보증금", Category.DEPOSIT, 10_000_000))
-    p.add(Item("월세", Category.RENT, 500_000))
+    p.add(Item("전셋집", Category.DEPOSIT, 10_000_000, housing_type="banjeonse", monthly=500_000,
+               end_date=add_months(p.basis, 24).isoformat()))
     p.add(Item("관리비", Category.MAINT, 100_000))
     p.add(Item("생활비 (식비·통신)", Category.FIXED, 800_000))
     p.add(Item("신용대출 (5%)", Category.LOAN, 5_000_000, rate=5.0, start_date=p.start_date))

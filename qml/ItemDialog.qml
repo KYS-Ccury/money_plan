@@ -15,6 +15,10 @@ Popup {
     property string endDate: ""
     property real monthlyRepayRate: 0
     property string repayMethod: "bullet"
+    property string housingType: "jeonse"   // 전세 / 반전세 / 월세 / 매매
+    property real monthly: 0                // 주거의 월세
+    // 주거 형태별 입력 안내 (금액 이름, 월세 사용 여부, 반환 가능 여부)
+    readonly property var houseInfo: backend.housingInfo(housingType)
     // 대출 상환 미리보기 (원금·이율·방식·기간이 바뀌면 다시 계산)
     readonly property var loanInfo: backend.loanPreview(amount, rate, repayMethod, startDate, endDate, monthlyRepayRate)
 
@@ -70,14 +74,21 @@ Popup {
         principalCheck.checked = true
         monthlyRepayRate = 0
         setRepayMethod("bullet")
+        setHousingType("jeonse")
+        monthly = 0
         repModel.clear()
         open(); nameField.forceActiveFocus()
+    }
+    function setHousingType(v) {
+        dlg.housingType = v || "jeonse"
+        houseBox.currentIndex = Math.max(0, houseBox.indexOfValue(dlg.housingType))
     }
     function setRepayMethod(v) {
         dlg.repayMethod = v || "bullet"
         methodBox.currentIndex = Math.max(0, methodBox.indexOfValue(dlg.repayMethod))
     }
-    function openForEdit(row, name, catIndex, amount, rate, includePrincipal, startDate, endDate, repayments, monthlyRepayRate, repayMethod) {
+    function openForEdit(row, name, catIndex, amount, rate, includePrincipal, startDate, endDate, repayments,
+                         monthlyRepayRate, repayMethod, housingType, monthly) {
         editRow = row
         nameField.text = name
         catBox.currentIndex = catIndex
@@ -89,26 +100,31 @@ Popup {
         principalCheck.checked = includePrincipal
         dlg.monthlyRepayRate = monthlyRepayRate || 0
         setRepayMethod(repayMethod)
+        setHousingType(housingType)
+        dlg.monthly = monthly || 0
         loadRepayments(repayments)
         open(); nameField.forceActiveFocus()
     }
     function datesValid() {
         if (dlg.info.dateMode === "range" && !(startField.valid && endField.valid)) return false
         if (dlg.info.dateMode === "once" && !onceField.valid) return false
-        if (dlg.info.returnable && !returnField.valid) return false
+        if (returnField.visible && !returnField.valid) return false
         if (dlg.info.isLoan && dlg.loanInfo.needsEnd) return false      // 원금·원리금 균등은 만기 필요
         return true
     }
     function submit() {
         if (!datesValid()) return
         var sd = dlg.info.dateMode === "range" ? startDate : (dlg.info.dateMode === "once" ? onceDate : "")
-        var ed = (dlg.info.dateMode === "range" || dlg.info.returnable) ? endDate : ""
+        var returnable = dlg.info.isHousing ? dlg.houseInfo.returnable : dlg.info.returnable
+        var ed = (dlg.info.dateMode === "range" || returnable) ? endDate : ""
+        var ht = dlg.info.isHousing ? dlg.housingType : ""
+        var mo = (dlg.info.isHousing && dlg.houseInfo.usesRent) ? dlg.monthly : 0
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
         if (editRow < 0)
-            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method)
+            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo)
         else
-            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method)
+            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo)
         close()
     }
 
@@ -150,14 +166,47 @@ Popup {
                 Layout.fillWidth: true
             }
 
+            // ── 주거 형태 (전세 / 반전세 / 월세 / 매매) ──
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                visible: dlg.info.isHousing
+
+                Text { text: "주거 형태"; color: Theme.text; font.pixelSize: 13; font.bold: true }
+                ComboBox {
+                    id: houseBox
+                    objectName: "housingBox"
+                    Layout.fillWidth: true
+                    model: backend.housingTypes
+                    textRole: "label"
+                    valueRole: "value"
+                    onActivated: dlg.housingType = houseBox.currentValue
+                }
+                Text {
+                    text: dlg.houseInfo.hint
+                    color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true
+                }
+            }
+
             SliderInput {
                 objectName: "amountInput"
-                label: dlg.info.amountLabel
+                label: dlg.info.isHousing ? dlg.houseInfo.amountLabel : dlg.info.amountLabel
                 value: dlg.amount
                 from: 0; to: 1000000000; stepSize: 100000
                 money: true
                 suffix: "원"
                 onEdited: (v) => dlg.amount = v
+            }
+
+            SliderInput {
+                objectName: "rentInput"
+                visible: dlg.info.isHousing && dlg.houseInfo.usesRent
+                label: "월세"
+                value: dlg.monthly
+                from: 0; to: 5000000; stepSize: 10000
+                money: true
+                suffix: "원"
+                onEdited: (v) => dlg.monthly = v
             }
 
             // ── 지출/수입 시점 (보증금 / 일시 지출 / 일시 수입) ──
@@ -166,12 +215,16 @@ Popup {
                 spacing: 6
                 visible: dlg.info.dateMode === "once"
 
-                Text { text: dlg.info.onceWord + " 시점"; color: Theme.text; font.pixelSize: 13; font.bold: true }
+                Text {
+                    text: dlg.info.isHousing ? "계약 기간" : dlg.info.onceWord + " 시점"
+                    color: Theme.text; font.pixelSize: 13; font.bold: true
+                }
                 DateField {
                     id: onceField
                     Layout.fillWidth: true
-                    label: dlg.info.onceWord + "일"
-                    placeholder: dlg.info.onceWord + "일 (비우면 기준일)"
+                    label: dlg.info.isHousing ? (dlg.housingType === "buy" ? "잔금일" : "입주일") : dlg.info.onceWord + "일"
+                    placeholder: (dlg.info.isHousing ? (dlg.housingType === "buy" ? "잔금일" : "입주일")
+                                                     : dlg.info.onceWord + "일") + " (비우면 기준일)"
                     value: dlg.onceDate
                     optional: true
                     onEdited: (v) => dlg.onceDate = v
@@ -179,19 +232,20 @@ Popup {
                 DateField {
                     id: returnField
                     Layout.fillWidth: true
-                    visible: dlg.info.returnable
-                    label: "반환일"
-                    placeholder: "반환일 (비우면 계속 묶임)"
+                    visible: dlg.info.isHousing ? dlg.houseInfo.returnable : dlg.info.returnable
+                    label: dlg.info.isHousing ? "계약 만기" : "반환일"
+                    placeholder: (dlg.info.isHousing ? "계약 만기" : "반환일") + " (비우면 계속)"
                     value: dlg.endDate
                     optional: true
                     onEdited: (v) => dlg.endDate = v
                 }
                 Text {
-                    visible: dlg.info.returnable
+                    visible: returnField.visible
                     text: "계약이 끝나 보증금을 돌려받는 달입니다. 그 달부터 순 자본에 다시 들어옵니다."
                     color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true
                 }
                 Text {
+                    visible: !dlg.info.isHousing
                     text: dlg.info.flow === "income"
                           ? "비우면 기준일 " + backend.basisDate + " 에 들어옵니다. 날짜를 넣으면 그 달에 순 자본이 늘어납니다."
                           : "비우면 기준일 " + backend.basisDate + " 에 나갑니다. 날짜를 넣으면 그 달에 순 자본이 줄어듭니다."
