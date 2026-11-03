@@ -742,3 +742,45 @@ def test_locked_saving():
     sv.locked = True
     assert Item.from_dict(sv.to_dict()).locked is True
     assert Item.from_dict({"name": "옛날", "category": "적금/저축(월)", "amount": 1}).locked is False
+
+
+def test_summary_monthly_reflects_period():
+    """기간 중에 시작하는 이자·월세는 0개월 시점에는 안 보인다. 요약은 기간 전체를 반영해야 한다."""
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("급여", Category.INCOME, 2_000_000))
+    p.add(Item("생활비", Category.FIXED, 1_000_000))
+    # 6개월 뒤에 시작하는 대출 — 월 이자 100,000
+    p.add(Item("대출", Category.LOAN, 12_000_000, rate=10.0, start_date="2026-07-01"))
+
+    s = p.summary()
+    assert s.monthly_cost == 1_000_000                  # 지금은 이자가 없다
+    assert s.last_cost == 1_100_000                     # 마지막 달에는 이자가 붙는다
+    assert s.avg_cost == (1_000_000 * 12 + 100_000 * 6) / 12
+    assert s.avg_income == 2_000_000 and s.last_income == 2_000_000
+    assert s.monthly_net == 1_000_000                   # 0개월 기준
+    assert s.avg_net == s.avg_income - s.avg_cost
+    assert s.last_net == 900_000
+    assert s.monthly_varies
+
+    # 필요 자금과 평균이 서로 맞는다
+    assert abs(s.required - s.avg_cost * 12) < 1e-6
+
+    # 기간을 대출 시작 전으로 줄이면 평균도 0개월과 같아진다
+    p.months = 6
+    s = p.summary()
+    assert s.avg_cost == 1_000_000 and s.last_cost == 1_000_000
+    assert not s.monthly_varies
+
+    # 기간이 0이면 이번 달 하나만 본다
+    p.months = 0
+    s = p.summary()
+    assert s.avg_cost == s.monthly_cost == 1_000_000
+    assert s.required == 0 and s.period_income == 0
+    assert not s.monthly_varies
+
+    # 연 상승률도 평균에 반영된다
+    p.months = 24
+    p.items[1].growth = 10.0                            # 생활비가 1년마다 10% 오른다
+    s = p.summary()
+    assert s.last_cost > s.monthly_cost and s.avg_cost > 1_000_000
+    assert s.monthly_varies

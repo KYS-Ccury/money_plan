@@ -672,9 +672,30 @@ ApplicationWindow {
                             label: "일시 수입"; value: backend.onceIncome; prefix: "+"; valueColor: Theme.green
                             visible: backend.onceIncome > 0
                         }
-                        StatRow { label: "월 지출"; value: backend.monthlyCost; prefix: "-"; valueColor: Theme.red }
-                        StatRow { label: "월 수입"; value: backend.monthlyIncome; prefix: "+"; valueColor: Theme.green }
-                        StatRow { label: "월 순수입"; value: backend.monthlyNet; valueColor: backend.monthlyNet >= 0 ? Theme.green : Theme.red }
+                        // 월 수지는 기간 전체를 반영한다 (기간 중에 시작하는 이자·월세도 센다)
+                        StatRow {
+                            label: backend.monthlyVaries ? "월 지출 (평균)" : "월 지출"
+                            value: backend.avgMonthlyCost; prefix: "-"; valueColor: Theme.red
+                        }
+                        StatRow {
+                            label: backend.monthlyVaries ? "월 수입 (평균)" : "월 수입"
+                            value: backend.avgMonthlyIncome; prefix: "+"; valueColor: Theme.green
+                        }
+                        StatRow {
+                            label: backend.monthlyVaries ? "월 순수입 (평균)" : "월 순수입"
+                            value: backend.avgMonthlyNet
+                            valueColor: backend.avgMonthlyNet >= 0 ? Theme.green : Theme.red
+                        }
+                        // 기간 중에 달라지면 시작과 끝을 같이 보여 준다
+                        Text {
+                            visible: backend.monthlyVaries && backend.months > 0
+                            text: "지금 " + (backend.monthlyNet >= 0 ? "+" : "-") + backend.won(Math.abs(backend.monthlyNet))
+                                  + "  →  " + backend.months + "개월째 "
+                                  + (backend.lastMonthlyNet >= 0 ? "+" : "-") + backend.won(Math.abs(backend.lastMonthlyNet))
+                            color: Theme.textDim; font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true; Layout.preferredWidth: 1
+                        }
                         Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder; Layout.topMargin: 4; Layout.bottomMargin: 4 }
                         StatRow { label: backend.months + "개월 필요 자금"; value: backend.required; prefix: "-"; valueColor: Theme.red }
                         StatRow { label: backend.months + "개월 수입"; value: backend.periodIncome; prefix: "+"; valueColor: Theme.green }

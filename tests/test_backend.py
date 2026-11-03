@@ -1006,3 +1006,28 @@ def test_months_change_refreshes_item_text():
     b.months = 30
     assert changed                                     # 목록에 다시 그리라고 알린다
     assert "30개월 후" in b.items.data(b.items.index(0, 0), b.items.SubTextRole)
+
+
+def test_backend_average_monthly():
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    b.addItem("급여", 4, 2_000_000, 0, True)
+    b.addItem("생활비", 8, 1_000_000, 0, True)
+    assert not b.monthlyVaries
+    assert b.avgMonthlyCost == b.monthlyCost == 1_000_000
+    assert b.avgMonthlyNet == b.monthlyNet == 1_000_000
+
+    # 3 = 대출/이자, 6개월 뒤 시작 (월 이자 100,000)
+    b.addItem("대출", 3, 12_000_000, 10.0, True, "2026-07-01", "")
+    assert b.monthlyVaries
+    assert b.monthlyCost == 1_000_000                   # 지금
+    assert b.lastMonthlyCost == 1_100_000               # 마지막 달
+    assert b.avgMonthlyCost == (1_000_000 * 12 + 100_000 * 6) / 12
+    assert b.lastMonthlyNet == 900_000
+    assert b.avgMonthlyNet == b.avgMonthlyIncome - b.avgMonthlyCost
+    assert abs(b.required - b.avgMonthlyCost * 12) < 1e-6
+
+    # 기간을 바꾸면 평균도 따라간다
+    b.months = 6
+    assert not b.monthlyVaries and b.avgMonthlyCost == 1_000_000
+    b.months = 24
+    assert b.monthlyVaries and b.avgMonthlyCost > 1_000_000

@@ -781,6 +781,36 @@ class Backend(QObject):
     def monthlyNet(self) -> float:
         return self._s().monthly_net
 
+    # ---- 기간을 반영한 월 수지 (기간 중에 시작하는 이자·월세까지 센다) ----
+    @Property(float, notify=summaryChanged)
+    def avgMonthlyCost(self) -> float:
+        return self._s().avg_cost
+
+    @Property(float, notify=summaryChanged)
+    def avgMonthlyIncome(self) -> float:
+        return self._s().avg_income
+
+    @Property(float, notify=summaryChanged)
+    def avgMonthlyNet(self) -> float:
+        return self._s().avg_net
+
+    @Property(float, notify=summaryChanged)
+    def lastMonthlyCost(self) -> float:
+        return self._s().last_cost
+
+    @Property(float, notify=summaryChanged)
+    def lastMonthlyIncome(self) -> float:
+        return self._s().last_income
+
+    @Property(float, notify=summaryChanged)
+    def lastMonthlyNet(self) -> float:
+        return self._s().last_net
+
+    @Property(bool, notify=summaryChanged)
+    def monthlyVaries(self) -> bool:
+        """기간 중에 월 수지가 달라지는가 (달라지면 '지금 → 마지막 달' 을 같이 보여 준다)."""
+        return self._s().monthly_varies
+
     @Property(float, notify=summaryChanged)
     def required(self) -> float:
         return self._s().required

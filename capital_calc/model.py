@@ -631,11 +631,32 @@ class Summary:
     monthly_income: float   # 0개월 시점 월 수입
     required: float         # 기간 동안 필요한 총 자금 = 일시 지출 + 월 지출 합
     period_income: float    # 기간 동안의 수입 합 = 일시 수입 + 월 수입 합
-    _net_at: callable = field(repr=False, compare=False)
+    avg_cost: float = 0.0       # 기간 평균 월 지출 (기간 중에 시작하는 이자·월세까지 반영)
+    avg_income: float = 0.0     # 기간 평균 월 수입
+    last_cost: float = 0.0      # 기간 마지막 달의 월 지출
+    last_income: float = 0.0    # 기간 마지막 달의 월 수입
+    _net_at: callable = field(default=None, repr=False, compare=False)
 
     @property
     def monthly_net(self) -> float:
+        """0개월 시점의 월 순수입."""
         return self.monthly_income - self.monthly_cost
+
+    @property
+    def avg_net(self) -> float:
+        """기간 평균 월 순수입."""
+        return self.avg_income - self.avg_cost
+
+    @property
+    def last_net(self) -> float:
+        """기간 마지막 달의 월 순수입."""
+        return self.last_income - self.last_cost
+
+    @property
+    def monthly_varies(self) -> bool:
+        """기간 중에 월 지출·수입이 달라지는가 (이자가 중간에 시작하는 등)."""
+        return (abs(self.last_cost - self.monthly_cost) > 0.5
+                or abs(self.last_income - self.monthly_income) > 0.5)
 
     def net_at(self, month: int) -> float:
         """특정 개월 시점의 순 자본."""
@@ -833,16 +854,23 @@ class Plan:
 
     def summary(self) -> Summary:
         n = max(0, self.months)
+        k = n if n > 0 else 1                       # 기간이 0이면 이번 달 하나만 본다
+        costs = [self.monthly_cost_at(m) for m in range(k)]
+        incomes = [self.monthly_income_at(m) for m in range(k)]
         return Summary(
             months=n,
             target=self.target,
             capital=self.capital_at(0),
             once_cost=self.once_cost_at(n),
             once_income=self.once_income_at(n),
-            monthly_cost=self.monthly_cost_at(0),
-            monthly_income=self.monthly_income_at(0),
-            required=self.once_cost_at(n) + sum(self.monthly_cost_at(k) for k in range(n)),
-            period_income=self.once_income_at(n) + sum(self.monthly_income_at(k) for k in range(n)),
+            monthly_cost=costs[0],
+            monthly_income=incomes[0],
+            required=self.once_cost_at(n) + sum(costs[:n]),
+            period_income=self.once_income_at(n) + sum(incomes[:n]),
+            avg_cost=sum(costs) / k,
+            avg_income=sum(incomes) / k,
+            last_cost=costs[-1],
+            last_income=incomes[-1],
             _net_at=self.net_at,
         )
 
