@@ -61,7 +61,7 @@ Popup {
     function openForAdd() {
         editRow = -1
         nameField.text = ""
-        catBox.currentIndex = 6   // 현금/자산
+        catBox.currentIndex = 0   // 현금/자산
         amount = 0
         rate = 0
         startDate = backend.basisDate

@@ -18,49 +18,70 @@ from pathlib import Path
 
 
 class Category(str, Enum):
-    DEPOSIT = "보증금"          # 일시 지출 (지출일 지정 가능)
+    """분류. 나열 순서가 곧 화면 순서다 — 자본 → 수입 → 지출, 각 묶음 안에서 월 → 일시."""
+
+    # ── 자본 (가지고 있는 것) ──
+    CASH = "현금/자산"          # 자본
+    BANK = "은행 예금"          # 원금은 자본, 이자는 월 수입
+    LOAN = "대출/이자"          # 원금은 자본(대출 기간 동안), 이자는 월 지출(대출 기간 동안)
+    # ── 수입 (들어오는 것) ──
+    INCOME = "월 수입"          # 월 수입 (적용 기간)
+    INCOME_ONCE = "일시 수입"   # 일시 수입 (수입일 지정 가능)
+    # ── 지출 (나가는 것) ──
     RENT = "월세"               # 월 지출 (적용 기간)
     MAINT = "관리비"            # 월 지출 (적용 기간)
-    FIXED = "고정 지출(월)"     # 월 지출 (적용 기간) — 보험료·통신비·식비처럼 매달 나가는 돈
-    LOAN = "대출/이자"          # 원금은 자본(대출 기간 동안), 이자는 월 지출(대출 기간 동안)
-    BANK = "은행 예금"          # 원금은 자본, 이자는 월 수입
-    CASH = "현금/자산"          # 자본
+    FIXED = "고정 지출"         # 월 지출 (적용 기간) — 보험료·통신비·식비처럼 매달 나가는 돈
+    DEPOSIT = "보증금"          # 일시 지출 (지출일 지정 가능)
     EXPENSE = "일시 지출"       # 일시 지출 (지출일 지정 가능)
-    INCOME = "기타 수입(월)"    # 월 수입 (적용 기간)
-    INCOME_ONCE = "일시 수입"   # 일시 수입 (수입일 지정 가능)
 
 
-# 예전 저장 파일의 분류 이름 → 현재 이름
+# 예전 저장 파일의 분류 이름 → 현재 이름 (불러올 때 자동 변환)
 CATEGORY_ALIASES: dict[str, str] = {
     "기타 지출(일시)": Category.EXPENSE.value,
+    "기타 수입(월)": Category.INCOME.value,
+    "고정 지출(월)": Category.FIXED.value,
 }
+
+# 분류 묶음 (화면에서 쓰는 큰 구분)
+GROUP_CAPITAL, GROUP_INCOME, GROUP_COST = "자본", "수입", "지출"
 
 # 분류별 특성
 #   amount_label : 금액 입력칸 이름
 #   uses_rate    : 연이율을 쓰는가
 #   date_mode    : ""(날짜 없음) | "range"(시작일~종료일) | "once"(하루에 끝나는 돈)
 #   flow         : "cost"(나가는 돈) | "income"(들어오는 돈) | ""(자본·대출처럼 둘 다 아닌 것)
+#   group        : 자본 | 수입 | 지출
 CATEGORY_INFO: dict[Category, dict] = {
-    Category.DEPOSIT: {"amount_label": "보증금", "uses_rate": False, "date_mode": "once", "flow": "cost",
-                       "hint": "한 번만 나가는 돈. 지출일을 비우면 기준일에 나갑니다"},
-    Category.RENT: {"amount_label": "월세", "uses_rate": False, "date_mode": "range", "flow": "cost",
-                    "hint": "적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
-    Category.MAINT: {"amount_label": "월 관리비", "uses_rate": False, "date_mode": "range", "flow": "cost",
-                     "hint": "적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
-    Category.FIXED: {"amount_label": "월 고정 지출", "uses_rate": False, "date_mode": "range", "flow": "cost",
-                     "hint": "보험료·통신비·식비·교통비처럼 적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
-    Category.LOAN: {"amount_label": "대출 원금", "uses_rate": True, "date_mode": "range", "flow": "",
-                    "hint": "대출 기간 동안 원금은 자본에 포함, 이자는 잔액 기준 매달 지출. 정기·중도 상환으로 잔액을 줄일 수 있고 종료일에 잔액 상환"},
-    Category.BANK: {"amount_label": "예금액", "uses_rate": True, "date_mode": "", "flow": "",
+    Category.CASH: {"group": GROUP_CAPITAL, "amount_label": "보유 금액", "uses_rate": False,
+                    "date_mode": "", "flow": "",
+                    "hint": "지금 가진 돈. 통장 잔고·현금처럼 이자가 붙지 않는 자본"},
+    Category.BANK: {"group": GROUP_CAPITAL, "amount_label": "예금액", "uses_rate": True,
+                    "date_mode": "", "flow": "",
                     "hint": "원금은 자본에 포함, 이자는 매달 수입"},
-    Category.CASH: {"amount_label": "보유 금액", "uses_rate": False, "date_mode": "", "flow": "",
-                    "hint": "현재 가진 자본"},
-    Category.EXPENSE: {"amount_label": "지출액", "uses_rate": False, "date_mode": "once", "flow": "cost",
-                       "hint": "이사비·수수료처럼 한 번만 나가는 돈. 지출일을 비우면 기준일에 나갑니다"},
-    Category.INCOME: {"amount_label": "월 수입", "uses_rate": False, "date_mode": "range", "flow": "income",
+    Category.LOAN: {"group": GROUP_CAPITAL, "amount_label": "대출 원금", "uses_rate": True,
+                    "date_mode": "range", "flow": "",
+                    "hint": "대출 기간 동안 원금은 자본에 포함, 이자는 잔액 기준 매달 지출. 정기·중도 상환으로 잔액을 줄일 수 있고 종료일에 잔액 상환"},
+    Category.INCOME: {"group": GROUP_INCOME, "amount_label": "월 수입", "uses_rate": False,
+                      "date_mode": "range", "flow": "income",
                       "hint": "급여·부업처럼 적용 기간 동안 매달 들어오는 돈 (종료일 비우면 계속)"},
-    Category.INCOME_ONCE: {"amount_label": "수입액", "uses_rate": False, "date_mode": "once", "flow": "income",
+    Category.INCOME_ONCE: {"group": GROUP_INCOME, "amount_label": "수입액", "uses_rate": False,
+                           "date_mode": "once", "flow": "income",
                            "hint": "상여금·퇴직금·만기 적금처럼 한 번만 들어오는 돈. 수입일을 비우면 기준일에 들어옵니다"},
+    Category.RENT: {"group": GROUP_COST, "amount_label": "월세", "uses_rate": False,
+                    "date_mode": "range", "flow": "cost",
+                    "hint": "적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
+    Category.MAINT: {"group": GROUP_COST, "amount_label": "월 관리비", "uses_rate": False,
+                     "date_mode": "range", "flow": "cost",
+                     "hint": "적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
+    Category.FIXED: {"group": GROUP_COST, "amount_label": "월 고정 지출", "uses_rate": False,
+                     "date_mode": "range", "flow": "cost",
+                     "hint": "보험료·통신비·식비·교통비처럼 적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
+    Category.DEPOSIT: {"group": GROUP_COST, "amount_label": "보증금", "uses_rate": False,
+                       "date_mode": "once", "flow": "cost",
+                       "hint": "한 번만 나가는 돈. 지출일을 비우면 기준일에 나갑니다"},
+    Category.EXPENSE: {"group": GROUP_COST, "amount_label": "지출액", "uses_rate": False,
+                       "date_mode": "once", "flow": "cost",
+                       "hint": "이사비·수수료처럼 한 번만 나가는 돈. 지출일을 비우면 기준일에 나갑니다"},
 }
 
 # 대출 상환 방식
@@ -83,6 +104,11 @@ MONTHLY_INCOME_CATEGORIES = (Category.INCOME,)
 ONCE_INCOME_CATEGORIES = (Category.INCOME_ONCE,)
 
 CATEGORY_LIST: list[Category] = list(Category)
+
+
+def categories_in(group: str) -> list[Category]:
+    """묶음(자본/수입/지출)에 속한 분류들 (화면 순서)."""
+    return [c for c in CATEGORY_LIST if CATEGORY_INFO[c]["group"] == group]
 
 
 # ---------------------------------------------------------------- 날짜 유틸
@@ -143,6 +169,11 @@ class Item:
     def uses_dates(self) -> bool:
         """적용 기간(시작일~종료일)을 쓰는 항목인가."""
         return self.date_mode == "range"
+
+    @property
+    def group(self) -> str:
+        """자본 | 수입 | 지출"""
+        return CATEGORY_INFO[self.category]["group"]
 
     @property
     def flow(self) -> str:

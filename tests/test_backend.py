@@ -17,8 +17,8 @@ _app = QGuiApplication.instance() or QGuiApplication([])
 def test_add_remove_move_and_summary():
     b = Backend(Plan(months=12, target=1_000_000))
     assert b.itemCount == 0
-    b.addItem("현금", 6, 2_000_000, 0, True)          # 6 = 현금/자산
-    b.addItem("월세", 1, 100_000, 0, True)            # 1 = 월세
+    b.addItem("현금", 0, 2_000_000, 0, True)          # 0 = 현금/자산
+    b.addItem("월세", 5, 100_000, 0, True)            # 5 = 월세
     assert b.itemCount == 2
     assert b.capital == 2_000_000
     assert b.monthlyCost == 100_000
@@ -29,7 +29,7 @@ def test_add_remove_move_and_summary():
 
     b.moveItem(1, -1)
     assert b.items.data(b.items.index(0), b.items.NameRole) == "월세"
-    b.updateItem(0, "월세+", 1, 200_000, 0, True)
+    b.updateItem(0, "월세+", 5, 200_000, 0, True)
     assert b.monthlyCost == 200_000
     b.removeItem(0)
     assert b.itemCount == 1 and b.monthlyCost == 0
@@ -43,18 +43,18 @@ def test_properties_and_helpers():
     b.target = 123.0
     assert b.months == 6 and b.target == 123.0
     assert b.won(1234) == "1,234원"
-    info = b.categoryInfo(4)                           # 4 = 대출/이자
+    info = b.categoryInfo(2)                           # 2 = 대출/이자
     assert info["usesRate"] and info["isLoan"] and info["dateMode"] == "range"
     assert b.monthlyInterest(1_200_000, 10) == 10_000
     assert len(b.categories) == 10
-    assert b.categories[3] == "고정 지출(월)" and b.categories[7] == "일시 지출"
-    assert b.categories[8] == "기타 수입(월)" and b.categories[9] == "일시 수입"
+    assert b.categories[7] == "고정 지출" and b.categories[9] == "일시 지출"
+    assert b.categories[3] == "월 수입" and b.categories[4] == "일시 수입"
 
 
 def test_milestones_and_trend_for():
     b = Backend(Plan(months=12, target=1_500_000))
-    b.addItem("현금", 6, 500_000, 0, True)
-    b.addItem("수입", 8, 100_000, 0, True)            # 8 = 기타 수입(월)
+    b.addItem("현금", 0, 500_000, 0, True)
+    b.addItem("수입", 3, 100_000, 0, True)            # 3 = 월 수입
     ms = b.milestones
     assert [m["month"] for m in ms] == [6, 12, 24, 36]
     assert ms[0]["net"] == 500_000 + 100_000 * 6
@@ -69,7 +69,7 @@ def test_loan_dates_and_repayments_via_backend():
     b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
     assert b.basisDate == "2026-01-01"
     reps = '[{"date":"2026-07-01","amount":6000000},{"date":"bad","amount":1}]'
-    b.addItem("대출", 4, 12_000_000, 10.0, True, "2026-04-01", "", reps)
+    b.addItem("대출", 2, 12_000_000, 10.0, True, "2026-04-01", "", reps)
     m = b.items
     idx = m.index(0)
     assert m.data(idx, m.StartDateRole) == "2026-04-01"
@@ -92,8 +92,8 @@ def test_loan_dates_and_repayments_via_backend():
 
 def test_rent_dates_via_backend():
     b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
-    b.addItem("월세", 1, 500_000, 0, True, "2026-03-01", "2026-06-01", "[]")   # 3,4,5 개월째 3번
-    b.addItem("관리비", 2, 100_000, 0, True, "", "", "[]")                       # 기간 생략 = 계속
+    b.addItem("월세", 5, 500_000, 0, True, "2026-03-01", "2026-06-01", "[]")   # 3,4,5 개월째 3번
+    b.addItem("관리비", 6, 100_000, 0, True, "", "", "[]")                       # 기간 생략 = 계속
     assert b.monthlyCost == 100_000
     assert b.required == 500_000 * 3 + 100_000 * 12
     assert b.items.data(b.items.index(0), b.items.SubTextRole) == "2026-03 ~ 2026-06"
@@ -101,8 +101,8 @@ def test_rent_dates_via_backend():
 
 def test_prediction_and_save_to_path(tmp_path):
     b = Backend(Plan(months=12, target=2_000_000, start_date="2026-01-01"))
-    b.addItem("현금", 6, 1_000_000, 0, True, "", "", "[]")
-    b.addItem("수입", 8, 50_000, 0, True, "", "", "[]")
+    b.addItem("현금", 0, 1_000_000, 0, True, "", "", "[]")
+    b.addItem("수입", 3, 50_000, 0, True, "", "", "[]")
     assert b.goalMonth == 20
     assert b.goalDateText == "2027년 9월"
     assert b.peakNet >= 2_000_000
@@ -143,7 +143,7 @@ def test_backend_export_and_composition(tmp_path):
 
 def test_monthly_repay_via_backend():
     b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
-    b.addItem("대출", 4, 12_000_000, 12.0, True, "", "", "[]", 10.0)
+    b.addItem("대출", 2, 12_000_000, 12.0, True, "", "", "[]", 10.0)
     m = b.items
     idx = m.index(0)
     assert m.data(idx, m.MonthlyRepayRateRole) == 10.0
@@ -151,43 +151,43 @@ def test_monthly_repay_via_backend():
     assert "월 10% 상환 1,200,000원" in sub and "10개월 완납" in sub
     assert m.data(idx, m.MonthlyTextRole) == "-1,320,000원"      # 이자 12만 + 정기 상환 120만
     assert b.payoffMonths(12_000_000, 10.0) == 10 and b.payoffMonths(1, 0) == 0
-    b.updateItem(0, "대출", 4, 12_000_000, 12.0, True, "", "", "[]", 0.0)
+    b.updateItem(0, "대출", 2, 12_000_000, 12.0, True, "", "", "[]", 0.0)
     assert m.data(idx, m.MonthlyRepayRateRole) == 0.0
-    b.addItem("현금", 6, 1, 0, True)                                # 5인자 호출도 여전히 동작
+    b.addItem("현금", 0, 1, 0, True)                                # 5인자 호출도 여전히 동작
     assert b.itemCount == 2
 
 
 def test_grouped_items_proxy():
     b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
-    b.addItem("월세A", 1, 100, 0, True)        # 1 = 월세
-    b.addItem("현금", 6, 500, 0, True)         # 6 = 현금/자산
-    b.addItem("월세B", 1, 200, 0, True)
+    b.addItem("월세A", 5, 100, 0, True)        # 5 = 월세
+    b.addItem("현금", 0, 500, 0, True)         # 0 = 현금/자산
+    b.addItem("월세B", 5, 200, 0, True)
     g = b.groupedItems
     names = [g.data(g.index(r, 0), b.items.NameRole) for r in range(g.rowCount())]
-    assert names == ["월세A", "월세B", "현금"]                      # 분류 순, 같은 분류는 원본 순
+    assert names == ["현금", "월세A", "월세B"]                      # 분류 순(자본 → 지출), 같은 분류는 원본 순
     rows = [g.data(g.index(r, 0), b.items.SourceRowRole) for r in range(g.rowCount())]
-    assert rows == [0, 2, 1]
+    assert rows == [1, 0, 2]
 
     gs = b.groupSummary("월세")
-    assert gs["count"] == 2 and gs["total"] == 300 and gs["monthly"] == -300 and gs["catIndex"] == 1
+    assert gs["count"] == 2 and gs["total"] == 300 and gs["monthly"] == -300 and gs["catIndex"] == 5
     assert b.groupSummary("없음")["count"] == 0
 
-    b.toggleGroup(1)                                                # 월세 접기
-    assert b.isGroupCollapsed(1) and g.rowCount() == 1
+    b.toggleGroup(5)                                                # 월세 접기
+    assert b.isGroupCollapsed(5) and g.rowCount() == 1
     b.groupByCategory = False                                       # 묶기 해제 → 모두 펼침
-    assert not b.isGroupCollapsed(1) and g.rowCount() == 3
+    assert not b.isGroupCollapsed(5) and g.rowCount() == 3
     b.groupByCategory = True
 
     # 원본에서 삭제/이동해도 프록시가 따라온다
     b.removeItem(0)
     names = [g.data(g.index(r, 0), b.items.NameRole) for r in range(g.rowCount())]
-    assert names == ["월세B", "현금"]
+    assert names == ["현금", "월세B"]
 
 
 def test_backend_scenarios(tmp_path):
     b = Backend(Plan(months=12, target=5_000_000, start_date="2026-01-01"))
-    b.addItem("현금", 6, 1_000_000, 0, True)
-    b.addItem("급여", 8, 300_000, 0, True)
+    b.addItem("현금", 0, 1_000_000, 0, True)
+    b.addItem("급여", 3, 300_000, 0, True)
     assert b.scenarioNames == ["시나리오 1"] and b.scenarioCount == 1 and b.activeScenario == 0
 
     changes = []
@@ -195,7 +195,7 @@ def test_backend_scenarios(tmp_path):
     b.duplicateScenario()
     assert b.scenarioCount == 2 and b.activeScenario == 1 and b.itemCount == 2 and changes
     b.renameScenario(1, "부업")
-    b.addItem("부업", 8, 200_000, 0, True)
+    b.addItem("부업", 3, 200_000, 0, True)
     assert b.scenarioNames == ["시나리오 1", "부업"] and b.itemCount == 3
 
     rows = b.compareRows()
@@ -232,19 +232,19 @@ def test_backend_scenarios(tmp_path):
 
 def test_backend_fixed_cost_and_dated_once():
     b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
-    b.addItem("현금", 6, 10_000_000, 0, True)
-    b.addItem("보험료", 3, 120_000, 0, True, "", "", "[]")          # 3 = 고정 지출(월), 기간 생략 = 계속
+    b.addItem("현금", 0, 10_000_000, 0, True)
+    b.addItem("보험료", 7, 120_000, 0, True, "", "", "[]")          # 7 = 고정 지출, 기간 생략 = 계속
     assert b.monthlyCost == 120_000 and b.netAt(12) == 10_000_000 - 120_000 * 12
 
-    info = b.categoryInfo(3)
+    info = b.categoryInfo(7)
     assert info["dateMode"] == "range" and info["usesDates"] and info["amountLabel"] == "월 고정 지출"
-    assert b.categoryInfo(7)["dateMode"] == "once"                  # 7 = 일시 지출
+    assert b.categoryInfo(9)["dateMode"] == "once"                  # 9 = 일시 지출
 
-    b.addItem("통신비", 3, 50_000, 0, True, "2026-04-01", "2026-07-01", "[]")   # 3,4,5 개월째만
+    b.addItem("통신비", 7, 50_000, 0, True, "2026-04-01", "2026-07-01", "[]")   # 3,4,5 개월째만
     assert b.monthlyCost == 120_000                                 # 0개월엔 아직 아님
     assert b.netAt(12) == 10_000_000 - 120_000 * 12 - 50_000 * 3
 
-    b.addItem("이사비", 7, 3_000_000, 0, True, "2026-07-01", "", "[]")          # 6개월째 지출
+    b.addItem("이사비", 9, 3_000_000, 0, True, "2026-07-01", "", "[]")          # 6개월째 지출
     assert b.onceCost == 3_000_000                                  # 12개월 안에 나감
     assert b.netAt(5) == 10_000_000 - 120_000 * 5 - 50_000 * 2      # 아직 안 나감
     assert b.netAt(6) == 10_000_000 - 120_000 * 6 - 50_000 * 3 - 3_000_000
@@ -263,14 +263,14 @@ def test_backend_repay_method():
     assert [m["value"] for m in b.repayMethods] == ["bullet", "equal_principal", "equal_payment", "rate"]
     assert b.repayMethods[2]["label"] == "원리금 균등"
 
-    # 4 = 대출/이자, 원금 자본 미포함 → 원리금이 그대로 월 지출
-    b.addItem("대출", 4, 12_000_000, 12.0, False, "2026-01-01", "2027-01-01", "[]", 0.0, "equal_principal")
+    # 2 = 대출/이자, 원금 자본 미포함 → 원리금이 그대로 월 지출
+    b.addItem("대출", 2, 12_000_000, 12.0, False, "2026-01-01", "2027-01-01", "[]", 0.0, "equal_principal")
     idx = b.items.index(0, 0)
     assert b.items.data(idx, b.items.RepayMethodRole) == "equal_principal"
     assert "원금 균등 12개월" in b.items.data(idx, b.items.SubTextRole)
     assert b.monthlyCost == 1_120_000
 
-    b.updateItem(0, "대출", 4, 12_000_000, 12.0, False, "2026-01-01", "2027-01-01", "[]", 0.0, "equal_payment")
+    b.updateItem(0, "대출", 2, 12_000_000, 12.0, False, "2026-01-01", "2027-01-01", "[]", 0.0, "equal_payment")
     pay = b.monthlyCost
     assert abs(pay - 1_066_190) < 1_000 and abs(b.netAt(12) + pay * 12) < 1e-6
 
@@ -283,16 +283,16 @@ def test_backend_repay_method():
     assert "완납" in b.loanPreview(12_000_000, 12.0, "rate", "2026-01-01", "", 10.0)["text"]
 
     # 방식을 안 주면 예전처럼 상환율로 동작
-    b.addItem("옛날", 4, 12_000_000, 12.0, True, "", "", "[]", 10.0)
+    b.addItem("옛날", 2, 12_000_000, 12.0, True, "", "", "[]", 10.0)
     assert b.items.data(b.items.index(1, 0), b.items.RepayMethodRole) == "rate"
 
 
 def test_backend_shortfall():
     b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
-    b.addItem("현금", 6, 3_000_000, 0, True)
+    b.addItem("현금", 0, 3_000_000, 0, True)
     assert b.shortfall["has"] is False and b.shortfall["month"] == -1
 
-    b.addItem("월세", 1, 500_000, 0, True)
+    b.addItem("월세", 5, 500_000, 0, True)
     sf = b.shortfall
     assert sf["has"] and sf["month"] == 7 and sf["dateText"] == "2026년 8월"
     assert sf["net"] == 3_000_000 - 500_000 * 7
@@ -302,16 +302,16 @@ def test_backend_shortfall():
 
 def test_backend_income_dates():
     b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
-    assert len(b.categories) == 10 and b.categories[9] == "일시 수입"
+    assert len(b.categories) == 10 and b.categories[4] == "일시 수입"
 
-    info = b.categoryInfo(8)                                  # 기타 수입(월)
+    info = b.categoryInfo(3)                                  # 월 수입
     assert info["dateMode"] == "range" and info["usesDates"] and info["flow"] == "income"
-    once = b.categoryInfo(9)                                  # 일시 수입
+    once = b.categoryInfo(4)                                  # 일시 수입
     assert once["dateMode"] == "once" and once["onceWord"] == "수입"
-    assert b.categoryInfo(7)["onceWord"] == "지출"              # 일시 지출
+    assert b.categoryInfo(9)["onceWord"] == "지출"              # 일시 지출
 
     # 월 수입에 적용 기간
-    b.addItem("급여", 8, 2_000_000, 0, True, "2026-03-01", "2026-07-01")
+    b.addItem("급여", 3, 2_000_000, 0, True, "2026-03-01", "2026-07-01")
     idx = b.items.index(0, 0)
     assert b.items.data(idx, b.items.SubTextRole) == "2026-03 ~ 2026-07"
     assert b.items.data(idx, b.items.MonthlyTextRole) == "2개월 뒤 시작"
@@ -319,7 +319,7 @@ def test_backend_income_dates():
     assert b.netAt(6) == 2_000_000 * 4 and b.netAt(12) == 2_000_000 * 4
 
     # 일시 수입에 수입일
-    b.addItem("성과급", 9, 5_000_000, 0, True, "2026-05-01")
+    b.addItem("성과급", 4, 5_000_000, 0, True, "2026-05-01")
     idx = b.items.index(1, 0)
     assert "기준일에 수입" not in b.items.data(idx, b.items.SubTextRole)
     assert "4개월 뒤 수입" in b.items.data(idx, b.items.SubTextRole)

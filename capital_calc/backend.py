@@ -682,6 +682,7 @@ class Backend(QObject):
             "isLoan": cat == Category.LOAN,
             "dateMode": info["date_mode"],
             "usesDates": info["date_mode"] == "range",
+            "group": info["group"],
             "flow": info["flow"],
             "onceWord": "수입" if info["flow"] == "income" else "지출",
         }
