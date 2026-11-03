@@ -524,7 +524,10 @@ ApplicationWindow {
                         anchors.fill: parent
                         spacing: 6
                         StatRow { label: "보유 자금"; value: backend.capital; valueColor: Theme.green }
-                        StatRow { label: "일시 지출"; value: backend.onceCost; prefix: "-"; valueColor: Theme.red }
+                        StatRow {
+                            label: "일시 지출"; value: backend.onceCost; prefix: "-"; valueColor: Theme.red
+                            visible: backend.onceCost > 0
+                        }
                         StatRow {
                             label: "일시 수입"; value: backend.onceIncome; prefix: "+"; valueColor: Theme.green
                             visible: backend.onceIncome > 0
