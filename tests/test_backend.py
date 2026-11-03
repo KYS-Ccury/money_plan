@@ -516,3 +516,47 @@ def test_backend_ledger_repeat_and_copy():
 
     b.ledgerMonth = 0
     assert not b.canCopyPreviousMonth                           # 연 단위에서는 못 쓴다
+
+
+def test_backend_plan_vs_actual(tmp_path):
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    assert b.planVsActual()["has"] is False            # 가계부가 비었으면 비교할 게 없다
+
+    b.addItem("급여", 4, 2_000_000, 0, True)           # 4 = 월 수입
+    b.addItem("월세", 6, 500_000, 0, True)             # 6 = 월세
+    b.addEntry("2026-02-10", "급여", 1_800_000, "회사")
+    b.addEntry("2026-02-12", "식비", 600_000)
+
+    pva = b.planVsActual()
+    assert pva["has"] and pva["months"] == 1
+    assert pva["planIn"] == 2_000_000 and pva["planOut"] == 500_000
+    assert pva["actIn"] == 1_800_000 and pva["actOut"] == 600_000
+    assert pva["inDiff"] == -200_000 and pva["outDiff"] == 100_000
+    assert pva["netDiff"] == 1_200_000 - 1_500_000
+    assert pva["outPct"] == 20.0
+
+    # 연 단위로 보면 기준일 이후 달을 모두 합친다
+    b.ledgerMonth = 0
+    year = b.planVsActual()
+    assert year["months"] == 12 and year["planOut"] == 500_000 * 12
+
+    # 기준일보다 앞선 기록은 계획에 없다
+    b2 = Backend(Plan(months=12, target=0, start_date="2027-01-01"))
+    b2.addItem("월세", 6, 500_000, 0, True)
+    b2.addEntry("2026-02-10", "식비", 10_000)
+    assert b2.planVsActual()["has"] is False
+
+
+def test_export_ledger_plan_columns(tmp_path):
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.export_excel import export_plan
+    from capital_calc.model import Category, Item
+    from openpyxl import load_workbook
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("월세", Category.RENT, 500_000))
+    lg = Ledger([Entry("2026-02-10", "식비", 600_000)])
+    wb = load_workbook(export_plan(p, tmp_path / "l.xlsx", ledger=lg))
+    ws = wb["가계부 월별"]
+    assert ws.cell(row=1, column=7).value == "계획 지출"
+    assert ws.cell(row=2, column=7).value == 500_000
+    assert ws.cell(row=2, column=8).value == 100_000

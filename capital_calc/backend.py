@@ -27,7 +27,7 @@ from .export_excel import composition, export_plan
 from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Ledger,
                      kind_of, prev_period, sample_ledger, shift_month)
 from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
-                     REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS,
+                     REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS, month_offset,
                      Category, Item, Plan, Workspace, add_months, parse_date, sample_plan, won)
 
 DATA_FILE = Path(__file__).resolve().parent.parent / "capital_data.json"
@@ -1261,6 +1261,51 @@ class Backend(QObject):
             return
         self._ledger_touched()
         self._set_status(f"지난달({src}) 내역 {len(made)}건을 복사했습니다.")
+
+    # ---- 계획 대비 실적 ----
+    def _period_months(self, period: str) -> list[str]:
+        """'2026-03' → ['2026-03'], '2026' → 1~12월."""
+        if len(period) == 7:
+            return [period]
+        if len(period) == 4:
+            return [f"{period}-{m:02d}" for m in range(1, 13)]
+        return []
+
+    @Slot(result="QVariantMap")
+    def planVsActual(self) -> dict:
+        """지금 보고 있는 기간의 계획과 가계부 실적 비교.
+        {has, scenario, months, planIn, planOut, planNet, actIn, actOut, actNet,
+         inDiff, outDiff, netDiff, outPct}"""
+        period = self.ledgerPeriod
+        empty = {"has": False, "scenario": self._plan.name}
+        if not period:
+            return empty
+        basis = self._plan.basis
+        plan_in = plan_out = 0.0
+        counted = 0
+        for ym in self._period_months(period):
+            m = month_offset(basis, date(int(ym[:4]), int(ym[5:7]), 1))
+            if m < 0:
+                continue                      # 기준일 이전은 계획이 없다
+            counted += 1
+            plan_in += self._plan.planned_in_at(m)
+            plan_out += self._plan.planned_out_at(m)
+        if counted == 0 or (plan_in <= 0 and plan_out <= 0):
+            return empty
+
+        s = self._ws.ledger.summary(period)
+        plan_net = plan_in - plan_out
+        return {
+            "has": True,
+            "scenario": self._plan.name,
+            "months": counted,
+            "planIn": plan_in, "planOut": plan_out, "planNet": plan_net,
+            "actIn": s["income"], "actOut": s["cost"], "actNet": s["net"],
+            "inDiff": s["income"] - plan_in,
+            "outDiff": s["cost"] - plan_out,
+            "netDiff": s["net"] - plan_net,
+            "outPct": ((s["cost"] - plan_out) / plan_out * 100.0) if plan_out > 0 else 0.0,
+        }
 
     @Property(bool, notify=ledgerChanged)
     def canCopyPreviousMonth(self) -> bool:

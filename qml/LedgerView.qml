@@ -389,6 +389,90 @@ RowLayout {
             }
         }
 
+        // ───────────── 계획 대비 실적
+        Card {
+            id: pvaCard
+            // 계획(요약)이나 가계부가 바뀌면 다시 계산되도록 둘 다 참조한다
+            readonly property var pva: (backend.net, backend.ledgerSummary, backend.planVsActual())
+            Layout.fillWidth: true
+            Layout.preferredHeight: pva.has ? pvaCol.implicitHeight + Theme.pad * 2 + 30 : 0
+            visible: pva.has
+            title: "계획 대비  ·  " + (pva.scenario || "")
+
+            ColumnLayout {
+                id: pvaCol
+                anchors.fill: parent
+                spacing: 4
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Text { text: ""; Layout.preferredWidth: 52 }
+                    Text { text: "계획"; color: Theme.textDim; font.pixelSize: 11; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
+                    Text { text: "실제"; color: Theme.textDim; font.pixelSize: 11; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
+                    Text { text: "차이"; color: Theme.textDim; font.pixelSize: 11; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
+
+                Repeater {
+                    model: [
+                        { label: "수입", plan: pvaCard.pva.planIn,  act: pvaCard.pva.actIn,  diff: pvaCard.pva.inDiff,  good: 1 },
+                        { label: "지출", plan: pvaCard.pva.planOut, act: pvaCard.pva.actOut, diff: pvaCard.pva.outDiff, good: -1 },
+                        { label: "남은 돈", plan: pvaCard.pva.planNet, act: pvaCard.pva.actNet, diff: pvaCard.pva.netDiff, good: 1 }
+                    ]
+                    delegate: RowLayout {
+                        required property var modelData
+                        readonly property bool last: modelData.label === "남은 돈"
+                        Layout.fillWidth: true
+                        Layout.topMargin: last ? 4 : 0
+                        spacing: 6
+                        Text {
+                            text: modelData.label
+                            color: last ? Theme.text : Theme.textDim
+                            font.pixelSize: last ? 13 : 12
+                            font.bold: last
+                            Layout.preferredWidth: 52
+                        }
+                        Text {
+                            text: backend.won(modelData.plan)
+                            color: Theme.textDim; font.pixelSize: 11
+                            Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                        }
+                        Text {
+                            text: backend.won(modelData.act)
+                            color: Theme.text; font.pixelSize: last ? 13 : 12; font.bold: last
+                            Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                        }
+                        Text {
+                            // 수입·남은 돈은 많을수록, 지출은 적을수록 초록
+                            text: (modelData.diff >= 0 ? "+" : "-") + backend.won(Math.abs(modelData.diff))
+                            color: modelData.diff * modelData.good >= 0 ? Theme.green : Theme.red
+                            font.pixelSize: last ? 13 : 12; font.bold: last
+                            Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                        }
+                    }
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder; Layout.topMargin: 4 }
+                Text {
+                    text: pvaCard.pva.outPct === 0 ? "계획한 지출과 같습니다"
+                        : pvaCard.pva.outDiff < 0
+                          ? "계획보다 " + Math.abs(pvaCard.pva.outPct).toFixed(0) + "% 덜 썼습니다"
+                          : "계획보다 " + pvaCard.pva.outPct.toFixed(0) + "% 더 썼습니다"
+                    color: pvaCard.pva.outDiff <= 0 ? Theme.green : Theme.red
+                    font.pixelSize: 12
+                    Layout.topMargin: 2
+                }
+                Text {
+                    text: "분류 체계가 서로 달라 총액만 비교합니다."
+                         + (pvaCard.pva.months > 1 ? "  기준일 이후 " + pvaCard.pva.months + "개월분입니다." : "")
+                    color: Theme.textDim; font.pixelSize: 10
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true; Layout.preferredWidth: 1
+                }
+            }
+        }
+
         Card {
             Layout.fillWidth: true
             Layout.preferredHeight: 392

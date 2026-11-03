@@ -483,3 +483,37 @@ def test_saving():
     # 종료일이 없으면 계속 넣는다
     sv.end_date = None
     assert sv.saving_months(24, p.basis) == 24
+
+
+def test_planned_flows():
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 50_000_000))
+    p.add(Item("급여", Category.INCOME, 3_000_000))
+    p.add(Item("월세", Category.RENT, 500_000))
+    p.add(Item("이사비", Category.EXPENSE, 1_200_000, start_date="2026-03-01"))
+    p.add(Item("성과급", Category.INCOME_ONCE, 2_000_000, start_date="2026-04-01"))
+    p.add(Item("전셋집", Category.DEPOSIT, 20_000_000, housing_type="banjeonse", monthly=300_000,
+               start_date="2026-02-01", end_date="2026-08-01"))
+
+    assert p.planned_out_at(0) == 500_000                       # 월세만
+    assert p.planned_in_at(0) == 3_000_000
+
+    # 2월: 보증금이 나가고 월세(주거)도 시작
+    assert p.planned_out_at(1) == 500_000 + 300_000 + 20_000_000
+    # 3월: 이사비
+    assert p.planned_out_at(2) == 500_000 + 300_000 + 1_200_000
+    # 4월: 성과급
+    assert p.planned_in_at(3) == 3_000_000 + 2_000_000
+    # 8월: 보증금 반환, 주거 월세는 끝
+    assert p.planned_in_at(7) == 3_000_000 + 20_000_000
+    assert p.planned_out_at(7) == 500_000
+
+
+def test_planned_out_includes_loan_principal():
+    p = Plan(months=12, start_date="2026-01-01")
+    loan = p.add(Item("대출", Category.LOAN, 12_000_000, rate=12.0, include_principal=True,
+                      start_date="2026-01-01", end_date="2027-01-01", repay_method="equal_principal"))
+    # 원금을 자본에 넣었으면 월 지출에는 이자만 잡히지만, 실제로 나가는 돈은 원금 상환까지다
+    assert p.monthly_cost_at(0) == 120_000
+    assert p.planned_out_at(0) == 120_000 + 1_000_000
+    assert loan.regular_repay_at(0, p.basis) == 1_000_000

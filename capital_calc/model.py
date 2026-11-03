@@ -666,6 +666,35 @@ class Plan:
         flow = sum(i.monthly_net_at(k, b) for i in self.items for k in range(max(0, m)))
         return self.capital_at(m) - self.once_cost_at(m) + self.once_income_at(m) + flow
 
+    # ---- 그 달에 실제로 오고 가는 돈 (가계부와 비교하려고 쓴다) ----
+    def planned_out_at(self, m: int) -> float:
+        """m개월에 나갈 것으로 계획된 돈 = 월 지출 + 그 달에 걸린 일시 지출 + 대출 원금 상환."""
+        b = self.basis
+        out = self.monthly_cost_at(m)
+        for i in self.items:
+            if i.date_mode == "once" and i.once_cost() > 0 and i.once_month(b) == m:
+                out += i.once_cost()
+            if i.category == Category.LOAN and i.include_principal:
+                # 원금을 자본에 넣은 대출은 월 지출에 상환액이 안 잡히므로 여기서 더한다
+                out += i.regular_repay_at(m, b)
+                if i.is_active(m, b):
+                    out += i.repayment_at(m, b)
+                _start_m, end_m = i.active_range(b)
+                if end_m is not None and m == end_m:
+                    out += i.remaining_at(m, b)
+        return out
+
+    def planned_in_at(self, m: int) -> float:
+        """m개월에 들어올 것으로 계획된 돈 = 월 수입 + 그 달의 일시 수입 + 보증금 반환."""
+        b = self.basis
+        inc = self.monthly_income_at(m)
+        for i in self.items:
+            if i.once_income() > 0 and i.once_month(b) == m:
+                inc += i.once_income()
+            if i.return_month(b) == m:
+                inc += i.once_cost()
+        return inc
+
     SHORTFALL_HORIZON = 36      # 부족 경고는 최소 3년까지 살펴본다
 
     def shortfall(self, horizon: int | None = None) -> dict:

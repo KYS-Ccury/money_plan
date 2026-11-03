@@ -17,7 +17,9 @@ from openpyxl.chart import LineChart, PieChart, Reference
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from .model import CATEGORY_INFO, REPAY_METHODS, Category, Plan, add_months
+from datetime import date
+
+from .model import CATEGORY_INFO, REPAY_METHODS, Category, Plan, add_months, month_offset
 
 WON = '#,##0"원"'
 PCT = "0.0%"
@@ -72,8 +74,8 @@ def _shortfall_text(plan: Plan) -> str:
 
 
 
-def _ledger_sheets(wb, ledger) -> None:
-    """가계부 시트 3장: 내역 / 월별 / 연도별 (+ 월별 막대 그래프)."""
+def _ledger_sheets(wb, ledger, plan=None) -> None:
+    """가계부 시트 3장: 내역 / 월별(계획 대비 포함) / 연도별 (+ 막대 그래프)."""
     from openpyxl.chart import BarChart
 
     ws = wb.create_sheet("가계부 내역")
@@ -89,8 +91,10 @@ def _ledger_sheets(wb, ledger) -> None:
     _autowidth(ws)
 
     ws = wb.create_sheet("가계부 월별")
-    _header(ws, 1, ["연월", "수입", "지출", "남은 돈", "건수"])
+    _header(ws, 1, ["연월", "수입", "지출", "남은 돈", "건수",
+                    "계획 수입", "계획 지출", "지출 차이"])
     months = sorted({e.ym for e in ledger.entries})
+    basis = plan.basis if plan is not None else None
     for r, ym in enumerate(months, start=2):
         s = ledger.summary(ym)
         ws.cell(row=r, column=1, value=ym)
@@ -98,6 +102,15 @@ def _ledger_sheets(wb, ledger) -> None:
         ws.cell(row=r, column=3, value=s["cost"]).number_format = WON
         ws.cell(row=r, column=4, value=s["net"]).number_format = WON
         ws.cell(row=r, column=5, value=s["count"])
+        if basis is None:
+            continue
+        m = month_offset(basis, date(int(ym[:4]), int(ym[5:7]), 1))
+        if m < 0:
+            continue
+        p_in, p_out = plan.planned_in_at(m), plan.planned_out_at(m)
+        ws.cell(row=r, column=6, value=p_in).number_format = WON
+        ws.cell(row=r, column=7, value=p_out).number_format = WON
+        ws.cell(row=r, column=8, value=s["cost"] - p_out).number_format = WON
     _autowidth(ws)
     if months:
         bar = BarChart()
@@ -267,7 +280,7 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
 
     # ---------------------------------------------------------- 가계부
     if ledger is not None and ledger.entries:
-        _ledger_sheets(wb, ledger)
+        _ledger_sheets(wb, ledger, plan)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
