@@ -413,6 +413,7 @@ class Backend(QObject):
     groupsChanged = Signal()        # 묶어 보기 켜짐/꺼짐, 접힘 상태 변화
     scenariosChanged = Signal()     # 시나리오 추가/삭제/이름/활성 변경
     ledgerChanged = Signal()        # 가계부 내역·기간 변경
+    budgetsChanged = Signal()       # 예산만 변경 (가계부 집계는 그대로)
     saved = Signal(str)        # 저장 완료 (경로)
     exported = Signal(str)     # 엑셀 내보내기 완료 (경로)
     loaded = Signal(str)       # 불러오기 완료 (경로)
@@ -1121,6 +1122,7 @@ class Backend(QObject):
         self._ledger_model.set_period(self.ledgerPeriod)
         self._ledger_model.set_filters(self._ledger_query, self._ledger_kind, self._ledger_category)
         self.ledgerChanged.emit()
+        self.budgetsChanged.emit()
 
     def _apply_filters(self) -> None:
         self._ledger_model.set_filters(self._ledger_query, self._ledger_kind, self._ledger_category)
@@ -1129,6 +1131,7 @@ class Backend(QObject):
     def _ledger_touched(self) -> None:
         self._ledger_model.refresh()
         self.ledgerChanged.emit()
+        self.budgetsChanged.emit()
 
     # ---- 검색 / 필터 ----
     @Property(str, notify=ledgerChanged)
@@ -1203,11 +1206,14 @@ class Backend(QObject):
         {has, label, income, cost, net, costDiff, incomeDiff, costPct, incomePct}"""
         prev = prev_period(self.ledgerPeriod)
         s = self._ws.ledger.summary(self.ledgerPeriod)
+        # 비교할 게 없어도 칸은 모두 채워서 돌려준다 (QML 바인딩이 undefined 를 보지 않게)
+        empty = {"has": False, "label": "", "income": 0.0, "cost": 0.0, "net": 0.0,
+                 "incomeDiff": 0.0, "costDiff": 0.0, "incomePct": 0.0, "costPct": 0.0}
         if not prev:
-            return {"has": False, "label": ""}
+            return empty
         p = self._ws.ledger.summary(prev)
         if p["count"] == 0:
-            return {"has": False, "label": ""}
+            return empty
         label = "작년" if len(prev) == 4 else "지난달"
 
         def pct(now: float, before: float) -> float:
@@ -1263,25 +1269,25 @@ class Backend(QObject):
         self._set_status(f"지난달({src}) 내역 {len(made)}건을 복사했습니다.")
 
     # ---- 분류별 예산 ----
-    @Property(bool, notify=ledgerChanged)
+    @Property(bool, notify=budgetsChanged)
     def hasBudgets(self) -> bool:
         return self._ws.ledger.has_budgets()
 
-    @Property(int, notify=ledgerChanged)
+    @Property(int, notify=budgetsChanged)
     def budgetMonths(self) -> int:
         """지금 보고 있는 기간이 몇 달치인가 (월=1, 연=12)."""
         return self._ws.ledger.period_months(self.ledgerPeriod)
 
-    @Property("QVariantList", notify=ledgerChanged)
+    @Property("QVariantList", notify=budgetsChanged)
     def ledgerBudgets(self) -> list[dict]:
         """분류별 예산 현황 [{category, limit, spent, left, ratio, over}]"""
         return self._ws.ledger.budget_rows(self.ledgerPeriod)
 
-    @Property("QVariantMap", notify=ledgerChanged)
+    @Property("QVariantMap", notify=budgetsChanged)
     def ledgerBudgetTotals(self) -> dict:
         return self._ws.ledger.budget_totals(self.ledgerPeriod)
 
-    @Property("QVariantList", notify=ledgerChanged)
+    @Property("QVariantList", notify=budgetsChanged)
     def budgetEditRows(self) -> list[dict]:
         """예산 설정 팝업용 — 지출 분류 전체와 지금 정해진 한 달 예산."""
         return [{"category": c, "limit": self._ws.ledger.budget_of(c)}
@@ -1289,20 +1295,21 @@ class Backend(QObject):
 
     @Slot(str, float)
     def setBudget(self, category: str, amount: float) -> None:
+        """예산만 바꾼다. 내역·집계는 그대로이므로 budgetsChanged 만 보낸다 (슬라이더를 끌 때 가볍게)."""
         self._ws.ledger.set_budget(category, amount)
-        self.ledgerChanged.emit()
+        self.budgetsChanged.emit()
 
     @Slot()
     def clearBudgets(self) -> None:
         self._ws.ledger.budgets.clear()
-        self.ledgerChanged.emit()
+        self.budgetsChanged.emit()
         self._set_status("예산을 모두 지웠습니다.")
 
     @Slot()
     def fillBudgetsFromPeriod(self) -> None:
         """지금 보고 있는 기간에 실제로 쓴 금액(월평균)을 예산으로 채운다."""
         n = self._ws.ledger.budget_from_period(self.ledgerPeriod)
-        self.ledgerChanged.emit()
+        self.budgetsChanged.emit()
         self._set_status(f"{self.ledgerPeriodText} 실적으로 예산 {n}개를 채웠습니다."
                          if n else "채울 지출 기록이 없습니다.")
 
@@ -1321,7 +1328,12 @@ class Backend(QObject):
         {has, scenario, months, planIn, planOut, planNet, actIn, actOut, actNet,
          inDiff, outDiff, netDiff, outPct}"""
         period = self.ledgerPeriod
-        empty = {"has": False, "scenario": self._plan.name}
+        empty = {
+            "has": False, "scenario": self._plan.name, "months": 0,
+            "planIn": 0.0, "planOut": 0.0, "planNet": 0.0,
+            "actIn": 0.0, "actOut": 0.0, "actNet": 0.0,
+            "inDiff": 0.0, "outDiff": 0.0, "netDiff": 0.0, "outPct": 0.0,
+        }
         if not period:
             return empty
         basis = self._plan.basis

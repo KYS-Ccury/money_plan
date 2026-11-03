@@ -614,3 +614,49 @@ def test_export_budget_sheet(tmp_path):
     assert ws.cell(row=2, column=1).value == "식비"
     assert ws.cell(row=2, column=2).value == 400_000
     assert ws.cell(row=2, column=4).value == -100_000
+
+
+def test_ledger_maps_always_complete():
+    """QML 바인딩은 숨겨진 카드의 값도 계산한다. 비어 있어도 칸이 다 있어야 TypeError 가 안 난다."""
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    pva_keys = {"has", "scenario", "months", "planIn", "planOut", "planNet",
+                "actIn", "actOut", "actNet", "inDiff", "outDiff", "netDiff", "outPct"}
+    prev_keys = {"has", "label", "income", "cost", "net",
+                 "incomeDiff", "costDiff", "incomePct", "costPct"}
+
+    # 가계부가 비었을 때 (기간 자체가 없다)
+    assert set(b.planVsActual()) == pva_keys and b.planVsActual()["outPct"] == 0.0
+    assert set(b.ledgerPrev) == prev_keys
+
+    # 기록은 있지만 계획이 없을 때 / 지난달이 없을 때
+    b.addEntry("2026-01-10", "식비", 10_000)
+    assert set(b.planVsActual()) == pva_keys and not b.planVsActual()["has"]
+    assert set(b.ledgerPrev) == prev_keys and not b.ledgerPrev["has"]
+
+    # 값이 있을 때도 키는 그대로
+    b.addItem("월세", 6, 500_000, 0, True)
+    assert set(b.planVsActual()) == pva_keys and b.planVsActual()["has"]
+    b.addEntry("2026-02-10", "식비", 20_000)
+    b.ledgerMonth = 2
+    assert set(b.ledgerPrev) == prev_keys and b.ledgerPrev["has"]
+
+
+def test_setbudget_does_not_rebuild_ledger():
+    """예산 슬라이더를 끌 때 가계부 집계까지 다시 계산되면 느려진다."""
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    b.addEntry("2026-01-10", "식비", 10_000)
+
+    ledger_hits, budget_hits, resets = [], [], []
+    b.ledgerChanged.connect(lambda: ledger_hits.append(1))
+    b.budgetsChanged.connect(lambda: budget_hits.append(1))
+    b.ledgerItems.modelReset.connect(lambda: resets.append(1))
+
+    for v in range(100_000, 600_000, 100_000):
+        b.setBudget("식비", v)
+    assert len(budget_hits) == 5
+    assert ledger_hits == [] and resets == []          # 내역 모델은 건드리지 않는다
+    assert b.ledgerBudgets[0]["limit"] == 500_000
+
+    # 내역이 바뀌면 둘 다 알린다
+    b.addEntry("2026-01-11", "교통", 5_000)
+    assert ledger_hits and len(budget_hits) == 6
