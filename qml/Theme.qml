@@ -15,6 +15,8 @@ QtObject {
     readonly property color green: "#4cd48a"
     readonly property color red: "#f06a6a"
     readonly property color yellow: "#f2c14e"
+    readonly property color greenSoft: "#17372a"
+    readonly property color redSoft: "#3a1f24"
 
     // 시나리오별 선·점 색 (1번부터)
     readonly property var scenarioColors: ["#5b8def", "#4cd48a", "#f2c14e", "#b57bee", "#ff9f5a", "#4fc3dc", "#f06a6a", "#8a90a3"]

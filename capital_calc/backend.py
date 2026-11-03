@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -23,6 +24,8 @@ from PySide6.QtCore import (
 )
 
 from .export_excel import composition, export_plan
+from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Ledger,
+                     kind_of, sample_ledger)
 from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
                      REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS,
                      Category, Item, Plan, Workspace, add_months, parse_date, sample_plan, won)
@@ -291,6 +294,97 @@ class GroupedItems(QSortFilterProxyModel):
             self.invalidate()
 
 
+
+
+class LedgerModel(QAbstractListModel):
+    """가계부 내역을 기간으로 걸러서 보여주는 리스트 모델 (최신 날짜가 위)."""
+
+    DateRole = Qt.ItemDataRole.UserRole + 1
+    DateTextRole = Qt.ItemDataRole.UserRole + 2
+    CategoryRole = Qt.ItemDataRole.UserRole + 3
+    NameRole = Qt.ItemDataRole.UserRole + 4
+    AmountRole = Qt.ItemDataRole.UserRole + 5
+    AmountTextRole = Qt.ItemDataRole.UserRole + 6
+    KindRole = Qt.ItemDataRole.UserRole + 7
+    NoteRole = Qt.ItemDataRole.UserRole + 8
+    SourceRowRole = Qt.ItemDataRole.UserRole + 9   # Ledger.entries 에서의 번호
+
+    _ROLES = {
+        DateRole: b"date",
+        DateTextRole: b"dateText",
+        CategoryRole: b"category",
+        NameRole: b"name",
+        AmountRole: b"amount",
+        AmountTextRole: b"amountText",
+        KindRole: b"kind",
+        NoteRole: b"note",
+        SourceRowRole: b"sourceRow",
+    }
+
+    def __init__(self, ledger: Ledger, parent: QObject | None = None):
+        super().__init__(parent)
+        self._ledger = ledger
+        self._period = ""
+        self._rows: list[int] = []
+        self._rebuild()
+
+    def roleNames(self):
+        return dict(self._ROLES)
+
+    def rowCount(self, parent=QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._rows)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or not (0 <= index.row() < len(self._rows)):
+            return None
+        src = self._rows[index.row()]
+        e = self._ledger.entries[src]
+        if role == self.DateRole:
+            return e.date
+        if role == self.DateTextRole:
+            d = e.day
+            return f"{d.month}월 {d.day}일"
+        if role == self.CategoryRole:
+            return e.category
+        if role == self.NameRole:
+            return e.name
+        if role == self.AmountRole:
+            return e.amount
+        if role == self.AmountTextRole:
+            return ("+" if e.is_income else "-") + won(e.amount)
+        if role == self.KindRole:
+            return e.kind
+        if role == self.NoteRole:
+            return e.note
+        if role == self.SourceRowRole:
+            return src
+        return None
+
+    # ---- 갱신 ----
+    def _rebuild(self) -> None:
+        rows = [(e.date, i) for i, e in enumerate(self._ledger.entries) if e.in_period(self._period)]
+        rows.sort(key=lambda t: t[0], reverse=True)
+        self._rows = [i for _, i in rows]
+
+    def refresh(self) -> None:
+        self.beginResetModel()
+        self._rebuild()
+        self.endResetModel()
+
+    def set_ledger(self, ledger: Ledger) -> None:
+        self.beginResetModel()
+        self._ledger = ledger
+        self._rebuild()
+        self.endResetModel()
+
+    def set_period(self, period: str) -> None:
+        if period != self._period:
+            self.beginResetModel()
+            self._period = period
+            self._rebuild()
+            self.endResetModel()
+
+
 class Backend(QObject):
     """QML 에서 `backend` 이름으로 접근하는 객체."""
 
@@ -303,6 +397,7 @@ class Backend(QObject):
     dataPathChanged = Signal()
     groupsChanged = Signal()        # 묶어 보기 켜짐/꺼짐, 접힘 상태 변화
     scenariosChanged = Signal()     # 시나리오 추가/삭제/이름/활성 변경
+    ledgerChanged = Signal()        # 가계부 내역·기간 변경
     saved = Signal(str)        # 저장 완료 (경로)
     exported = Signal(str)     # 엑셀 내보내기 완료 (경로)
     loaded = Signal(str)       # 불러오기 완료 (경로)
@@ -318,6 +413,9 @@ class Backend(QObject):
             self._ws = self._load_or_sample()
         self._plan = self._ws.plan
         self._items = ItemListModel(self._plan, self)
+        self._ledger_model = LedgerModel(self._ws.ledger, self)
+        self._ledger_year = ""
+        self._ledger_month = 0          # 0 = 그 해 전체
         self._grouped = GroupedItems(self._items, self)
         self._group_by_category = True
         self._status = ""
@@ -936,6 +1034,7 @@ class Backend(QObject):
             return
         self._ws = ws
         self._replace_plan(ws.plan)
+        self._reset_ledger()
         self._set_data_path(path)
         self._set_status(f"불러옴: {path}")
         self.loaded.emit(str(path))
@@ -945,7 +1044,7 @@ class Backend(QObject):
         """엑셀(.xlsx)로 내보내기."""
         path = self._to_path(url_or_path)
         try:
-            out = export_plan(self._plan, path, scenarios=self._ws.plans)
+            out = export_plan(self._plan, path, scenarios=self._ws.plans, ledger=self._ws.ledger)
         except Exception as e:
             self._set_status(f"엑셀 내보내기 실패: {e}")
             self.failed.emit(f"엑셀 내보내기 실패: {e}")
@@ -978,12 +1077,154 @@ class Backend(QObject):
 
     @Slot()
     def loadSample(self) -> None:
-        """현재 시나리오를 예시 데이터로 바꾼다 (다른 시나리오는 그대로)."""
+        """현재 시나리오를 예시 데이터로 바꾼다 (다른 시나리오는 그대로). 가계부도 예시로 채운다."""
         p = sample_plan()
         p.name = self._ws.plan.name
         self._ws.plans[self._ws.active] = p
         self._replace_plan(p)
+        self._ws.ledger = sample_ledger(p.basis)
+        self._reset_ledger()
         self._set_status("예시 데이터를 불러왔습니다.")
+
+    # ------------------------------------------------------------ 가계부
+    def _reset_ledger(self) -> None:
+        """가계부가 통째로 바뀐 뒤 (불러오기·예시) 기간을 최신으로 맞춘다."""
+        self._ledger_model.set_ledger(self._ws.ledger)
+        months = self._ws.ledger.months()
+        if months:                                   # 가장 최근 달을 보여준다
+            self._ledger_year, self._ledger_month = months[0][:4], int(months[0][5:7])
+        else:
+            self._ledger_year, self._ledger_month = "", 0
+        self._apply_period()
+
+    def _apply_period(self) -> None:
+        self._ledger_model.set_period(self.ledgerPeriod)
+        self.ledgerChanged.emit()
+
+    def _ledger_touched(self) -> None:
+        self._ledger_model.refresh()
+        self.ledgerChanged.emit()
+
+    @Property(QObject, constant=True)
+    def ledgerItems(self) -> QObject:
+        """가계부 내역 모델 (현재 기간)."""
+        return self._ledger_model
+
+    @Property("QVariantList", constant=True)
+    def ledgerCategories(self) -> list[dict]:
+        """가계부 분류 [{value, kind}] — 수입 먼저, 지출 다음."""
+        return ([{"value": c, "kind": "income"} for c in LEDGER_INCOME_CATEGORIES]
+                + [{"value": c, "kind": "cost"} for c in LEDGER_COST_CATEGORIES])
+
+    @Property(str, constant=True)
+    def today(self) -> str:
+        """오늘 날짜 'YYYY-MM-DD' (가계부 입력 기본값)."""
+        return date.today().isoformat()
+
+    @Property(str, notify=ledgerChanged)
+    def ledgerPeriod(self) -> str:
+        """'YYYY' 또는 'YYYY-MM'. 기록이 없으면 빈 문자열."""
+        if not self._ledger_year:
+            return ""
+        return self._ledger_year if self._ledger_month <= 0 else f"{self._ledger_year}-{self._ledger_month:02d}"
+
+    @Property(str, notify=ledgerChanged)
+    def ledgerPeriodText(self) -> str:
+        if not self._ledger_year:
+            return "기록 없음"
+        return f"{self._ledger_year}년" + ("" if self._ledger_month <= 0 else f" {self._ledger_month}월")
+
+    @Property(str, notify=ledgerChanged)
+    def ledgerYear(self) -> str:
+        return self._ledger_year
+
+    @ledgerYear.setter
+    def ledgerYear(self, y: str) -> None:
+        y = str(y).strip()
+        if y != self._ledger_year:
+            self._ledger_year = y
+            self._apply_period()
+
+    @Property(int, notify=ledgerChanged)
+    def ledgerMonth(self) -> int:
+        """0 이면 그 해 전체."""
+        return self._ledger_month
+
+    @ledgerMonth.setter
+    def ledgerMonth(self, m: int) -> None:
+        m = max(0, min(12, int(m)))
+        if m != self._ledger_month:
+            self._ledger_month = m
+            self._apply_period()
+
+    @Property("QVariantList", notify=ledgerChanged)
+    def ledgerYears(self) -> list[str]:
+        return self._ws.ledger.years()
+
+    @Property("QVariantMap", notify=ledgerChanged)
+    def ledgerSummary(self) -> dict:
+        """현재 기간의 {income, cost, net, count}"""
+        return self._ws.ledger.summary(self.ledgerPeriod)
+
+    @Property("QVariantList", notify=ledgerChanged)
+    def ledgerYearMonths(self) -> list[dict]:
+        """선택한 해의 1~12월 {month, ym, income, cost, net, count, label}"""
+        if not self._ledger_year:
+            return []
+        rows = self._ws.ledger.year_months(self._ledger_year)
+        for r in rows:
+            r["label"] = f"{r['month']}월"
+        return rows
+
+    @Property("QVariantList", notify=ledgerChanged)
+    def ledgerYearTotals(self) -> list[dict]:
+        """해마다 {year, income, cost, net, count}"""
+        return self._ws.ledger.totals_by_year()
+
+    @Slot(str, result="QVariantList")
+    def ledgerByCategory(self, kind: str) -> list[dict]:
+        """현재 기간의 분류별 합계 [{label, value, share}] (큰 순)."""
+        rows = self._ws.ledger.by_category(self.ledgerPeriod, kind if kind in ("income", "cost") else "cost")
+        total = sum(v for _, v in rows)
+        return [{"label": n, "value": v, "share": (v / total) if total else 0.0} for n, v in rows]
+
+    @Slot(str, result=str)
+    def ledgerKindOf(self, category: str) -> str:
+        return kind_of(category)
+
+    @Slot(str, str, float, str, str)
+    @Slot(str, str, float, str)
+    @Slot(str, str, float)
+    def addEntry(self, date_str: str, category: str, amount: float, name: str = "", note: str = "") -> None:
+        e = Entry(date_str, category, amount, name.strip(), note=note.strip())
+        self._ws.ledger.add(e)
+        if not self._ledger_year:                 # 첫 기록이면 그 달로 맞춘다
+            self._ledger_year, self._ledger_month = e.year, e.day.month
+        self._ledger_model.set_period(self.ledgerPeriod)
+        self._ledger_touched()
+        self._set_status(f"가계부 추가: {e.category} {won(e.amount)}")
+
+    @Slot(int, str, str, float, str, str)
+    @Slot(int, str, str, float, str)
+    @Slot(int, str, str, float)
+    def updateEntry(self, row: int, date_str: str, category: str, amount: float,
+                    name: str = "", note: str = "") -> None:
+        if self._ws.ledger.update(row, Entry(date_str, category, amount, name.strip(), note=note.strip())):
+            self._ledger_touched()
+            self._set_status("가계부 수정")
+
+    @Slot(int)
+    def removeEntry(self, row: int) -> None:
+        e = self._ws.ledger.remove(row)
+        if e:
+            self._ledger_touched()
+            self._set_status(f"가계부 삭제: {e.category} {won(e.amount)}")
+
+    @Slot()
+    def clearLedger(self) -> None:
+        self._ws.ledger.clear()
+        self._reset_ledger()
+        self._set_status("가계부를 비웠습니다.")
 
     def _replace_plan(self, plan: Plan) -> None:
         self._plan = plan

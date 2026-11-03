@@ -743,8 +743,12 @@ class Workspace:
 
     plans: list[Plan] = field(default_factory=list)
     active: int = 0
+    ledger: object = None          # Ledger (가계부). 시나리오와 무관하게 하나만 둔다
 
     def __post_init__(self) -> None:
+        from .ledger import Ledger
+        if self.ledger is None:
+            self.ledger = Ledger()
         if not self.plans:
             self.plans.append(Plan())
         for p in self.plans:
@@ -802,13 +806,20 @@ class Workspace:
         return True
 
     def to_dict(self) -> dict:
-        return {"version": 2, "active": self.active, "scenarios": [p.to_dict() for p in self.plans]}
+        return {
+            "version": 3,
+            "active": self.active,
+            "scenarios": [p.to_dict() for p in self.plans],
+            "ledger": self.ledger.to_dict(),
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Workspace":
+        from .ledger import Ledger
+        lg = Ledger.from_dict(d.get("ledger"))
         if "scenarios" in d:
-            return cls([Plan.from_dict(x) for x in d.get("scenarios", [])], int(d.get("active", 0)))
-        return cls([Plan.from_dict(d)], 0)          # 구버전 파일: 계획 하나
+            return cls([Plan.from_dict(x) for x in d.get("scenarios", [])], int(d.get("active", 0)), lg)
+        return cls([Plan.from_dict(d)], 0, lg)      # 구버전 파일: 계획 하나
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")

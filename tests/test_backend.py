@@ -386,3 +386,70 @@ def test_backend_saving():
     assert b.monthlyCost == 500_000 and b.capital == 10_000_000
     assert b.netAt(6) == 10_000_000 and b.netAt(12) == 10_000_000      # 순 자본은 그대로
     assert "12개월 후 6,000,000원 (12회 납입)" in b.items.data(b.items.index(1, 0), b.items.SubTextRole)
+
+
+def test_backend_ledger():
+    from datetime import date
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    assert b.ledgerYears == [] and b.ledgerPeriod == "" and b.ledgerPeriodText == "기록 없음"
+    assert b.ledgerItems.rowCount() == 0
+    assert b.today == date.today().isoformat()
+    assert [c["value"] for c in b.ledgerCategories][:2] == ["급여", "부업"]
+    assert b.ledgerKindOf("급여") == "income" and b.ledgerKindOf("식비") == "cost"
+
+    changes = []
+    b.ledgerChanged.connect(lambda: changes.append(1))
+
+    # 첫 기록을 넣으면 그 달로 기간이 맞춰진다
+    b.addEntry("2026-03-15", "식비", 12_000, "점심")
+    assert changes and b.ledgerYear == "2026" and b.ledgerMonth == 3
+    assert b.ledgerPeriod == "2026-03" and b.ledgerPeriodText == "2026년 3월"
+    assert b.ledgerItems.rowCount() == 1
+
+    b.addEntry("2026-03-25", "급여", 2_000_000, "회사")
+    b.addEntry("2026-04-02", "교통", 50_000)
+    assert b.ledgerSummary == {"income": 2_000_000, "cost": 12_000, "net": 1_988_000, "count": 2}
+    assert b.ledgerItems.rowCount() == 2                      # 3월만 보인다
+
+    m = b.ledgerItems
+    idx = m.index(0, 0)                                        # 최신(3/25)이 위
+    assert m.data(idx, m.DateTextRole) == "3월 25일"
+    assert m.data(idx, m.CategoryRole) == "급여" and m.data(idx, m.KindRole) == "income"
+    assert m.data(idx, m.AmountTextRole) == "+2,000,000원"
+    assert m.data(idx, m.SourceRowRole) == 1
+
+    b.ledgerMonth = 4
+    assert b.ledgerItems.rowCount() == 1 and b.ledgerSummary["cost"] == 50_000
+    b.ledgerMonth = 0                                          # 그 해 전체
+    assert b.ledgerPeriod == "2026" and b.ledgerSummary["count"] == 3
+    assert [r["month"] for r in b.ledgerYearMonths if r["count"]] == [3, 4]
+    assert b.ledgerByCategory("cost")[0]["label"] == "교통"
+    assert b.ledgerYearTotals[0]["year"] == "2026"
+
+    # 수정 / 삭제는 원본 번호로
+    b.updateEntry(0, "2026-03-15", "식비", 30_000, "점심")
+    assert b.ledgerSummary["cost"] == 80_000
+    b.removeEntry(2)
+    assert b.ledgerSummary["count"] == 2
+
+    b.clearLedger()
+    assert b.ledgerItems.rowCount() == 0 and b.ledgerYears == []
+
+
+def test_backend_ledger_save_and_export(tmp_path):
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    b.addItem("현금", 0, 1_000_000, 0, True)
+    b.addEntry("2026-03-15", "식비", 12_000, "점심")
+    b.saveTo(str(tmp_path / "ws"))
+
+    b2 = Backend(Plan())
+    b2.loadFrom(str(tmp_path / "ws.json"))
+    assert b2.ledgerSummary["count"] == 1 and b2.ledgerPeriod == "2026-03"
+
+    got = []
+    b2.exported.connect(got.append)
+    b2.exportExcel((tmp_path / "out").as_uri())
+    from openpyxl import load_workbook
+    wb = load_workbook(tmp_path / "out.xlsx")
+    assert "가계부 내역" in wb.sheetnames and "가계부 월별" in wb.sheetnames
+    assert wb["가계부 월별"].cell(row=2, column=1).value == "2026-03"

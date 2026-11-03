@@ -30,6 +30,7 @@ def main() -> int:
     parser.add_argument("--demo-toast", action="store_true", help="테스트용: 저장 완료 토스트를 띄운 상태로 스크린샷")
     parser.add_argument("--demo-scenarios", action="store_true", help="테스트용: 시나리오 2개를 더 만들어 비교 화면으로 (저장하지 않음)")
     parser.add_argument("--demo-sample", action="store_true", help="테스트용: 예시 데이터로 띄우기 (저장하지 않음)")
+    parser.add_argument("--ledger", action="store_true", help="테스트용: 가계부 화면으로 띄우기")
     args = parser.parse_args()
 
     QQuickStyle.setStyle("Material")
@@ -59,6 +60,9 @@ def main() -> int:
     if not engine.rootObjects():
         print("QML 로드 실패", file=sys.stderr)
         return 1
+
+    if args.ledger:
+        engine.rootObjects()[0].setProperty("mode", "ledger")
 
     if args.size:
         w, h = (int(x) for x in args.size.lower().split("x"))

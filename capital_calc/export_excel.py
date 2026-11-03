@@ -6,6 +6,7 @@
 - 월별 추이: 0 ~ max(기간, 36) 개월의 보유 자금 / 월 지출 / 월 수입 / 순 자본 / 목표 대비
 - 비중     : 보유 자금 · 월 지출 · 월 수입 구성 비율
 - 시나리오 비교: 시나리오가 2개 이상일 때, 시나리오별 월별 순 자본 (선 그래프 포함)
+- 가계부     : 기록이 있을 때 내역 / 월별(막대 그래프) / 연도별
 """
 from __future__ import annotations
 
@@ -69,8 +70,57 @@ def _shortfall_text(plan: Plan) -> str:
     return f"{d.strftime('%Y년 %m월')} ({sf['month']}개월 뒤) · {sf['horizon']}개월 중 {sf['months']}개월 부족"
 
 
-def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = None) -> Path:
-    """plan 을 내보낸다. scenarios 에 2개 이상을 주면 '시나리오 비교' 시트가 추가된다."""
+
+
+def _ledger_sheets(wb, ledger) -> None:
+    """가계부 시트 3장: 내역 / 월별 / 연도별 (+ 월별 막대 그래프)."""
+    from openpyxl.chart import BarChart
+
+    ws = wb.create_sheet("가계부 내역")
+    _header(ws, 1, ["날짜", "수입/지출", "분류", "내용", "금액", "메모"])
+    rows = sorted(ledger.entries, key=lambda e: e.date)
+    for r, e in enumerate(rows, start=2):
+        ws.cell(row=r, column=1, value=e.date)
+        ws.cell(row=r, column=2, value="수입" if e.is_income else "지출")
+        ws.cell(row=r, column=3, value=e.category)
+        ws.cell(row=r, column=4, value=e.name)
+        ws.cell(row=r, column=5, value=e.signed).number_format = WON
+        ws.cell(row=r, column=6, value=e.note or None)
+    _autowidth(ws)
+
+    ws = wb.create_sheet("가계부 월별")
+    _header(ws, 1, ["연월", "수입", "지출", "남은 돈", "건수"])
+    months = sorted({e.ym for e in ledger.entries})
+    for r, ym in enumerate(months, start=2):
+        s = ledger.summary(ym)
+        ws.cell(row=r, column=1, value=ym)
+        ws.cell(row=r, column=2, value=s["income"]).number_format = WON
+        ws.cell(row=r, column=3, value=s["cost"]).number_format = WON
+        ws.cell(row=r, column=4, value=s["net"]).number_format = WON
+        ws.cell(row=r, column=5, value=s["count"])
+    _autowidth(ws)
+    if months:
+        bar = BarChart()
+        bar.title = "월별 수입 · 지출"
+        bar.y_axis.title = "원"
+        bar.height, bar.width = 9, 22
+        bar.add_data(Reference(ws, min_col=2, max_col=3, min_row=1, max_row=len(months) + 1), titles_from_data=True)
+        bar.set_categories(Reference(ws, min_col=1, min_row=2, max_row=len(months) + 1))
+        ws.add_chart(bar, "G2")
+
+    ws = wb.create_sheet("가계부 연도별")
+    _header(ws, 1, ["연도", "수입", "지출", "남은 돈", "건수"])
+    for r, row in enumerate(ledger.totals_by_year(), start=2):
+        ws.cell(row=r, column=1, value=row["year"])
+        ws.cell(row=r, column=2, value=row["income"]).number_format = WON
+        ws.cell(row=r, column=3, value=row["cost"]).number_format = WON
+        ws.cell(row=r, column=4, value=row["net"]).number_format = WON
+        ws.cell(row=r, column=5, value=row["count"])
+    _autowidth(ws)
+
+
+def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = None, ledger=None) -> Path:
+    """plan 을 내보낸다. scenarios 에 2개 이상을 주면 '시나리오 비교', ledger 에 기록이 있으면 가계부 시트가 붙는다."""
     path = Path(path)
     if path.suffix.lower() != ".xlsx":
         path = path.with_suffix(".xlsx")
@@ -214,6 +264,10 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
             chart.add_data(Reference(ws, min_col=c, min_row=1, max_row=n + 2), titles_from_data=True)
         chart.set_categories(Reference(ws, min_col=1, min_row=2, max_row=n + 2))
         ws.add_chart(chart, f"{get_column_letter(len(scenarios) + 3)}2")
+
+    # ---------------------------------------------------------- 가계부
+    if ledger is not None and ledger.entries:
+        _ledger_sheets(wb, ledger)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)

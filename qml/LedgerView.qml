@@ -1,0 +1,386 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+
+// 가계부 화면: 왼쪽에 내역 목록, 오른쪽에 월별·분류별 집계
+RowLayout {
+    id: view
+    spacing: 12
+
+    // 기간이 바뀌어도 같은 달에 계속 적게 기본 날짜를 맞춰 준다
+    function defaultDate() {
+        if (backend.ledgerMonth > 0)
+            return backend.ledgerYear + "-" + String(backend.ledgerMonth).padStart(2, "0") + "-01"
+        return backend.today
+    }
+
+    EntryDialog { id: entryDialog }
+
+    ConfirmDialog {
+        id: clearLedgerDialog
+        title: "가계부 비우기"
+        message: "기록한 내역을 모두 지웁니다. 되돌릴 수 없습니다."
+        onAccepted: backend.clearLedger()
+    }
+
+    // ───────────── 왼쪽: 내역
+    Card {
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        title: "가계부 내역  ·  " + backend.ledgerPeriodText + "  (" + backend.ledgerSummary.count + "건)"
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 10
+
+            // 연도 + 월 고르기
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                ComboBox {
+                    id: yearBox
+                    objectName: "ledgerYearBox"
+                    Layout.preferredWidth: 130
+                    model: backend.ledgerYears
+                    visible: backend.ledgerYears.length > 0
+                    onActivated: backend.ledgerYear = String(currentValue)
+                    Connections {
+                        target: backend
+                        function onLedgerChanged() {
+                            var i = backend.ledgerYears.indexOf(backend.ledgerYear)
+                            if (i >= 0 && i !== yearBox.currentIndex) yearBox.currentIndex = i
+                        }
+                    }
+                }
+
+                Repeater {
+                    model: 13                                   // 0 = 그 해 전체, 1~12 = 월
+                    delegate: Rectangle {
+                        required property int index
+                        readonly property bool on: backend.ledgerMonth === index
+                        readonly property var row: index > 0 && backend.ledgerYearMonths.length === 12
+                                                   ? backend.ledgerYearMonths[index - 1] : null
+                        readonly property bool empty: index > 0 && row && row.count === 0
+                        visible: backend.ledgerYears.length > 0
+                        width: index === 0 ? 46 : 36
+                        height: 30
+                        radius: 8
+                        color: on ? Theme.accentSoft : (mh.hovered ? Theme.rowHover : "transparent")
+                        border.color: on ? Theme.accent : "transparent"
+                        Behavior on color { ColorAnimation { duration: Theme.fast } }
+                        HoverHandler { id: mh }
+                        TapHandler { onTapped: backend.ledgerMonth = index }
+                        Text {
+                            anchors.centerIn: parent
+                            text: index === 0 ? "전체" : index
+                            color: parent.on ? Theme.text : (parent.empty ? Theme.textDim : Theme.text)
+                            opacity: parent.empty ? 0.45 : 1
+                            font.pixelSize: 12
+                            font.bold: parent.on
+                        }
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+                Button { text: "＋ 내역 추가"; highlighted: true; onClicked: entryDialog.openForAdd(view.defaultDate()) }
+                Button {
+                    text: "비우기"; flat: true; leftPadding: 10; rightPadding: 10
+                    Material.foreground: Theme.red
+                    enabled: backend.ledgerYears.length > 0
+                    onClicked: clearLedgerDialog.open()
+                }
+            }
+
+            Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
+
+            // 기록이 없을 때
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: backend.ledgerItems.rowCount() === 0
+                spacing: 8
+                Item { Layout.fillHeight: true }
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: backend.ledgerYears.length === 0 ? "아직 기록이 없습니다" : backend.ledgerPeriodText + " 기록이 없습니다"
+                    color: Theme.textDim; font.pixelSize: 14
+                }
+                Text {
+                    Layout.alignment: Qt.AlignHCenter
+                    text: "＋ 내역 추가 로 쓴 돈과 번 돈을 적어 두면 월별·연도별로 합산됩니다."
+                    color: Theme.textDim; font.pixelSize: 12
+                }
+                Item { Layout.fillHeight: true }
+            }
+
+            ListView {
+                id: entryList
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: backend.ledgerItems.rowCount() > 0
+                clip: true
+                spacing: 4
+                model: backend.ledgerItems
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                    contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Theme.accentSoft }
+                }
+
+                add: Transition {
+                    NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.normal }
+                    NumberAnimation { property: "x"; from: 24; to: 0; duration: Theme.normal; easing.type: Easing.OutCubic }
+                }
+                remove: Transition {
+                    NumberAnimation { property: "opacity"; from: 1; to: 0; duration: Theme.fast }
+                }
+
+                delegate: Rectangle {
+                    id: entryRow
+                    required property string date
+                    required property string dateText
+                    required property string category
+                    required property string name
+                    required property real amount
+                    required property string amountText
+                    required property string kind
+                    required property string note
+                    required property int sourceRow
+
+                    width: ListView.view.width - 10
+                    height: 44
+                    radius: 8
+                    color: rowHover.hovered ? Theme.rowHover : Theme.row
+                    Behavior on color { ColorAnimation { duration: Theme.fast } }
+
+                    Rectangle {
+                        width: 4; radius: 2
+                        anchors { left: parent.left; top: parent.top; bottom: parent.bottom; margins: 8 }
+                        color: entryRow.kind === "income" ? Theme.green : Theme.red
+                    }
+
+                    HoverHandler { id: rowHover }
+                    TapHandler {
+                        onDoubleTapped: entryDialog.openForEdit(entryRow.sourceRow, entryRow.date, entryRow.category,
+                                                                entryRow.amount, entryRow.name, entryRow.note)
+                    }
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 20
+                        anchors.rightMargin: 10
+                        spacing: 10
+
+                        Text {
+                            text: entryRow.dateText
+                            color: Theme.textDim; font.pixelSize: 12
+                            Layout.preferredWidth: 70
+                        }
+                        Rectangle {
+                            radius: 10
+                            color: Theme.accentSoft
+                            implicitWidth: catText.implicitWidth + 16
+                            implicitHeight: 22
+                            Text { id: catText; anchors.centerIn: parent; text: entryRow.category; color: Theme.text; font.pixelSize: 11 }
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+                            Text {
+                                text: entryRow.name !== "" ? entryRow.name : entryRow.category
+                                color: Theme.text; font.pixelSize: 13; elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            Text {
+                                visible: entryRow.note !== ""
+                                text: entryRow.note
+                                color: Theme.textDim; font.pixelSize: 10; elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                        }
+                        Text {
+                            text: entryRow.amountText
+                            color: entryRow.kind === "income" ? Theme.green : Theme.red
+                            font.pixelSize: 14; font.bold: true
+                        }
+                        ToolButton {
+                            text: "✕"; implicitWidth: 28; implicitHeight: 28
+                            Material.foreground: Theme.red
+                            onClicked: backend.removeEntry(entryRow.sourceRow)
+                        }
+                    }
+                }
+            }
+
+            Text {
+                text: "행 더블클릭: 수정  ·  ✕: 삭제"
+                color: Theme.textDim; font.pixelSize: 11
+            }
+        }
+    }
+
+    // ───────────── 오른쪽: 집계
+    ColumnLayout {
+        Layout.preferredWidth: 380
+        Layout.maximumWidth: 380
+        Layout.fillHeight: true
+        spacing: 12
+
+        Card {
+            Layout.fillWidth: true
+            Layout.preferredHeight: ledgerSumCol.implicitHeight + Theme.pad * 2 + 30
+            title: backend.ledgerPeriodText + " 집계"
+            ColumnLayout {
+                id: ledgerSumCol
+                anchors.fill: parent
+                spacing: 6
+                StatRow { label: "수입"; value: backend.ledgerSummary.income; prefix: "+"; valueColor: Theme.green }
+                StatRow { label: "지출"; value: backend.ledgerSummary.cost; prefix: "-"; valueColor: Theme.red }
+                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder; Layout.topMargin: 4; Layout.bottomMargin: 4 }
+                StatRow {
+                    label: "남은 돈"; value: backend.ledgerSummary.net; emphasis: true
+                    valueColor: backend.ledgerSummary.net >= 0 ? Theme.green : Theme.red
+                }
+            }
+        }
+
+        Card {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 392
+            title: backend.ledgerYear !== "" ? backend.ledgerYear + "년 월별" : "월별"
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 2
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Text { text: "월"; color: Theme.textDim; font.pixelSize: 11; Layout.preferredWidth: 28 }
+                    Text { text: "수입"; color: Theme.textDim; font.pixelSize: 11; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
+                    Text { text: "지출"; color: Theme.textDim; font.pixelSize: 11; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
+                    Text { text: "남은 돈"; color: Theme.textDim; font.pixelSize: 11; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
+
+                Repeater {
+                    model: backend.ledgerYearMonths
+                    delegate: Rectangle {
+                        required property var modelData
+                        readonly property bool on: backend.ledgerMonth === modelData.month
+                        Layout.fillWidth: true
+                        height: 22
+                        radius: 5
+                        color: on ? Theme.accentSoft : (mrHover.hovered ? Theme.rowHover : "transparent")
+                        opacity: modelData.count === 0 ? 0.4 : 1
+                        HoverHandler { id: mrHover }
+                        TapHandler { onTapped: backend.ledgerMonth = modelData.month }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 4; anchors.rightMargin: 4
+                            spacing: 6
+                            Text { text: modelData.label; color: Theme.text; font.pixelSize: 11; Layout.preferredWidth: 28 }
+                            Text {
+                                text: modelData.income > 0 ? backend.won(modelData.income) : "-"
+                                color: Theme.green; font.pixelSize: 11
+                                Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                            }
+                            Text {
+                                text: modelData.cost > 0 ? backend.won(modelData.cost) : "-"
+                                color: Theme.red; font.pixelSize: 11
+                                Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                            }
+                            Text {
+                                text: modelData.count === 0 ? "-" : backend.won(modelData.net)
+                                color: modelData.net >= 0 ? Theme.text : Theme.red
+                                font.pixelSize: 11; font.bold: true
+                                Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Card {
+            id: ledgerPie
+            property string kind: "cost"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: 260
+            title: "분류별"
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Item { Layout.fillWidth: true }
+                    Repeater {
+                        model: [{ k: "cost", t: "지출" }, { k: "income", t: "수입" }]
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property bool on: ledgerPie.kind === modelData.k
+                            width: 54; height: 24; radius: 12
+                            color: on ? Theme.accent : "transparent"
+                            border.color: on ? Theme.accent : Theme.cardBorder
+                            TapHandler { onTapped: ledgerPie.kind = modelData.k }
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.t
+                                color: parent.on ? "#ffffff" : Theme.textDim
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
+                }
+
+                PieChart {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    slices: (backend.ledgerPeriod, backend.ledgerSummary, backend.ledgerByCategory(ledgerPie.kind))
+                    total: ledgerPie.kind === "income" ? backend.ledgerSummary.income : backend.ledgerSummary.cost
+                    centerTitle: ledgerPie.kind === "income" ? "수입" : "지출"
+                }
+            }
+        }
+
+        Card {
+            Layout.fillWidth: true
+            Layout.preferredHeight: yearCol.implicitHeight + Theme.pad * 2 + 30
+            visible: backend.ledgerYearTotals.length > 1
+            title: "연도별"
+            ColumnLayout {
+                id: yearCol
+                anchors.fill: parent
+                spacing: 4
+                Repeater {
+                    model: backend.ledgerYearTotals
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text { text: modelData.year + "년"; color: Theme.text; font.pixelSize: 12; Layout.preferredWidth: 60 }
+                        Text {
+                            text: "+" + backend.won(modelData.income)
+                            color: Theme.green; font.pixelSize: 11
+                            Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                        }
+                        Text {
+                            text: "-" + backend.won(modelData.cost)
+                            color: Theme.red; font.pixelSize: 11
+                            Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                        }
+                        Text {
+                            text: backend.won(modelData.net)
+                            color: modelData.net >= 0 ? Theme.text : Theme.red
+                            font.pixelSize: 12; font.bold: true
+                            Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -9,3 +9,5 @@ SliderInput 1.0 SliderInput.qml
 DateField 1.0 DateField.qml
 Toast 1.0 Toast.qml
 PieChart 1.0 PieChart.qml
+EntryDialog 1.0 EntryDialog.qml
+LedgerView 1.0 LedgerView.qml

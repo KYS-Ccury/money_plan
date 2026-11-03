@@ -12,6 +12,9 @@ ApplicationWindow {
     title: "자본금 계산기"
     color: Theme.bg
 
+    // 화면 전환: "plan"(계획) | "ledger"(가계부)
+    property string mode: "plan"
+
     Material.theme: Material.Dark
     Material.accent: Theme.accent
     Material.primary: Theme.accent
@@ -137,8 +140,40 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 8
                     Text { text: "자본금 계산기"; color: Theme.text; font.pixelSize: 20; font.bold: true }
+
+                    // 계획 / 가계부 전환
+                    Row {
+                        spacing: 0
+                        leftPadding: 12
+                        Repeater {
+                            model: [{ m: "plan", t: "계획" }, { m: "ledger", t: "가계부" }]
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool on: win.mode === modelData.m
+                                width: 72; height: 32
+                                radius: 8
+                                color: on ? Theme.accent : (tabHover.hovered ? Theme.rowHover : "transparent")
+                                border.color: on ? Theme.accent : Theme.cardBorder
+                                Behavior on color { ColorAnimation { duration: Theme.fast } }
+                                HoverHandler { id: tabHover }
+                                TapHandler { onTapped: win.mode = modelData.m }
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: modelData.t
+                                    color: parent.on ? "#ffffff" : Theme.textDim
+                                    font.pixelSize: 13
+                                    font.bold: parent.on
+                                }
+                            }
+                        }
+                    }
+
                     Item { Layout.fillWidth: true }
-                    Button { text: "＋ 항목 추가"; highlighted: true; onClicked: itemDialog.openForAdd() }
+                    Button {
+                        text: "＋ 항목 추가"; highlighted: true
+                        visible: win.mode === "plan"
+                        onClicked: itemDialog.openForAdd()
+                    }
                     Button {
                         text: "저장"; flat: true; leftPadding: 10; rightPadding: 10
                         onClicked: backend.save()
@@ -168,6 +203,7 @@ ApplicationWindow {
                 // 시나리오 탭: 클릭 = 전환, 더블클릭 = 이름 변경
                 RowLayout {
                     Layout.fillWidth: true
+                    visible: win.mode === "plan"
                     spacing: 6
                     Text { text: "시나리오"; color: Theme.textDim; font.pixelSize: 12; rightPadding: 4 }
                     Repeater {
@@ -228,6 +264,7 @@ ApplicationWindow {
 
                 RowLayout {
                     Layout.fillWidth: true
+                    visible: win.mode === "plan"
                     spacing: 24
                     DateField {
                         label: "기준일 (0개월)"
@@ -260,10 +297,11 @@ ApplicationWindow {
             }
         }
 
-        // ───────────── 본문
+        // ───────────── 본문 (계획)
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            visible: win.mode === "plan"
             spacing: 12
 
             // 왼쪽: 항목 리스트
@@ -889,6 +927,13 @@ ApplicationWindow {
                 }
             }   // rightCol
             }   // rightFlick
+        }
+
+        // ───────────── 본문 (가계부)
+        LedgerView {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: win.mode === "ledger"
         }
 
         // ───────────── 상태 표시줄 (메시지가 바뀔 때 살짝 깜빡)
