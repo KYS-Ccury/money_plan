@@ -709,7 +709,7 @@ def test_source_row_at_maps_visible_to_real():
 
     # 묶어 보기는 분류 순으로 재배치되므로 화면 순서 != 원본 순서
     rows = visible()
-    assert [name for name, _ in rows][:3] == ["보유 현금", "예금 (3.5%)", "청약 적금 (3%)"]
+    assert [name for name, _ in rows][:3] == ["보유 현금", "예금 (3.5%)", "청년도약계좌"]
     for name, src in rows:
         assert m.data(m.index(src, 0), m.NameRole) == name    # 가리키는 원본이 맞는다
 
@@ -898,3 +898,36 @@ def test_import_plan_to_ledger():
     b3.addItem("현금", 0, 1_000_000, 0, True)
     assert b3.importPlanToLedger() == 0
     assert "기록할 항목이 없습니다" in msgs[-1]
+
+
+def test_backend_saving_support_and_loan_interest():
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    assert b.categoryInfo(2)["usesSupport"]                       # 2 = 적금/저축(월)
+    assert not b.categoryInfo(3)["usesSupport"]                   # 3 = 대출/이자
+
+    # 마지막 인자가 월 지원금
+    b.addItem("청년도약계좌", 2, 200_000, 0, True, "2026-01-01", "2027-01-01",
+              "[]", 0, "", "", 0, 0, 300_000)
+    idx = b.items.index(0, 0)
+    assert b.items.data(idx, b.items.SupportRole) == 300_000
+    sub = b.items.data(idx, b.items.SubTextRole)
+    assert "내 돈 200,000원 + 지원 300,000원 = 매달 500,000원" in sub
+    assert "12개월 후 6,000,000원 (12회 납입)" in sub
+    assert "받은 지원금 3,600,000원" in sub
+
+    assert b.monthlyCost == 200_000                               # 나가는 건 내 돈뿐
+    assert b.netAt(12) == 300_000 * 12                            # 지원금만큼 순 자본이 는다
+
+    # 대출은 목록에서도 월 이자가 보인다 (아직 시작 전이어도)
+    b.addItem("전세대출", 3, 94_000_000, 1.7, True, "2027-01-01", "")
+    sub = b.items.data(b.items.index(1, 0), b.items.SubTextRole)
+    assert "월 이자 133,167원" in sub and "만기 일시 상환" in sub
+    assert b.items.data(b.items.index(1, 0), b.items.MonthlyTextRole) == "12개월 뒤 시작"
+
+    # 이율이 0 이면 이자 줄은 붙지 않는다
+    b.addItem("무이자", 3, 1_000_000, 0, True, "", "")
+    assert "월 이자" not in b.items.data(b.items.index(2, 0), b.items.SubTextRole)
+
+    # 지원금을 안 주는 예전 호출도 그대로 동작한다
+    b.addItem("적금", 2, 100_000, 0, True, "", "")
+    assert b.items.data(b.items.index(3, 0), b.items.SupportRole) == 0

@@ -18,6 +18,7 @@ Popup {
     property string housingType: "jeonse"   // 전세 / 반전세 / 월세 / 매매
     property real monthly: 0                // 주거의 월세
     property real growth: 0                 // 연 상승률 % (급여 인상, 물가·월세 인상)
+    property real support: 0                // 적금 월 지원금 (청년도약계좌처럼 보태 주는 돈)
     // 주거 형태별 입력 안내 (금액 이름, 월세 사용 여부, 반환 가능 여부)
     readonly property var houseInfo: backend.housingInfo(housingType)
     // 대출 상환 미리보기 (원금·이율·방식·기간이 바뀌면 다시 계산)
@@ -78,6 +79,7 @@ Popup {
         setHousingType("jeonse")
         monthly = 0
         growth = 0
+        support = 0
         repModel.clear()
         open(); nameField.forceActiveFocus()
     }
@@ -90,7 +92,7 @@ Popup {
         methodBox.currentIndex = Math.max(0, methodBox.indexOfValue(dlg.repayMethod))
     }
     function openForEdit(row, name, catIndex, amount, rate, includePrincipal, startDate, endDate, repayments,
-                         monthlyRepayRate, repayMethod, housingType, monthly, growth) {
+                         monthlyRepayRate, repayMethod, housingType, monthly, growth, support) {
         editRow = row
         nameField.text = name
         catBox.currentIndex = catIndex
@@ -105,6 +107,7 @@ Popup {
         setHousingType(housingType)
         dlg.monthly = monthly || 0
         dlg.growth = growth || 0
+        dlg.support = support || 0
         loadRepayments(repayments)
         open(); nameField.forceActiveFocus()
     }
@@ -123,12 +126,13 @@ Popup {
         var ht = dlg.info.isHousing ? dlg.housingType : ""
         var mo = (dlg.info.isHousing && dlg.houseInfo.usesRent) ? dlg.monthly : 0
         var gr = dlg.info.usesGrowth ? dlg.growth : 0
+        var sp = dlg.info.usesSupport ? dlg.support : 0
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
         if (editRow < 0)
-            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr)
+            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp)
         else
-            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr)
+            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp)
         close()
     }
 
@@ -211,6 +215,33 @@ Popup {
                 money: true
                 suffix: "원"
                 onEdited: (v) => dlg.monthly = v
+            }
+
+            // ── 월 지원금 (청년도약계좌처럼 남이 보태 주는 돈) ──
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                visible: dlg.info.usesSupport
+
+                SliderInput {
+                    objectName: "supportInput"
+                    label: "월 지원금"
+                    value: dlg.support
+                    from: 0; to: 2000000; stepSize: 10000
+                    money: true
+                    suffix: "원"
+                    onEdited: (v) => dlg.support = v
+                }
+                Text {
+                    text: dlg.support > 0
+                          ? "내 돈 " + backend.won(dlg.amount) + " + 지원 " + backend.won(dlg.support)
+                            + " = 매달 " + backend.won(dlg.amount + dlg.support) + " 이 쌓입니다. "
+                            + "나가는 돈은 내 돈뿐이라 지원금만큼 순 자본이 늘어납니다."
+                          : "청년도약계좌처럼 정부·회사가 보태 주는 돈이 있으면 넣으세요. 통장에는 쌓이지만 내 지갑에서는 안 나갑니다."
+                    color: dlg.support > 0 ? Theme.green : Theme.textDim
+                    font.pixelSize: 11; wrapMode: Text.Wrap
+                    Layout.fillWidth: true; Layout.preferredWidth: 1
+                }
             }
 
             // ── 해마다 오르는 금액 (급여 인상, 물가·월세 인상) ──
@@ -334,8 +365,13 @@ Popup {
                     onEdited: (v) => dlg.rate = v
                 }
                 Text {
-                    text: "월 이자: " + backend.won(backend.monthlyInterest(dlg.amount, dlg.rate))
+                    // 적금은 매달 쌓이는 돈에 붙으므로 '잔액 × 이율' 이 아니다
+                    text: dlg.info.usesSupport
+                          ? "이자는 넣은 달수만큼 붙습니다 (첫 회차가 가장 오래, 마지막 회차는 한 달)"
+                          : "월 이자: " + backend.won(backend.monthlyInterest(dlg.amount, dlg.rate))
                     color: Theme.textDim; font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true; Layout.preferredWidth: 1
                 }
                 CheckBox {
                     id: principalCheck

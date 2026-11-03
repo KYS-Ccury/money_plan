@@ -637,3 +637,45 @@ def test_growth_rate():
     assert Item.from_dict(rent.to_dict()).growth == 4.0
     assert Item.from_dict({"name": "옛날", "category": "월세", "amount": 1}).growth == 0.0
     assert fixed.growth == 2.0
+
+
+def test_saving_support():
+    """청년도약계좌처럼 남이 보태 주는 돈. 내 지갑에서는 안 나가고 잔액만 는다."""
+    p = Plan(months=60, start_date="2026-01-01")
+    sv = p.add(Item("청년도약계좌", Category.SAVING, 200_000, support=300_000,
+                    start_date="2026-01-01", end_date="2031-01-01"))
+    assert sv.uses_support and sv.saving_deposit() == 500_000
+
+    # 나가는 돈은 내 납입액뿐
+    assert p.monthly_cost_at(0) == 200_000
+    # 쌓이는 돈은 지원금까지
+    assert sv.saving_balance_at(12, p.basis) == 500_000 * 12
+    assert sv.support_total_at(12, p.basis) == 300_000 * 12
+    assert sv.support_total_at(0, p.basis) == 0
+
+    # 지원금만큼 순 자본이 는다 (12달 × 30만)
+    assert p.net_at(12) == 300_000 * 12
+    assert p.net_at(60) == 300_000 * 60
+    assert p.net_at(72) == 300_000 * 60                  # 만기 뒤엔 멈춘다
+
+    # 이자는 지원금까지 합친 금액에 붙는다
+    sv.rate = 3.0
+    mr = 0.03 / 12
+    assert abs(sv.saving_balance_at(12, p.basis) - (500_000 * 12 + 500_000 * mr * 78)) < 1e-6
+
+    # 지원금이 없으면 예전과 같다
+    sv.support = 0
+    assert sv.saving_deposit() == 200_000 and sv.support_total_at(12, p.basis) == 0
+    assert p.net_at(12) == 0 + 200_000 * mr * 78
+
+    # 적금이 아닌 분류는 지원금을 갖지 않는다
+    for cat in (Category.CASH, Category.BANK, Category.LOAN, Category.INCOME,
+                Category.RENT, Category.DEPOSIT, Category.EXPENSE):
+        it = Item("x", cat, 1_000, support=50_000)
+        assert not it.uses_support and it.support == 0
+        assert it.saving_deposit() == 0
+
+    # 저장 / 불러오기
+    sv.support = 300_000
+    assert Item.from_dict(sv.to_dict()).support == 300_000
+    assert Item.from_dict({"name": "옛날", "category": "적금/저축(월)", "amount": 1}).support == 0.0

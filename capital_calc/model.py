@@ -86,8 +86,9 @@ CATEGORY_INFO: dict[Category, dict] = {
                     "date_mode": "", "flow": "",
                     "hint": "원금은 자본에 포함, 이자는 매달 수입"},
     Category.SAVING: {"group": GROUP_CAPITAL, "amount_label": "월 납입액", "uses_rate": True,
-                      "date_mode": "range", "flow": "cost",
-                      "hint": "매달 넣는 적금·저축. 납입 기간 동안 매달 나가고 그만큼 자본으로 쌓입니다 (연이율을 넣으면 이자도 붙습니다)"},
+                      "date_mode": "range", "flow": "cost", "uses_support": True,
+                      "hint": "매달 넣는 적금·저축. 납입 기간 동안 매달 나가고 그만큼 자본으로 쌓입니다. "
+                              "청년도약계좌처럼 보태 주는 돈이 있으면 월 지원금에 넣으세요"},
     Category.LOAN: {"group": GROUP_CAPITAL, "amount_label": "대출 원금", "uses_rate": True,
                     "date_mode": "range", "flow": "",
                     "hint": "대출 기간 동안 원금은 자본에 포함, 이자는 잔액 기준 매달 지출. 정기·중도 상환으로 잔액을 줄일 수 있고 종료일에 잔액 상환"},
@@ -181,6 +182,7 @@ class Item:
     housing_type: str = ""           # 주거 형태 (전세/반전세/월세/매매). 주거 항목에서만 사용
     monthly: float = 0.0             # 주거의 월세 (반전세·월세에서만)
     growth: float = 0.0              # 연 상승률 % (급여 인상, 물가·월세 인상). 해마다 한 번 오른다
+    support: float = 0.0             # 월 지원금 (청년도약계좌처럼 남이 보태 주는 돈). 내 돈은 안 나가고 잔액만 는다
 
     def __post_init__(self) -> None:
         if self.repay_method not in REPAY_METHODS:
@@ -192,6 +194,8 @@ class Item:
             self.housing_type, self.monthly = "", 0.0
         if not CATEGORY_INFO[self.category].get("uses_growth"):
             self.growth = 0.0
+        if not CATEGORY_INFO[self.category].get("uses_support"):
+            self.support = 0.0
 
     # ---- 기본 파생 값 ----
     def monthly_interest(self) -> float:
@@ -226,19 +230,38 @@ class Item:
             k = min(k, end_m - start_m)
         return max(0, k)
 
+    @property
+    def uses_support(self) -> bool:
+        """지원금을 받을 수 있는 항목인가 (적금·저축)."""
+        return bool(CATEGORY_INFO[self.category].get("uses_support"))
+
+    def saving_deposit(self) -> float:
+        """매달 통장에 쌓이는 금액 = 내 납입액 + 지원금."""
+        if self.category != Category.SAVING:
+            return 0.0
+        return self.amount + max(0.0, self.support)
+
     def saving_balance_at(self, m: int, basis: date) -> float:
-        """m개월 시점의 적금 잔액 = 납입 누계 + 단리 이자 (만기 뒤에는 이자가 더 붙지 않는다)."""
+        """m개월 시점의 적금 잔액 = (납입액 + 지원금) 누계 + 단리 이자.
+
+        만기 뒤에는 납입도 이자도 멈춘다.
+        """
         k = self.saving_months(m, basis)
         if k <= 0:
             return 0.0
-        principal = self.amount * k
+        per = self.saving_deposit()
+        principal = per * k
         mr = self.monthly_rate()
         if mr <= 0:
             return principal
         start_m, end_m = self.active_range(basis)
         mm = m if end_m is None else min(m, end_m)
         months_held = k * (mm - start_m) - k * (k - 1) / 2   # 각 납입분이 묶여 있던 개월 수의 합
-        return principal + self.amount * mr * max(0.0, months_held)
+        return principal + per * mr * max(0.0, months_held)
+
+    def support_total_at(self, m: int, basis: date) -> float:
+        """m개월 시점까지 받은 지원금 누계."""
+        return max(0.0, self.support) * self.saving_months(m, basis)
 
     # ---- 해마다 오르는 금액 ----
     @property
@@ -568,6 +591,7 @@ class Item:
             housing_type=str(d.get("housing_type") or ""),
             monthly=float(d.get("monthly", 0.0) or 0.0),
             growth=float(d.get("growth", 0.0) or 0.0),
+            support=float(d.get("support", 0.0) or 0.0),
         )
 
 
@@ -923,7 +947,8 @@ def sample_plan() -> Plan:
     p = Plan(months=12, target=30_000_000)
     p.add(Item("보유 현금", Category.CASH, 20_000_000))
     p.add(Item("예금 (3.5%)", Category.BANK, 10_000_000, rate=3.5))
-    p.add(Item("청약 적금 (3%)", Category.SAVING, 300_000, rate=3.0, start_date=p.start_date))
+    p.add(Item("청년도약계좌", Category.SAVING, 200_000, rate=3.0, support=300_000,
+               start_date=p.start_date, end_date=add_months(p.basis, 60).isoformat()))
     p.add(Item("전셋집", Category.DEPOSIT, 10_000_000, housing_type="banjeonse", monthly=500_000,
                end_date=add_months(p.basis, 24).isoformat()))
     p.add(Item("관리비", Category.MAINT, 100_000))

@@ -57,6 +57,7 @@ class ItemListModel(QAbstractListModel):
     HousingTypeRole = Qt.ItemDataRole.UserRole + 19
     MonthlyRole = Qt.ItemDataRole.UserRole + 20     # 주거의 월세
     GrowthRole = Qt.ItemDataRole.UserRole + 21      # 연 상승률 %
+    SupportRole = Qt.ItemDataRole.UserRole + 22     # 적금 월 지원금
 
     _ROLES = {
         NameRole: b"name",
@@ -80,6 +81,7 @@ class ItemListModel(QAbstractListModel):
         HousingTypeRole: b"housingType",
         MonthlyRole: b"monthly",
         GrowthRole: b"growth",
+        SupportRole: b"support",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -133,6 +135,8 @@ class ItemListModel(QAbstractListModel):
             return it.monthly
         if role == self.GrowthRole:
             return it.growth
+        if role == self.SupportRole:
+            return it.support
         if role == self.SubTextRole:
             if it.date_mode == "once":
                 d = parse_date(it.start_date) or (self._plan.basis if it.is_housing else None)
@@ -155,11 +159,21 @@ class ItemListModel(QAbstractListModel):
             end = it.end_date[:7] if it.end_date else "계속"
             parts = [f"{start} ~ {end}"]
             if it.category == Category.SAVING:
-                k = it.saving_months(self._plan.months, self._plan.basis)
-                parts.append(f"{self._plan.months}개월 후 {won(it.saving_balance_at(self._plan.months, self._plan.basis))} ({k}회 납입)")
+                basis = self._plan.basis
+                n = self._plan.months
+                k = it.saving_months(n, basis)
+                if it.support > 0:
+                    parts.append(f"내 돈 {won(it.amount)} + 지원 {won(it.support)} = 매달 {won(it.saving_deposit())}")
+                parts.append(f"{n}개월 후 {won(it.saving_balance_at(n, basis))} ({k}회 납입)")
+                if it.support > 0 and k > 0:
+                    parts.append(f"받은 지원금 {won(it.support_total_at(n, basis))}")
             if it.category == Category.LOAN:
                 basis = self._plan.basis
                 label = REPAY_METHODS.get(it.repay_method, "")
+                start_m, _end_m = it.active_range(basis)
+                interest = it.interest_at(max(0, start_m), basis)
+                if interest > 0:
+                    parts.append(f"월 이자 {won(interest)}")
                 if it.repay_method == "rate" and it.monthly_repay_amount() > 0:
                     n = it.months_to_payoff(basis)
                     parts.append(f"월 {it.monthly_repay_rate:g}% 상환 {won(it.monthly_repay_amount())}" + (f" · {n}개월 완납" if n else ""))
@@ -914,6 +928,7 @@ class Backend(QObject):
             "returnable": bool(info.get("returnable")),
             "isHousing": bool(info.get("housing")),
             "usesGrowth": bool(info.get("uses_growth")),
+            "usesSupport": bool(info.get("uses_support")),
             "flow": info["flow"],
             "onceWord": "수입" if info["flow"] == "income" else "지출",
         }
@@ -1048,7 +1063,8 @@ class Backend(QObject):
     def _make_item(self, name: str, cat_index: int, amount: float, rate: float, include_principal: bool,
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
-                   housing_type: str = "", monthly: float = 0.0, growth: float = 0.0) -> Item:
+                   housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
+                   support: float = 0.0) -> Item:
         cat = CATEGORY_LIST[max(0, min(cat_index, len(CATEGORY_LIST) - 1))]
         mode = CATEGORY_INFO[cat]["date_mode"]
         sd = parse_date(start_date) if mode in ("range", "once") else None   # once 면 지출일·수입일
@@ -1064,8 +1080,10 @@ class Backend(QObject):
             housing_type=(housing_type if cat == Category.DEPOSIT else ""),
             monthly=(max(0.0, float(monthly)) if cat == Category.DEPOSIT else 0.0),
             growth=max(0.0, float(growth)),
+            support=max(0.0, float(support)),
         )
 
+    @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float)
     @Slot(str, int, float, float, bool, str, str, str, float, str)
@@ -1075,12 +1093,15 @@ class Backend(QObject):
     def addItem(self, name: str, cat_index: int, amount: float, rate: float, include_principal: bool,
                 start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                 monthly_repay_rate: float = 0.0, repay_method: str = "",
-                housing_type: str = "", monthly: float = 0.0, growth: float = 0.0) -> None:
+                housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
+                support: float = 0.0) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
-                               repayments_json, monthly_repay_rate, repay_method, housing_type, monthly, growth)
+                               repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
+                               growth, support)
         self._items.add(item)
         self._set_status(f"추가: {item.name}")
 
+    @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str)
@@ -1090,9 +1111,11 @@ class Backend(QObject):
     def updateItem(self, row: int, name: str, cat_index: int, amount: float, rate: float, include_principal: bool,
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
-                   housing_type: str = "", monthly: float = 0.0, growth: float = 0.0) -> None:
+                   housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
+                   support: float = 0.0) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
-                               repayments_json, monthly_repay_rate, repay_method, housing_type, monthly, growth)
+                               repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
+                               growth, support)
         self._items.update(row, item)
         self._set_status(f"수정: {item.name}")
 

@@ -29,7 +29,7 @@ ApplicationWindow {
                                m.data(idx, Qt.UserRole + 12), m.data(idx, Qt.UserRole + 13), m.data(idx, Qt.UserRole + 14),
                                m.data(idx, Qt.UserRole + 16), m.data(idx, Qt.UserRole + 18),
                                m.data(idx, Qt.UserRole + 19), m.data(idx, Qt.UserRole + 20),
-                               m.data(idx, Qt.UserRole + 21))
+                               m.data(idx, Qt.UserRole + 21), m.data(idx, Qt.UserRole + 22))
     }
 
     function openEntryDialog() {                            // 테스트/외부 호출용
@@ -475,6 +475,7 @@ ApplicationWindow {
                             required property string housingType
                             required property real monthly
                             required property real growth
+                            required property real support
                             required property int sourceRow
 
                             // 접힌 분류의 줄은 목록에서 빼지 않고 높이만 0 으로 접는다
@@ -515,18 +516,32 @@ ApplicationWindow {
                                                                        rowItem.startDate, rowItem.endDate, rowItem.repayments,
                                                                        rowItem.monthlyRepayRate, rowItem.repayMethod,
                                                                        rowItem.housingType, rowItem.monthly,
-                                                                       rowItem.growth)
+                                                                       rowItem.growth, rowItem.support)
+                            }
+
+                            // 이름 아래 작은 글씨 — 줄 전체 폭을 쓴다
+                            // (이름 칸 170px 안에 가두면 이자·지원금 같은 금액이 잘려 안 보인다)
+                            Text {
+                                visible: rowItem.subText !== "" && !rowItem.folded
+                                text: rowItem.subText
+                                color: Theme.textDim; font.pixelSize: 10
+                                elide: Text.ElideRight
+                                anchors {
+                                    left: parent.left; right: parent.right; bottom: parent.bottom
+                                    leftMargin: 18; rightMargin: 12; bottomMargin: 5
+                                }
                             }
 
                             RowLayout {
                                 anchors.fill: parent
                                 anchors.leftMargin: 18; anchors.rightMargin: 8
+                                anchors.bottomMargin: rowItem.subText !== "" ? 14 : 0
                                 spacing: 8
-                                Column {
+                                Text {
                                     Layout.preferredWidth: 170
-                                    spacing: 1
-                                    Text { width: 170; text: rowItem.name; color: Theme.text; font.pixelSize: 14; elide: Text.ElideRight }
-                                    Text { width: 170; visible: rowItem.subText !== ""; text: rowItem.subText; color: Theme.textDim; font.pixelSize: 10; elide: Text.ElideRight }
+                                    text: rowItem.name
+                                    color: Theme.text; font.pixelSize: 14
+                                    elide: Text.ElideRight
                                 }
                                 Rectangle {
                                     Layout.preferredWidth: 104; height: 22; radius: 11
