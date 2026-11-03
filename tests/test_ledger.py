@@ -144,3 +144,49 @@ def test_ledger_repeat_and_copy():
     assert lg2.summary("2026-02")["count"] == 2
     assert lg2.copy_month("2026-01", "2026-01") == []
     assert lg2.copy_month("2026-09", "2026-10") == []                 # 원본이 비었으면 아무것도 안 함
+
+
+def test_budgets():
+    lg = Ledger()
+    lg.add(Entry("2026-01-05", "식비", 300_000))
+    lg.add(Entry("2026-01-10", "교통", 120_000))
+    lg.add(Entry("2026-01-25", "급여", 2_000_000))      # 수입은 예산과 무관
+    lg.add(Entry("2026-02-05", "식비", 500_000))
+
+    assert not lg.has_budgets()
+    lg.set_budget("식비", 400_000)
+    lg.set_budget("통신", 90_000)
+    lg.set_budget("의료", 0)                              # 0 은 지우기
+    assert lg.has_budgets() and lg.budget_of("식비") == 400_000 and lg.budget_of("의료") == 0
+
+    rows = {r["category"]: r for r in lg.budget_rows("2026-01")}
+    assert rows["식비"]["limit"] == 400_000 and rows["식비"]["spent"] == 300_000
+    assert rows["식비"]["left"] == 100_000 and rows["식비"]["ratio"] == 0.75 and not rows["식비"]["over"]
+    assert rows["교통"]["limit"] == 0 and rows["교통"]["spent"] == 120_000   # 예산 없이 쓴 것도 나온다
+    assert rows["통신"]["spent"] == 0                                        # 예산만 있고 안 쓴 것도
+    assert "급여" not in rows
+
+    # 2월엔 예산을 넘는다
+    feb = {r["category"]: r for r in lg.budget_rows("2026-02")}
+    assert feb["식비"]["over"] and feb["식비"]["left"] == -100_000
+
+    # 연 단위로 보면 12달치
+    assert lg.period_months("2026") == 12 and lg.period_months("2026-01") == 1
+    year = {r["category"]: r for r in lg.budget_rows("2026")}
+    assert year["식비"]["limit"] == 400_000 * 12 and year["식비"]["spent"] == 800_000
+
+    t = lg.budget_totals("2026-01")
+    assert t["limit"] == 490_000 and t["spent"] == 300_000 and t["count"] == 2   # 교통은 예산이 없다
+    assert not t["over"] and t["left"] == 190_000
+
+    # 실적으로 채우기 (천원 단위)
+    lg2 = Ledger()
+    lg2.add(Entry("2026-01-05", "식비", 301_200))
+    lg2.add(Entry("2026-01-06", "교통", 50_000))
+    assert lg2.budget_from_period("2026-01") == 2
+    assert lg2.budget_of("식비") == 301_000 and lg2.budget_of("교통") == 50_000
+
+    # 저장 / 불러오기
+    back = Ledger.from_dict(lg.to_dict())
+    assert back.budgets == {"식비": 400_000, "통신": 90_000}
+    assert Ledger.from_dict({"entries": [], "budgets": {"식비": "이상한값", "교통": -1}}).budgets == {}

@@ -560,3 +560,57 @@ def test_export_ledger_plan_columns(tmp_path):
     assert ws.cell(row=1, column=7).value == "계획 지출"
     assert ws.cell(row=2, column=7).value == 500_000
     assert ws.cell(row=2, column=8).value == 100_000
+
+
+def test_backend_budgets(tmp_path):
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    assert not b.hasBudgets and b.ledgerBudgets == []
+    assert [r["category"] for r in b.budgetEditRows][:2] == ["식비", "주거/관리비"]
+
+    b.addEntry("2026-01-05", "식비", 300_000)
+    b.addEntry("2026-01-10", "교통", 120_000)
+    b.setBudget("식비", 400_000)
+    assert b.hasBudgets and b.budgetMonths == 1
+
+    rows = {r["category"]: r for r in b.ledgerBudgets}
+    assert rows["식비"]["ratio"] == 0.75 and rows["교통"]["limit"] == 0
+    assert b.ledgerBudgetTotals == {"limit": 400_000, "spent": 300_000, "left": 100_000,
+                                    "ratio": 0.75, "over": False, "count": 1}
+
+    b.ledgerMonth = 0
+    assert b.budgetMonths == 12 and b.ledgerBudgetTotals["limit"] == 400_000 * 12
+    b.ledgerMonth = 1
+
+    b.fillBudgetsFromPeriod()
+    assert b.ledgerBudgetTotals["limit"] == 420_000          # 식비 300,000 + 교통 120,000
+    assert b.ledgerBudgetTotals["over"] is False
+
+    b.setBudget("식비", 0)
+    assert "식비" not in [r["category"] for r in b.budgetEditRows if r["limit"] > 0]
+
+    b.clearBudgets()
+    assert not b.hasBudgets
+
+    # 저장 / 불러오기에 예산이 따라간다
+    b.setBudget("통신", 90_000)
+    b.saveTo(str(tmp_path / "ws"))
+    b2 = Backend(Plan())
+    b2.loadFrom(str(tmp_path / "ws.json"))
+    assert b2.hasBudgets and b2.ledgerBudgets[0]["limit"] == 90_000
+
+
+def test_export_budget_sheet(tmp_path):
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.export_excel import export_plan
+    from openpyxl import load_workbook
+    lg = Ledger([Entry("2026-01-05", "식비", 300_000)])
+    wb = load_workbook(export_plan(Plan(months=12, start_date="2026-01-01"), tmp_path / "a.xlsx", ledger=lg))
+    assert "가계부 예산" not in wb.sheetnames          # 예산이 없으면 시트도 없다
+
+    lg.set_budget("식비", 400_000)
+    wb = load_workbook(export_plan(Plan(months=12, start_date="2026-01-01"), tmp_path / "b.xlsx", ledger=lg))
+    ws = wb["가계부 예산"]
+    assert ws.cell(row=1, column=2).value == "한 달 예산"
+    assert ws.cell(row=2, column=1).value == "식비"
+    assert ws.cell(row=2, column=2).value == 400_000
+    assert ws.cell(row=2, column=4).value == -100_000

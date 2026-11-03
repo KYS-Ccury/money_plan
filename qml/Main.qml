@@ -35,6 +35,10 @@ ApplicationWindow {
         win.mode = "ledger"
         ledgerView.openAdd()
     }
+    function openBudgetDialog() {                           // 테스트/외부 호출용
+        win.mode = "ledger"
+        ledgerView.openBudget()
+    }
 
     ItemDialog { id: itemDialog }
 

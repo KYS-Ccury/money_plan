@@ -120,6 +120,7 @@ class Entry:
 @dataclass
 class Ledger:
     entries: list[Entry] = field(default_factory=list)
+    budgets: dict[str, float] = field(default_factory=dict)   # 분류 → 한 달 예산(원)
 
     # ---- 목록 조작 ----
     def add(self, entry: Entry) -> Entry:
@@ -223,6 +224,80 @@ class Ledger:
         """그 날 하루의 수지 (수입 - 지출)."""
         return sum(e.signed for e in self.entries if e.date == day)
 
+    # ---- 분류별 예산 ----
+    def set_budget(self, category: str, amount: float) -> None:
+        """한 달 예산을 정한다. 0 이하면 지운다."""
+        if not category:
+            return
+        if amount and amount > 0:
+            self.budgets[category] = float(amount)
+        else:
+            self.budgets.pop(category, None)
+
+    def budget_of(self, category: str) -> float:
+        return float(self.budgets.get(category, 0.0))
+
+    def has_budgets(self) -> bool:
+        return any(v > 0 for v in self.budgets.values())
+
+    def period_months(self, period: str) -> int:
+        """예산을 몇 달치로 볼지. 'YYYY-MM' 이면 1, 'YYYY' 면 12."""
+        return 1 if len(period) == 7 else (12 if len(period) == 4 else 0)
+
+    def budget_rows(self, period: str = "") -> list[dict]:
+        """그 기간의 분류별 예산 현황.
+        예산을 정했거나 실제로 쓴 분류만, 많이 쓴 비율 순으로.
+        {category, limit, spent, left, ratio, over}"""
+        months = self.period_months(period) or 1
+        spent: dict[str, float] = {}
+        for e in self.entries:
+            if e.is_income or not e.in_period(period):
+                continue
+            spent[e.category] = spent.get(e.category, 0.0) + e.amount
+
+        names = {c for c, v in self.budgets.items() if v > 0} | set(spent)
+        rows = []
+        for c in names:
+            limit = self.budget_of(c) * months
+            used = spent.get(c, 0.0)
+            rows.append({
+                "category": c,
+                "limit": limit,
+                "spent": used,
+                "left": limit - used,
+                "ratio": (used / limit) if limit > 0 else 0.0,
+                "over": limit > 0 and used > limit,
+            })
+        # 예산이 있는 것 먼저, 그 안에서 많이 쓴 비율 순, 예산 없는 것은 금액 순
+        rows.sort(key=lambda r: (r["limit"] <= 0, -r["ratio"], -r["spent"]))
+        return rows
+
+    def budget_totals(self, period: str = "") -> dict:
+        """{limit, spent, left, ratio, over, count} — 예산을 정한 분류만 더한다."""
+        months = self.period_months(period) or 1
+        limit = sum(v for v in self.budgets.values() if v > 0) * months
+        spent = 0.0
+        count = 0
+        for r in self.budget_rows(period):
+            if r["limit"] > 0:
+                spent += r["spent"]
+                count += 1
+        return {"limit": limit, "spent": spent, "left": limit - spent,
+                "ratio": (spent / limit) if limit > 0 else 0.0,
+                "over": limit > 0 and spent > limit, "count": count}
+
+    def budget_from_period(self, period: str) -> int:
+        """그 기간에 실제로 쓴 금액(월평균)을 예산으로 삼는다. 정한 분류 수를 돌려준다."""
+        months = self.period_months(period) or 1
+        spent: dict[str, float] = {}
+        for e in self.entries:
+            if e.is_income or not e.in_period(period):
+                continue
+            spent[e.category] = spent.get(e.category, 0.0) + e.amount
+        for c, v in spent.items():
+            self.set_budget(c, round(v / months / 1000) * 1000)     # 천원 단위로
+        return len(spent)
+
     # ---- 반복 / 복사 ----
     def repeat(self, entry: Entry, months: int) -> list[Entry]:
         """같은 내역을 다음 달부터 months-1 번 더 넣는다 (entry 자신은 이미 들어있다고 본다)."""
@@ -250,13 +325,21 @@ class Ledger:
 
     # ---- 저장 / 불러오기 ----
     def to_dict(self) -> dict:
-        return {"entries": [e.to_dict() for e in self.entries]}
+        return {"entries": [e.to_dict() for e in self.entries],
+                "budgets": {k: v for k, v in self.budgets.items() if v > 0}}
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Ledger":
         if not d:
             return cls()
-        return cls([Entry.from_dict(x) for x in d.get("entries", []) if isinstance(x, dict)])
+        budgets = {}
+        for k, v in (d.get("budgets") or {}).items():
+            try:
+                if float(v) > 0:
+                    budgets[str(k)] = float(v)
+            except (TypeError, ValueError):
+                continue
+        return cls([Entry.from_dict(x) for x in d.get("entries", []) if isinstance(x, dict)], budgets)
 
 
 def sample_ledger(basis: date | None = None) -> Ledger:
@@ -273,4 +356,7 @@ def sample_ledger(basis: date | None = None) -> Ledger:
         lg.add(Entry(f"{yy:04d}-{mm:02d}-15", "교통", 110_000, "대중교통"))
         lg.add(Entry(f"{yy:04d}-{mm:02d}-20", "문화/여가", 95_000, "영화·구독"))
     lg.add(Entry(f"{y:04d}-{m:02d}-10", "상여금", 500_000, "성과급"))
+    for c, v in (("식비", 400_000), ("주거/관리비", 600_000), ("교통", 100_000),
+                 ("통신", 90_000), ("문화/여가", 80_000)):
+        lg.set_budget(c, v)
     return lg

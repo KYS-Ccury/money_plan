@@ -9,6 +9,7 @@ RowLayout {
 
     // 기간이 바뀌어도 같은 달에 계속 적게 기본 날짜를 맞춰 준다
     function openAdd() { entryDialog.openForAdd(view.defaultDate()) }
+    function openBudget() { budgetDialog.open() }
 
     function defaultDate() {
         if (backend.ledgerMonth > 0)
@@ -17,6 +18,7 @@ RowLayout {
     }
 
     EntryDialog { id: entryDialog }
+    BudgetDialog { id: budgetDialog }
 
     ConfirmDialog {
         id: clearLedgerDialog
@@ -88,6 +90,13 @@ RowLayout {
                 }
 
                 Item { Layout.fillWidth: true }
+                Button {
+                    text: "예산"; flat: true; leftPadding: 10; rightPadding: 10
+                    Material.foreground: backend.hasBudgets ? Theme.accent : Theme.textDim
+                    onClicked: budgetDialog.open()
+                    ToolTip.visible: hovered; ToolTip.delay: 500
+                    ToolTip.text: "분류마다 한 달에 얼마까지 쓸지 정합니다"
+                }
                 Button {
                     text: "지난달 복사"; flat: true; leftPadding: 10; rightPadding: 10
                     visible: backend.canCopyPreviousMonth
@@ -385,6 +394,123 @@ RowLayout {
                             font.pixelSize: 12
                         }
                     }
+                }
+            }
+        }
+
+        // ───────────── 분류별 예산
+        Card {
+            id: budgetCard
+            readonly property var totals: backend.ledgerBudgetTotals
+            readonly property var rows: backend.ledgerBudgets
+            Layout.fillWidth: true
+            Layout.preferredHeight: budgetCol.implicitHeight + Theme.pad * 2 + 30
+            visible: backend.ledgerYears.length > 0
+            title: "분류별 예산" + (backend.budgetMonths > 1 ? "  ·  " + backend.budgetMonths + "개월분" : "")
+
+            ColumnLayout {
+                id: budgetCol
+                anchors.fill: parent
+                spacing: 6
+
+                // 예산을 아직 안 정했을 때
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: !backend.hasBudgets
+                    spacing: 6
+                    Text {
+                        text: "분류마다 한 달 한도를 정하면 얼마나 썼는지 막대로 보입니다."
+                        color: Theme.textDim; font.pixelSize: 12
+                        wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredWidth: 1
+                    }
+                    Button { text: "예산 정하기"; highlighted: true; onClicked: budgetDialog.open() }
+                }
+
+                // 합계
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: backend.hasBudgets
+                    spacing: 4
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text { text: "합계"; color: Theme.text; font.pixelSize: 13; font.bold: true }
+                        Item { Layout.fillWidth: true }
+                        Text {
+                            text: backend.won(budgetCard.totals.spent) + " / " + backend.won(budgetCard.totals.limit)
+                            color: budgetCard.totals.over ? Theme.red : Theme.text
+                            font.pixelSize: 13; font.bold: true
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 8; radius: 4
+                        color: Theme.row
+                        Rectangle {
+                            width: Math.min(1, budgetCard.totals.ratio) * parent.width
+                            height: parent.height; radius: 4
+                            color: budgetCard.totals.over ? Theme.red
+                                 : budgetCard.totals.ratio > 0.85 ? Theme.yellow : Theme.green
+                            Behavior on width { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
+                        }
+                    }
+                    Text {
+                        text: budgetCard.totals.over
+                              ? backend.won(-budgetCard.totals.left) + " 넘었습니다"
+                              : backend.won(budgetCard.totals.left) + " 남았습니다"
+                        color: budgetCard.totals.over ? Theme.red : Theme.textDim
+                        font.pixelSize: 11
+                    }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder; Layout.topMargin: 4 }
+                }
+
+                // 분류별
+                Repeater {
+                    model: budgetCard.rows
+                    delegate: ColumnLayout {
+                        required property var modelData
+                        readonly property bool noLimit: modelData.limit <= 0
+                        Layout.fillWidth: true
+                        Layout.topMargin: 2
+                        spacing: 2
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Text {
+                                text: modelData.category
+                                color: Theme.text; font.pixelSize: 12
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            Text {
+                                text: noLimit ? backend.won(modelData.spent) + "  (예산 없음)"
+                                              : backend.won(modelData.spent) + " / " + backend.won(modelData.limit)
+                                color: modelData.over ? Theme.red : (noLimit ? Theme.textDim : Theme.text)
+                                font.pixelSize: 11
+                            }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 6; radius: 3
+                            color: Theme.row
+                            visible: !parent.noLimit
+                            Rectangle {
+                                width: Math.min(1, modelData.ratio) * parent.width
+                                height: parent.height; radius: 3
+                                color: modelData.over ? Theme.red
+                                     : modelData.ratio > 0.85 ? Theme.yellow : Theme.green
+                                Behavior on width { NumberAnimation { duration: Theme.normal; easing.type: Easing.OutCubic } }
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    visible: backend.hasBudgets && budgetCard.rows.length === 0
+                    text: backend.ledgerPeriodText + " 에는 지출 기록이 없습니다."
+                    color: Theme.textDim; font.pixelSize: 11
                 }
             }
         }

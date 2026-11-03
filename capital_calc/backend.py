@@ -1262,6 +1262,50 @@ class Backend(QObject):
         self._ledger_touched()
         self._set_status(f"지난달({src}) 내역 {len(made)}건을 복사했습니다.")
 
+    # ---- 분류별 예산 ----
+    @Property(bool, notify=ledgerChanged)
+    def hasBudgets(self) -> bool:
+        return self._ws.ledger.has_budgets()
+
+    @Property(int, notify=ledgerChanged)
+    def budgetMonths(self) -> int:
+        """지금 보고 있는 기간이 몇 달치인가 (월=1, 연=12)."""
+        return self._ws.ledger.period_months(self.ledgerPeriod)
+
+    @Property("QVariantList", notify=ledgerChanged)
+    def ledgerBudgets(self) -> list[dict]:
+        """분류별 예산 현황 [{category, limit, spent, left, ratio, over}]"""
+        return self._ws.ledger.budget_rows(self.ledgerPeriod)
+
+    @Property("QVariantMap", notify=ledgerChanged)
+    def ledgerBudgetTotals(self) -> dict:
+        return self._ws.ledger.budget_totals(self.ledgerPeriod)
+
+    @Property("QVariantList", notify=ledgerChanged)
+    def budgetEditRows(self) -> list[dict]:
+        """예산 설정 팝업용 — 지출 분류 전체와 지금 정해진 한 달 예산."""
+        return [{"category": c, "limit": self._ws.ledger.budget_of(c)}
+                for c in LEDGER_COST_CATEGORIES]
+
+    @Slot(str, float)
+    def setBudget(self, category: str, amount: float) -> None:
+        self._ws.ledger.set_budget(category, amount)
+        self.ledgerChanged.emit()
+
+    @Slot()
+    def clearBudgets(self) -> None:
+        self._ws.ledger.budgets.clear()
+        self.ledgerChanged.emit()
+        self._set_status("예산을 모두 지웠습니다.")
+
+    @Slot()
+    def fillBudgetsFromPeriod(self) -> None:
+        """지금 보고 있는 기간에 실제로 쓴 금액(월평균)을 예산으로 채운다."""
+        n = self._ws.ledger.budget_from_period(self.ledgerPeriod)
+        self.ledgerChanged.emit()
+        self._set_status(f"{self.ledgerPeriodText} 실적으로 예산 {n}개를 채웠습니다."
+                         if n else "채울 지출 기록이 없습니다.")
+
     # ---- 계획 대비 실적 ----
     def _period_months(self, period: str) -> list[str]:
         """'2026-03' → ['2026-03'], '2026' → 1~12월."""

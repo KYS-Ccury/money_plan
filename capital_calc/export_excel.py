@@ -6,7 +6,7 @@
 - 월별 추이: 0 ~ max(기간, 36) 개월의 보유 자금 / 월 지출 / 월 수입 / 순 자본 / 목표 대비
 - 비중     : 보유 자금 · 월 지출 · 월 수입 구성 비율
 - 시나리오 비교: 시나리오가 2개 이상일 때, 시나리오별 월별 순 자본 (선 그래프 포함)
-- 가계부     : 기록이 있을 때 내역 / 월별(막대 그래프) / 연도별
+- 가계부     : 기록이 있을 때 내역 / 월별(막대 그래프) / 연도별 / 예산(정해 둔 경우)
 """
 from __future__ import annotations
 
@@ -120,6 +120,30 @@ def _ledger_sheets(wb, ledger, plan=None) -> None:
         bar.add_data(Reference(ws, min_col=2, max_col=3, min_row=1, max_row=len(months) + 1), titles_from_data=True)
         bar.set_categories(Reference(ws, min_col=1, min_row=2, max_row=len(months) + 1))
         ws.add_chart(bar, "G2")
+
+    if ledger.has_budgets():
+        ws = wb.create_sheet("가계부 예산")
+        _header(ws, 1, ["분류", "한 달 예산", "월평균 실제", "차이", "쓴 달 수"])
+        months = sorted({e.ym for e in ledger.entries})
+        n = max(1, len(months))
+        spent: dict[str, float] = {}
+        used_months: dict[str, set] = {}
+        for e in ledger.entries:
+            if e.is_income:
+                continue
+            spent[e.category] = spent.get(e.category, 0.0) + e.amount
+            used_months.setdefault(e.category, set()).add(e.ym)
+        names = sorted({c for c, v in ledger.budgets.items() if v > 0} | set(spent))
+        for r, c in enumerate(names, start=2):
+            limit = ledger.budget_of(c)
+            avg = spent.get(c, 0.0) / n
+            ws.cell(row=r, column=1, value=c)
+            ws.cell(row=r, column=2, value=limit or None).number_format = WON
+            ws.cell(row=r, column=3, value=avg).number_format = WON
+            if limit > 0:
+                ws.cell(row=r, column=4, value=avg - limit).number_format = WON
+            ws.cell(row=r, column=5, value=len(used_months.get(c, ())))
+        _autowidth(ws)
 
     ws = wb.create_sheet("가계부 연도별")
     _header(ws, 1, ["연도", "수입", "지출", "남은 돈", "건수"])

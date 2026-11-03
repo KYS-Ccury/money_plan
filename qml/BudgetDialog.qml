@@ -1,0 +1,140 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+
+// 분류별 한 달 예산 설정 팝업
+Popup {
+    id: dlg
+    objectName: "budgetDialog"
+
+    modal: true
+    focus: true
+    anchors.centerIn: Overlay.overlay
+    width: 520
+    padding: Theme.pad + 4
+    closePolicy: Popup.CloseOnEscape
+
+    background: Rectangle {
+        color: Theme.card; radius: Theme.radius
+        border.color: Theme.cardBorder; border.width: 1
+    }
+    Overlay.modal: Rectangle { color: "#99000000" }
+
+    enter: Transition {
+        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.fast }
+        NumberAnimation { property: "scale"; from: 0.92; to: 1; duration: Theme.normal; easing.type: Easing.OutBack }
+    }
+    exit: Transition {
+        NumberAnimation { property: "opacity"; from: 1; to: 0; duration: Theme.fast }
+        NumberAnimation { property: "scale"; from: 1; to: 0.95; duration: Theme.fast }
+    }
+
+    ConfirmDialog {
+        id: clearBudgetDialog
+        title: "예산 지우기"
+        okText: "지우기"
+        message: "정해 둔 예산을 모두 지웁니다."
+        onAccepted: backend.clearBudgets()
+    }
+
+    contentItem: ColumnLayout {
+        spacing: 12
+
+        Text { text: "분류별 예산"; color: Theme.text; font.pixelSize: 18; font.bold: true }
+        Text {
+            text: "한 달에 이 분류로 얼마까지 쓸지 정합니다. 0 이면 예산 없음입니다."
+            color: Theme.textDim; font.pixelSize: 12
+            wrapMode: Text.Wrap; Layout.fillWidth: true
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            Button {
+                text: backend.ledgerPeriodText + " 실적으로 채우기"
+                flat: true; leftPadding: 10; rightPadding: 10
+                enabled: backend.ledgerSummary.count > 0
+                onClicked: backend.fillBudgetsFromPeriod()
+                ToolTip.visible: hovered; ToolTip.delay: 500
+                ToolTip.text: "그 기간에 실제로 쓴 금액(월평균)을 예산으로 넣습니다"
+            }
+            Item { Layout.fillWidth: true }
+            Button {
+                text: "모두 지우기"; flat: true; leftPadding: 10; rightPadding: 10
+                Material.foreground: Theme.red
+                enabled: backend.hasBudgets
+                onClicked: clearBudgetDialog.open()
+            }
+        }
+
+        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
+
+        Flickable {
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(budgetCol.implicitHeight, 420)
+            contentHeight: budgetCol.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+            ColumnLayout {
+                id: budgetCol
+                width: parent.width
+                spacing: 4
+
+                Repeater {
+                    model: backend.budgetEditRows
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        Text {
+                            text: modelData.category
+                            color: modelData.limit > 0 ? Theme.text : Theme.textDim
+                            font.pixelSize: 13
+                            Layout.preferredWidth: 110
+                        }
+                        Slider {
+                            Layout.fillWidth: true
+                            from: 0; to: 2000000; stepSize: 10000
+                            value: modelData.limit
+                            onMoved: backend.setBudget(modelData.category, value)
+                        }
+                        TextField {
+                            Layout.preferredWidth: 130
+                            horizontalAlignment: Text.AlignRight
+                            text: modelData.limit > 0 ? Number(modelData.limit).toLocaleString(Qt.locale(), "f", 0) : ""
+                            inputMethodHints: Qt.ImhDigitsOnly
+                            onEditingFinished: backend.setBudget(modelData.category,
+                                                                 parseFloat(text.replace(/,/g, "")) || 0)
+                        }
+                        Text { text: "원"; color: Theme.textDim; font.pixelSize: 12 }
+                    }
+                }
+            }
+        }
+
+        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+            Text {
+                text: "한 달 예산 합계"
+                color: Theme.textDim; font.pixelSize: 13
+            }
+            Item { Layout.fillWidth: true }
+            Text {
+                text: backend.won(backend.ledgerBudgetTotals.limit / Math.max(1, backend.budgetMonths))
+                color: Theme.text; font.pixelSize: 15; font.bold: true
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Item { Layout.fillWidth: true }
+            Button { text: "닫기"; highlighted: true; onClicked: dlg.close() }
+        }
+    }
+}
