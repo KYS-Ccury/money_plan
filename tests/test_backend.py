@@ -453,3 +453,66 @@ def test_backend_ledger_save_and_export(tmp_path):
     wb = load_workbook(tmp_path / "out.xlsx")
     assert "가계부 내역" in wb.sheetnames and "가계부 월별" in wb.sheetnames
     assert wb["가계부 월별"].cell(row=2, column=1).value == "2026-03"
+
+
+def test_backend_ledger_filters_and_repeat():
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    b.addEntry("2026-01-10", "급여", 2_000_000, "회사")
+    b.addEntry("2026-01-12", "식비", 30_000, "김밥천국", "점심")
+    b.addEntry("2026-01-20", "교통", 50_000, "지하철")
+
+    assert b.ledgerUsedCategories == ["전체", "교통", "급여", "식비"]
+    assert not b.ledgerFiltered and b.ledgerItems.rowCount() == 3
+
+    b.ledgerQuery = "회사"
+    assert b.ledgerFiltered and b.ledgerItems.rowCount() == 1
+    assert b.ledgerFilteredSummary["income"] == 2_000_000
+    b.ledgerQuery = ""
+
+    b.ledgerKindFilter = "cost"
+    assert b.ledgerItems.rowCount() == 2 and b.ledgerFilteredSummary["cost"] == 80_000
+    b.ledgerCategoryFilter = "식비"
+    assert b.ledgerItems.rowCount() == 1
+    b.clearLedgerFilters()
+    assert not b.ledgerFiltered and b.ledgerItems.rowCount() == 3
+
+    # 그 달에 없는 분류가 걸려 있으면 달을 옮길 때 저절로 풀린다
+    b.ledgerCategoryFilter = "교통"
+    b.ledgerMonth = 2
+    assert b.ledgerCategoryFilter == ""
+
+    # 날짜 구분줄
+    info = b.ledgerDayInfo("2026-01-12")
+    assert info["label"] == "1월 12일 (월)" and info["net"] == -30_000
+
+    # 지난달 대비 (1월엔 비교 대상이 없다)
+    b.ledgerMonth = 1
+    assert b.ledgerPrev["has"] is False
+    b.addEntry("2026-02-10", "식비", 40_000)
+    b.ledgerMonth = 2
+    prev = b.ledgerPrev
+    assert prev["has"] and prev["label"] == "지난달" and prev["cost"] == 80_000
+    assert prev["costDiff"] == -40_000 and prev["costPct"] == -50.0
+
+
+def test_backend_ledger_repeat_and_copy():
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    b.addEntryRepeat("2026-01-31", "보험", 50_000, "실손", "", 3)
+    assert b.ledgerSummary["count"] == 1                       # 1월엔 한 건
+    assert b.ledgerYear == "2026" and b.ledgerMonth == 1
+    b.ledgerMonth = 2
+    assert b.ledgerItems.rowCount() == 1
+    assert b.ledgerItems.data(b.ledgerItems.index(0, 0), b.ledgerItems.DateRole) == "2026-02-28"
+
+    # 지난달 복사
+    b.ledgerMonth = 1
+    b.addEntry("2026-01-05", "주거/관리비", 600_000, "월세")
+    b.ledgerMonth = 2
+    assert b.canCopyPreviousMonth
+    b.copyPreviousMonth()
+    assert b.ledgerSummary["count"] == 2                       # 보험은 이미 있어 월세만 들어온다
+    b.copyPreviousMonth()
+    assert b.ledgerSummary["count"] == 2                       # 두 번 눌러도 늘지 않는다
+
+    b.ledgerMonth = 0
+    assert not b.canCopyPreviousMonth                           # 연 단위에서는 못 쓴다

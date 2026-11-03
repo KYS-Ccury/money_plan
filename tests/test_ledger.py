@@ -95,3 +95,52 @@ def test_ledger_saved_with_workspace(tmp_path):
     del d["ledger"]
     path.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
     assert Workspace.load(path).ledger.entries == []
+
+
+def test_ledger_search_and_filters():
+    lg = Ledger()
+    lg.add(Entry("2026-01-10", "급여", 2_000_000, "회사"))
+    lg.add(Entry("2026-01-12", "식비", 30_000, "김밥천국", note="점심"))
+    lg.add(Entry("2026-01-20", "교통", 50_000, "지하철"))
+    lg.add(Entry("2026-02-01", "식비", 20_000, "회사 앞 식당"))
+
+    assert [e.name for e in lg.search("2026-01")] == ["지하철", "김밥천국", "회사"]
+    assert [e.name for e in lg.search("2026-01", query="회사")] == ["회사"]
+    assert [e.name for e in lg.search("2026", query="회사")] == ["회사 앞 식당", "회사"]
+    assert [e.name for e in lg.search("2026-01", query="점심")] == ["김밥천국"]      # 메모도 찾는다
+    assert [e.name for e in lg.search("2026-01", query="식비")] == ["김밥천국"]      # 분류도 찾는다
+    assert len(lg.search("2026", kind=INCOME)) == 1
+    assert len(lg.search("2026", category="식비")) == 2
+    assert lg.search("2026", query="없는말") == []
+
+    assert lg.categories_used("2026-01") == ["교통", "급여", "식비"]
+    assert lg.categories_used("2026-02") == ["식비"]
+    assert lg.day_total("2026-01-12") == -30_000
+    assert lg.day_total("2026-01-10") == 2_000_000
+    assert lg.day_total("2026-01-11") == 0
+
+
+def test_ledger_repeat_and_copy():
+    from capital_calc.ledger import prev_period, same_day_in, shift_month
+    assert prev_period("2026-03") == "2026-02" and prev_period("2026-01") == "2025-12"
+    assert prev_period("2026") == "2025" and prev_period("") == ""
+    assert shift_month("2026-11", 2) == "2027-01" and shift_month("2026-01", -1) == "2025-12"
+    assert same_day_in("2026-02", 31) == "2026-02-28"      # 말일로 맞춘다
+
+    lg = Ledger()
+    e = lg.add(Entry("2026-01-31", "보험", 50_000, "실손"))
+    made = lg.repeat(e, 3)
+    assert [x.date for x in made] == ["2026-02-28", "2026-03-31"]
+    assert len(lg.entries) == 3 and lg.summary("2026")["cost"] == 150_000
+
+    # 한 달치 통째로 복사. 이미 같은 내역이 있으면 건너뛴다
+    lg2 = Ledger()
+    lg2.add(Entry("2026-01-05", "주거/관리비", 600_000, "월세"))
+    lg2.add(Entry("2026-01-25", "급여", 2_000_000, "회사"))
+    lg2.add(Entry("2026-02-05", "주거/관리비", 600_000, "월세"))     # 이미 있음
+
+    made = lg2.copy_month("2026-01", "2026-02")
+    assert [x.category for x in made] == ["급여"]
+    assert lg2.summary("2026-02")["count"] == 2
+    assert lg2.copy_month("2026-01", "2026-01") == []
+    assert lg2.copy_month("2026-09", "2026-10") == []                 # 원본이 비었으면 아무것도 안 함

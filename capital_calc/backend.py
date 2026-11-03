@@ -25,7 +25,7 @@ from PySide6.QtCore import (
 
 from .export_excel import composition, export_plan
 from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Ledger,
-                     kind_of, sample_ledger)
+                     kind_of, prev_period, sample_ledger, shift_month)
 from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
                      REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS,
                      Category, Item, Plan, Workspace, add_months, parse_date, sample_plan, won)
@@ -308,6 +308,7 @@ class LedgerModel(QAbstractListModel):
     KindRole = Qt.ItemDataRole.UserRole + 7
     NoteRole = Qt.ItemDataRole.UserRole + 8
     SourceRowRole = Qt.ItemDataRole.UserRole + 9   # Ledger.entries 에서의 번호
+    DaySectionRole = Qt.ItemDataRole.UserRole + 10  # 날짜 구분 헤더용
 
     _ROLES = {
         DateRole: b"date",
@@ -319,12 +320,16 @@ class LedgerModel(QAbstractListModel):
         KindRole: b"kind",
         NoteRole: b"note",
         SourceRowRole: b"sourceRow",
+        DaySectionRole: b"daySection",
     }
 
     def __init__(self, ledger: Ledger, parent: QObject | None = None):
         super().__init__(parent)
         self._ledger = ledger
         self._period = ""
+        self._query = ""
+        self._kind = ""
+        self._category = ""
         self._rows: list[int] = []
         self._rebuild()
 
@@ -358,11 +363,14 @@ class LedgerModel(QAbstractListModel):
             return e.note
         if role == self.SourceRowRole:
             return src
+        if role == self.DaySectionRole:
+            return e.date
         return None
 
     # ---- 갱신 ----
     def _rebuild(self) -> None:
-        rows = [(e.date, i) for i, e in enumerate(self._ledger.entries) if e.in_period(self._period)]
+        rows = [(e.date, i) for i, e in enumerate(self._ledger.entries)
+                if self._ledger.matches(e, self._period, self._query, self._kind, self._category)]
         rows.sort(key=lambda t: t[0], reverse=True)
         self._rows = [i for _, i in rows]
 
@@ -381,6 +389,13 @@ class LedgerModel(QAbstractListModel):
         if period != self._period:
             self.beginResetModel()
             self._period = period
+            self._rebuild()
+            self.endResetModel()
+
+    def set_filters(self, query: str, kind: str, category: str) -> None:
+        if (query, kind, category) != (self._query, self._kind, self._category):
+            self.beginResetModel()
+            self._query, self._kind, self._category = query, kind, category
             self._rebuild()
             self.endResetModel()
 
@@ -416,6 +431,9 @@ class Backend(QObject):
         self._ledger_model = LedgerModel(self._ws.ledger, self)
         self._ledger_year = ""
         self._ledger_month = 0          # 0 = 그 해 전체
+        self._ledger_query = ""
+        self._ledger_kind = ""          # "" | income | cost
+        self._ledger_category = ""      # "" = 전체
         self._grouped = GroupedItems(self._items, self)
         self._group_by_category = True
         self._status = ""
@@ -1098,12 +1116,157 @@ class Backend(QObject):
         self._apply_period()
 
     def _apply_period(self) -> None:
+        if self._ledger_category and self._ledger_category not in self._ws.ledger.categories_used(self.ledgerPeriod):
+            self._ledger_category = ""
         self._ledger_model.set_period(self.ledgerPeriod)
+        self._ledger_model.set_filters(self._ledger_query, self._ledger_kind, self._ledger_category)
+        self.ledgerChanged.emit()
+
+    def _apply_filters(self) -> None:
+        self._ledger_model.set_filters(self._ledger_query, self._ledger_kind, self._ledger_category)
         self.ledgerChanged.emit()
 
     def _ledger_touched(self) -> None:
         self._ledger_model.refresh()
         self.ledgerChanged.emit()
+
+    # ---- 검색 / 필터 ----
+    @Property(str, notify=ledgerChanged)
+    def ledgerQuery(self) -> str:
+        return self._ledger_query
+
+    @ledgerQuery.setter
+    def ledgerQuery(self, q: str) -> None:
+        q = str(q)
+        if q != self._ledger_query:
+            self._ledger_query = q
+            self._apply_filters()
+
+    @Property(str, notify=ledgerChanged)
+    def ledgerKindFilter(self) -> str:
+        """"" = 전체 | income | cost"""
+        return self._ledger_kind
+
+    @ledgerKindFilter.setter
+    def ledgerKindFilter(self, k: str) -> None:
+        k = k if k in ("income", "cost") else ""
+        if k != self._ledger_kind:
+            self._ledger_kind = k
+            self._apply_filters()
+
+    @Property(str, notify=ledgerChanged)
+    def ledgerCategoryFilter(self) -> str:
+        return self._ledger_category
+
+    @ledgerCategoryFilter.setter
+    def ledgerCategoryFilter(self, c: str) -> None:
+        c = "" if c in ("", "전체") else str(c)
+        if c != self._ledger_category:
+            self._ledger_category = c
+            self._apply_filters()
+
+    @Property("QVariantList", notify=ledgerChanged)
+    def ledgerUsedCategories(self) -> list[str]:
+        """현재 기간에 실제로 쓴 분류 (필터 콤보박스용, 맨 앞에 '전체')."""
+        return ["전체"] + self._ws.ledger.categories_used(self.ledgerPeriod)
+
+    @Property(bool, notify=ledgerChanged)
+    def ledgerFiltered(self) -> bool:
+        return bool(self._ledger_query or self._ledger_kind or self._ledger_category)
+
+    @Slot()
+    def clearLedgerFilters(self) -> None:
+        if self.ledgerFiltered:
+            self._ledger_query = self._ledger_kind = self._ledger_category = ""
+            self._apply_filters()
+
+    @Property("QVariantMap", notify=ledgerChanged)
+    def ledgerFilteredSummary(self) -> dict:
+        """걸러진 내역만의 {income, cost, net, count} (필터가 없으면 기간 전체와 같다)."""
+        income = cost = 0.0
+        count = 0
+        for e in self._ws.ledger.entries:
+            if not self._ws.ledger.matches(e, self.ledgerPeriod, self._ledger_query,
+                                           self._ledger_kind, self._ledger_category):
+                continue
+            count += 1
+            if e.is_income:
+                income += e.amount
+            else:
+                cost += e.amount
+        return {"income": income, "cost": cost, "net": income - cost, "count": count}
+
+    # ---- 지난 기간 대비 ----
+    @Property("QVariantMap", notify=ledgerChanged)
+    def ledgerPrev(self) -> dict:
+        """직전 기간(지난달 또는 작년)과의 비교.
+        {has, label, income, cost, net, costDiff, incomeDiff, costPct, incomePct}"""
+        prev = prev_period(self.ledgerPeriod)
+        s = self._ws.ledger.summary(self.ledgerPeriod)
+        if not prev:
+            return {"has": False, "label": ""}
+        p = self._ws.ledger.summary(prev)
+        if p["count"] == 0:
+            return {"has": False, "label": ""}
+        label = "작년" if len(prev) == 4 else "지난달"
+
+        def pct(now: float, before: float) -> float:
+            return ((now - before) / before * 100.0) if before > 0 else 0.0
+
+        return {
+            "has": True, "label": label,
+            "income": p["income"], "cost": p["cost"], "net": p["net"],
+            "incomeDiff": s["income"] - p["income"], "costDiff": s["cost"] - p["cost"],
+            "incomePct": pct(s["income"], p["income"]), "costPct": pct(s["cost"], p["cost"]),
+        }
+
+    # ---- 날짜 구분 헤더 ----
+    @Slot(str, result="QVariantMap")
+    def ledgerDayInfo(self, day: str) -> dict:
+        """날짜 구분줄에 쓸 {label, net}"""
+        d = parse_date(day)
+        if not d:
+            return {"label": day, "net": 0.0}
+        names = ["월", "화", "수", "목", "금", "토", "일"]
+        return {"label": f"{d.month}월 {d.day}일 ({names[d.weekday()]})",
+                "net": self._ws.ledger.day_total(day)}
+
+    # ---- 반복 / 복사 ----
+    @Slot(str, str, float, str, str, int)
+    def addEntryRepeat(self, date_str: str, category: str, amount: float,
+                       name: str, note: str, months: int) -> None:
+        """같은 내역을 months 달 동안 (이번 달 포함) 넣는다."""
+        months = max(1, min(60, int(months)))
+        e = Entry(date_str, category, amount, name.strip(), note=note.strip())
+        self._ws.ledger.add(e)
+        made = self._ws.ledger.repeat(e, months)
+        if not self._ledger_year:
+            self._ledger_year, self._ledger_month = e.year, e.day.month
+        self._ledger_model.set_period(self.ledgerPeriod)
+        self._ledger_touched()
+        self._set_status(f"가계부 추가: {e.category} {won(e.amount)}"
+                         + (f" · {len(made) + 1}개월 반복" if made else ""))
+
+    @Slot()
+    def copyPreviousMonth(self) -> None:
+        """지난달 내역을 이번 달로 복사한다 (월을 고른 상태에서만)."""
+        if self._ledger_month <= 0:
+            self._set_status("월을 고른 뒤에 쓸 수 있습니다.")
+            return
+        dst = self.ledgerPeriod
+        src = shift_month(dst, -1)
+        made = self._ws.ledger.copy_month(src, dst)
+        if not made:
+            self._set_status(f"{src} 에 복사할 내역이 없습니다.")
+            return
+        self._ledger_touched()
+        self._set_status(f"지난달({src}) 내역 {len(made)}건을 복사했습니다.")
+
+    @Property(bool, notify=ledgerChanged)
+    def canCopyPreviousMonth(self) -> bool:
+        if self._ledger_month <= 0:
+            return False
+        return self._ws.ledger.summary(shift_month(self.ledgerPeriod, -1))["count"] > 0
 
     @Property(QObject, constant=True)
     def ledgerItems(self) -> QObject:
@@ -1202,7 +1365,7 @@ class Backend(QObject):
             self._ledger_year, self._ledger_month = e.year, e.day.month
         self._ledger_model.set_period(self.ledgerPeriod)
         self._ledger_touched()
-        self._set_status(f"가계부 추가: {e.category} {won(e.amount)}")
+        self._set_status(f"가계부 추가: {e.category} {won(e.amount)}")  # noqa: E501
 
     @Slot(int, str, str, float, str, str)
     @Slot(int, str, str, float, str)

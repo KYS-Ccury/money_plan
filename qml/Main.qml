@@ -31,6 +31,11 @@ ApplicationWindow {
                                m.data(idx, Qt.UserRole + 19), m.data(idx, Qt.UserRole + 20))
     }
 
+    function openEntryDialog() {                            // 테스트/외부 호출용
+        win.mode = "ledger"
+        ledgerView.openAdd()
+    }
+
     ItemDialog { id: itemDialog }
 
     Toast { id: toast }
@@ -931,6 +936,7 @@ ApplicationWindow {
 
         // ───────────── 본문 (가계부)
         LedgerView {
+            id: ledgerView
             Layout.fillWidth: true
             Layout.fillHeight: true
             visible: win.mode === "ledger"

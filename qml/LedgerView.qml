@@ -8,6 +8,8 @@ RowLayout {
     spacing: 12
 
     // 기간이 바뀌어도 같은 달에 계속 적게 기본 날짜를 맞춰 준다
+    function openAdd() { entryDialog.openForAdd(view.defaultDate()) }
+
     function defaultDate() {
         if (backend.ledgerMonth > 0)
             return backend.ledgerYear + "-" + String(backend.ledgerMonth).padStart(2, "0") + "-01"
@@ -27,7 +29,10 @@ RowLayout {
     Card {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        title: "가계부 내역  ·  " + backend.ledgerPeriodText + "  (" + backend.ledgerSummary.count + "건)"
+        title: "가계부 내역  ·  " + backend.ledgerPeriodText
+               + (backend.ledgerFiltered
+                  ? "  (" + backend.ledgerFilteredSummary.count + " / " + backend.ledgerSummary.count + "건)"
+                  : "  (" + backend.ledgerSummary.count + "건)")
 
         ColumnLayout {
             anchors.fill: parent
@@ -83,12 +88,86 @@ RowLayout {
                 }
 
                 Item { Layout.fillWidth: true }
+                Button {
+                    text: "지난달 복사"; flat: true; leftPadding: 10; rightPadding: 10
+                    visible: backend.canCopyPreviousMonth
+                    onClicked: backend.copyPreviousMonth()
+                    ToolTip.visible: hovered; ToolTip.delay: 500
+                    ToolTip.text: "지난달 내역을 이번 달로 복사합니다 (같은 내역은 건너뜀)"
+                }
                 Button { text: "＋ 내역 추가"; highlighted: true; onClicked: entryDialog.openForAdd(view.defaultDate()) }
                 Button {
                     text: "비우기"; flat: true; leftPadding: 10; rightPadding: 10
                     Material.foreground: Theme.red
                     enabled: backend.ledgerYears.length > 0
                     onClicked: clearLedgerDialog.open()
+                }
+            }
+
+            // 검색 · 수입/지출 · 분류 거르기
+            RowLayout {
+                Layout.fillWidth: true
+                visible: backend.ledgerYears.length > 0
+                spacing: 8
+
+                TextField {
+                    id: searchField
+                    objectName: "ledgerSearch"
+                    Layout.preferredWidth: 220
+                    placeholderText: "검색 (내용·분류·메모)"
+                    text: backend.ledgerQuery
+                    onTextEdited: backend.ledgerQuery = text
+                }
+
+                Repeater {
+                    model: [{ k: "", t: "전체" }, { k: "income", t: "수입" }, { k: "cost", t: "지출" }]
+                    delegate: Rectangle {
+                        required property var modelData
+                        readonly property bool on: backend.ledgerKindFilter === modelData.k
+                        width: 50; height: 28; radius: 14
+                        color: on ? Theme.accent : "transparent"
+                        border.color: on ? Theme.accent : Theme.cardBorder
+                        TapHandler { onTapped: backend.ledgerKindFilter = modelData.k }
+                        Text {
+                            anchors.centerIn: parent
+                            text: modelData.t
+                            color: parent.on ? "#ffffff" : Theme.textDim
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+
+                ComboBox {
+                    id: catFilter
+                    objectName: "ledgerCategoryFilter"
+                    Layout.preferredWidth: 150
+                    model: backend.ledgerUsedCategories
+                    onActivated: backend.ledgerCategoryFilter = String(currentValue)
+                    Connections {
+                        target: backend
+                        function onLedgerChanged() {
+                            var want = backend.ledgerCategoryFilter === "" ? "전체" : backend.ledgerCategoryFilter
+                            var i = backend.ledgerUsedCategories.indexOf(want)
+                            if (i >= 0 && i !== catFilter.currentIndex) catFilter.currentIndex = i
+                        }
+                    }
+                }
+
+                Button {
+                    text: "거르기 해제"; flat: true; leftPadding: 8; rightPadding: 8
+                    visible: backend.ledgerFiltered
+                    Material.foreground: Theme.yellow
+                    onClicked: { searchField.text = ""; backend.clearLedgerFilters() }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                    visible: backend.ledgerFiltered
+                    text: "걸러진 합계  " + (backend.ledgerFilteredSummary.net >= 0 ? "+" : "")
+                          + backend.won(backend.ledgerFilteredSummary.net)
+                    color: backend.ledgerFilteredSummary.net >= 0 ? Theme.green : Theme.red
+                    font.pixelSize: 12
                 }
             }
 
@@ -103,12 +182,15 @@ RowLayout {
                 Item { Layout.fillHeight: true }
                 Text {
                     Layout.alignment: Qt.AlignHCenter
-                    text: backend.ledgerYears.length === 0 ? "아직 기록이 없습니다" : backend.ledgerPeriodText + " 기록이 없습니다"
+                    text: backend.ledgerFiltered ? "조건에 맞는 내역이 없습니다"
+                        : backend.ledgerYears.length === 0 ? "아직 기록이 없습니다"
+                        : backend.ledgerPeriodText + " 기록이 없습니다"
                     color: Theme.textDim; font.pixelSize: 14
                 }
                 Text {
                     Layout.alignment: Qt.AlignHCenter
-                    text: "＋ 내역 추가 로 쓴 돈과 번 돈을 적어 두면 월별·연도별로 합산됩니다."
+                    text: backend.ledgerFiltered ? "검색어나 분류를 바꾸거나 '거르기 해제' 를 누르세요."
+                                                 : "＋ 내역 추가 로 쓴 돈과 번 돈을 적어 두면 월별·연도별로 합산됩니다."
                     color: Theme.textDim; font.pixelSize: 12
                 }
                 Item { Layout.fillHeight: true }
@@ -125,6 +207,27 @@ RowLayout {
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded
                     contentItem: Rectangle { implicitWidth: 6; radius: 3; color: Theme.accentSoft }
+                }
+
+                section.property: "daySection"
+                section.criteria: ViewSection.FullString
+                section.delegate: Item {
+                    required property string section
+                    readonly property var info: backend.ledgerDayInfo(section)
+                    width: ListView.view.width - 10
+                    height: 26
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 4; anchors.rightMargin: 14
+                        spacing: 8
+                        Text { text: info.label; color: Theme.textDim; font.pixelSize: 11; font.bold: true }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
+                        Text {
+                            text: (info.net >= 0 ? "+" : "") + backend.won(info.net)
+                            color: info.net >= 0 ? Theme.green : Theme.red
+                            font.pixelSize: 11
+                        }
+                    }
                 }
 
                 add: Transition {
@@ -171,11 +274,6 @@ RowLayout {
                         anchors.rightMargin: 10
                         spacing: 10
 
-                        Text {
-                            text: entryRow.dateText
-                            color: Theme.textDim; font.pixelSize: 12
-                            Layout.preferredWidth: 70
-                        }
                         Rectangle {
                             radius: 10
                             color: Theme.accentSoft
@@ -240,6 +338,53 @@ RowLayout {
                 StatRow {
                     label: "남은 돈"; value: backend.ledgerSummary.net; emphasis: true
                     valueColor: backend.ledgerSummary.net >= 0 ? Theme.green : Theme.red
+                }
+
+                // 지난달(또는 작년) 대비
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 6
+                    spacing: 3
+                    visible: backend.ledgerPrev.has
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        spacing: 8
+                        Text {
+                            text: backend.ledgerPrev.label + " 대비 지출"
+                            color: Theme.textDim; font.pixelSize: 12
+                            Layout.fillWidth: true
+                        }
+                        Text {
+                            text: (backend.ledgerPrev.costDiff >= 0 ? "+" : "-")
+                                  + backend.won(Math.abs(backend.ledgerPrev.costDiff))
+                                  + (backend.ledgerPrev.cost > 0
+                                     ? "  (" + (backend.ledgerPrev.costPct >= 0 ? "+" : "")
+                                       + backend.ledgerPrev.costPct.toFixed(0) + "%)" : "")
+                            color: backend.ledgerPrev.costDiff > 0 ? Theme.red
+                                 : backend.ledgerPrev.costDiff < 0 ? Theme.green : Theme.textDim
+                            font.pixelSize: 12
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            text: backend.ledgerPrev.label + " 대비 수입"
+                            color: Theme.textDim; font.pixelSize: 12
+                            Layout.fillWidth: true
+                        }
+                        Text {
+                            text: (backend.ledgerPrev.incomeDiff >= 0 ? "+" : "-")
+                                  + backend.won(Math.abs(backend.ledgerPrev.incomeDiff))
+                                  + (backend.ledgerPrev.income > 0
+                                     ? "  (" + (backend.ledgerPrev.incomePct >= 0 ? "+" : "")
+                                       + backend.ledgerPrev.incomePct.toFixed(0) + "%)" : "")
+                            color: backend.ledgerPrev.incomeDiff >= 0 ? Theme.green : Theme.red
+                            font.pixelSize: 12
+                        }
+                    }
                 }
             }
         }

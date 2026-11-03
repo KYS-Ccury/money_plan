@@ -10,6 +10,7 @@ Popup {
     property string entryDate: ""
     property string category: "식비"
     property real amount: 0
+    property int repeatMonths: 1             // 1 이면 한 번만, 2 이상이면 다음 달부터 반복
     readonly property string kind: backend.ledgerKindOf(category)
 
     modal: true
@@ -44,6 +45,7 @@ Popup {
         entryDate = defaultDate || backend.today
         setCategory("식비")
         amount = 0
+        repeatMonths = 1
         nameField.text = ""
         noteField.text = ""
         open(); amountInput.forceActiveFocus()
@@ -51,6 +53,7 @@ Popup {
 
     function openForEdit(row, date, category, amount, name, note) {
         editRow = row
+        repeatMonths = 1
         entryDate = date || backend.today
         setCategory(category)
         dlg.amount = amount
@@ -59,13 +62,30 @@ Popup {
         open(); amountInput.forceActiveFocus()
     }
 
-    function submit() {
-        if (!dateField.valid || dlg.amount <= 0) return
-        if (editRow < 0)
-            backend.addEntry(dlg.entryDate, dlg.category, dlg.amount, nameField.text, noteField.text)
-        else
+    function save() {
+        if (!dateField.valid || dlg.amount <= 0) return false
+        if (editRow < 0) {
+            if (dlg.repeatMonths > 1)
+                backend.addEntryRepeat(dlg.entryDate, dlg.category, dlg.amount,
+                                       nameField.text, noteField.text, dlg.repeatMonths)
+            else
+                backend.addEntry(dlg.entryDate, dlg.category, dlg.amount, nameField.text, noteField.text)
+        } else {
             backend.updateEntry(editRow, dlg.entryDate, dlg.category, dlg.amount, nameField.text, noteField.text)
-        close()
+        }
+        return true
+    }
+    function submit() {
+        if (save()) close()
+    }
+    // 저장하고 팝업을 열어 둔 채 다음 내역을 받는다 (날짜·분류는 그대로)
+    function submitAndNext() {
+        if (!save()) return
+        dlg.amount = 0
+        dlg.repeatMonths = 1
+        nameField.text = ""
+        noteField.text = ""
+        amountInput.forceActiveFocus()
     }
 
     contentItem: ColumnLayout {
@@ -134,11 +154,56 @@ Popup {
             onAccepted: dlg.submit()
         }
 
+        // ── 반복 (추가할 때만) ──
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: 6
+            visible: dlg.editRow < 0
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                Text { text: "반복"; color: Theme.text; font.pixelSize: 13; font.bold: true }
+                Item { width: 6 }
+                Repeater {
+                    model: [1, 2, 3, 6, 12]
+                    delegate: Rectangle {
+                        required property int modelData
+                        readonly property bool on: dlg.repeatMonths === modelData
+                        width: 46; height: 26; radius: 13
+                        color: on ? Theme.accent : "transparent"
+                        border.color: on ? Theme.accent : Theme.cardBorder
+                        TapHandler { onTapped: dlg.repeatMonths = modelData }
+                        Text {
+                            anchors.centerIn: parent
+                            text: modelData === 1 ? "한 번" : modelData + "달"
+                            color: parent.on ? "#ffffff" : Theme.textDim
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+                Item { Layout.fillWidth: true }
+            }
+            Text {
+                visible: dlg.repeatMonths > 1
+                text: "같은 날짜로 " + dlg.repeatMonths + "개월치가 한 번에 들어갑니다 (말일은 그 달 마지막 날로)."
+                color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true
+            }
+        }
+
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
             Item { Layout.fillWidth: true }
             Button { text: "취소"; flat: true; onClicked: dlg.close() }
+            Button {
+                text: "저장하고 계속"; flat: true
+                visible: dlg.editRow < 0
+                enabled: dateField.valid && dlg.amount > 0
+                onClicked: dlg.submitAndNext()
+                ToolTip.visible: hovered; ToolTip.delay: 500
+                ToolTip.text: "저장한 뒤 팝업을 열어 둡니다 (날짜·분류 유지)"
+            }
             Button {
                 text: "저장"; highlighted: true
                 enabled: dateField.valid && dlg.amount > 0

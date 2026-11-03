@@ -6,6 +6,7 @@ Qt 를 전혀 모르는 순수 계산 코드다.
 """
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -31,6 +32,29 @@ def kind_of(category: str) -> str:
 
 def month_key(d: date) -> str:
     return f"{d.year:04d}-{d.month:02d}"
+
+
+def prev_period(period: str) -> str:
+    """'2026-03' → '2026-02', '2026' → '2025'. 그 외에는 빈 문자열."""
+    if len(period) == 7:
+        y, m = int(period[:4]), int(period[5:7])
+        return f"{y - 1:04d}-12" if m == 1 else f"{y:04d}-{m - 1:02d}"
+    if len(period) == 4:
+        return f"{int(period) - 1:04d}"
+    return ""
+
+
+def shift_month(ym: str, n: int) -> str:
+    """'2026-03' 에서 n개월 뒤."""
+    y, m = int(ym[:4]), int(ym[5:7])
+    y, m = divmod(y * 12 + (m - 1) + n, 12)
+    return f"{y:04d}-{m + 1:02d}"
+
+
+def same_day_in(ym: str, day: int) -> str:
+    """그 달에 같은 날짜. 말일을 넘으면 말일로 맞춘다 (1/31 → 2/28)."""
+    y, m = int(ym[:4]), int(ym[5:7])
+    return f"{y:04d}-{m:02d}-{min(day, calendar.monthrange(y, m)[1]):02d}"
 
 
 @dataclass
@@ -170,6 +194,59 @@ class Ledger:
     def totals_by_year(self) -> list[dict]:
         """해마다 {year, income, cost, net}, 최신순."""
         return [{"year": y, **self.summary(y)} for y in self.years()]
+
+    def matches(self, e: Entry, period: str = "", query: str = "",
+                kind: str = "", category: str = "") -> bool:
+        """기간·검색어·수입지출·분류 조건에 모두 맞는가. 빈 조건은 통과."""
+        if not e.in_period(period):
+            return False
+        if kind in (INCOME, COST) and e.kind != kind:
+            return False
+        if category and e.category != category:
+            return False
+        if query:
+            q = query.strip().lower()
+            if q and q not in f"{e.name} {e.category} {e.note}".lower():
+                return False
+        return True
+
+    def search(self, period: str = "", query: str = "", kind: str = "", category: str = "") -> list[Entry]:
+        rows = [e for e in self.entries if self.matches(e, period, query, kind, category)]
+        rows.sort(key=lambda e: e.date, reverse=True)
+        return rows
+
+    def categories_used(self, period: str = "") -> list[str]:
+        """그 기간에 실제로 쓴 분류 (가나다순)."""
+        return sorted({e.category for e in self.entries if e.in_period(period)})
+
+    def day_total(self, day: str) -> float:
+        """그 날 하루의 수지 (수입 - 지출)."""
+        return sum(e.signed for e in self.entries if e.date == day)
+
+    # ---- 반복 / 복사 ----
+    def repeat(self, entry: Entry, months: int) -> list[Entry]:
+        """같은 내역을 다음 달부터 months-1 번 더 넣는다 (entry 자신은 이미 들어있다고 본다)."""
+        made = []
+        for i in range(1, max(1, months)):
+            ym = shift_month(entry.ym, i)
+            made.append(self.add(Entry(same_day_in(ym, entry.day.day), entry.category,
+                                       entry.amount, entry.name, note=entry.note)))
+        return made
+
+    def copy_month(self, src_ym: str, dst_ym: str) -> list[Entry]:
+        """한 달치를 통째로 다른 달에 복사한다. 이미 같은 날짜·분류·금액이 있으면 건너뛴다."""
+        if not src_ym or not dst_ym or src_ym == dst_ym:
+            return []
+        exists = {(e.date, e.category, e.amount) for e in self.entries if e.ym == dst_ym}
+        made = []
+        for e in sorted((x for x in self.entries if x.ym == src_ym), key=lambda x: x.date):
+            d = same_day_in(dst_ym, e.day.day)
+            key = (d, e.category, e.amount)
+            if key in exists:
+                continue
+            exists.add(key)
+            made.append(self.add(Entry(d, e.category, e.amount, e.name, note=e.note)))
+        return made
 
     # ---- 저장 / 불러오기 ----
     def to_dict(self) -> dict:
