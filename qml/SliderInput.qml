@@ -36,6 +36,13 @@ ColumnLayout {
         if (Math.abs(v - value) > 1e-9) edited(v)
         else sync()                                     // 값이 같으면 표시만 되돌림
     }
+    // − / + 버튼: 한 눈금씩. 슬라이더로 미세 조정이 어려울 때 쓴다
+    function stepBy(dir) {
+        var s = root.stepSize > 0 ? root.stepSize : 1
+        var v = root.value + dir * s
+        v = Math.round(v / s) * s               // 0.1 + 0.2 같은 소수점 오차 보정
+        root.commit(Math.max(root.from, v))
+    }
     function sync() {
         if (!field.activeFocus) field.text = fmtNum(value)
         if (value > slider.to) slider.to = value * 1.25
@@ -82,6 +89,17 @@ ColumnLayout {
             }
         }
 
+        ToolButton {
+            text: "−"
+            font.pixelSize: 16
+            implicitWidth: 34; implicitHeight: 34
+            enabled: root.value > root.from
+            autoRepeat: true                     // 누르고 있으면 계속 줄어든다
+            onClicked: root.stepBy(-1)
+            ToolTip.visible: hovered; ToolTip.delay: 700
+            ToolTip.text: "한 눈금 줄이기 (" + root.fmt(root.stepSize) + ")"
+        }
+
         TextField {
             id: field
             Layout.preferredWidth: root.fieldWidth
@@ -108,6 +126,17 @@ ColumnLayout {
                 onWheel: (ev) => root.commit(root.value + (ev.angleDelta.y > 0 ? 1 : -1) * root.stepSize)
             }
         }
+
+        ToolButton {
+            text: "＋"
+            font.pixelSize: 14
+            implicitWidth: 34; implicitHeight: 34
+            autoRepeat: true                     // 누르고 있으면 계속 늘어난다
+            onClicked: root.stepBy(1)
+            ToolTip.visible: hovered; ToolTip.delay: 700
+            ToolTip.text: "한 눈금 늘리기 (" + root.fmt(root.stepSize) + ")"
+        }
+
         Text { text: root.suffix; color: Theme.textDim; visible: root.suffix !== "" }
     }
 }
