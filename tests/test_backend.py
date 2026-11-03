@@ -176,6 +176,12 @@ def test_grouped_items_proxy():
     assert b.isGroupCollapsed(6) and g.rowCount() == 1
     b.groupByCategory = False                                       # 묶기 해제 → 모두 펼침
     assert not b.isGroupCollapsed(6) and g.rowCount() == 3
+    # 묶기를 끄면 같은 프록시가 원본 순서로 돌아간다 (ListView 의 모델은 바꾸지 않는다)
+    assert [g.data(g.index(r, 0), b.items.NameRole) for r in range(3)] == ["월세A", "현금", "월세B"]
+    assert [g.data(g.index(r, 0), b.items.SourceRowRole) for r in range(3)] == [0, 1, 2]
+    b.groupByCategory = True
+    assert [g.data(g.index(r, 0), b.items.NameRole) for r in range(3)] == ["현금", "월세A", "월세B"]
+    b.groupByCategory = False
     b.groupByCategory = True
 
     # 원본에서 삭제/이동해도 프록시가 따라온다

@@ -33,6 +33,7 @@ def main() -> int:
     parser.add_argument("--ledger", action="store_true", help="테스트용: 가계부 화면으로 띄우기")
     parser.add_argument("--ledger-dialog", action="store_true", help="테스트용: 가계부 입력 팝업을 연 상태로")
     parser.add_argument("--budget-dialog", action="store_true", help="테스트용: 예산 설정 팝업을 연 상태로")
+    parser.add_argument("--no-group", action="store_true", help="테스트용: 분류별 묶기를 끈 상태로")
     args = parser.parse_args()
 
     QQuickStyle.setStyle("Material")
@@ -62,6 +63,9 @@ def main() -> int:
     if not engine.rootObjects():
         print("QML 로드 실패", file=sys.stderr)
         return 1
+
+    if args.no_group:
+        backend.groupByCategory = False
 
     if args.ledger:
         engine.rootObjects()[0].setProperty("mode", "ledger")

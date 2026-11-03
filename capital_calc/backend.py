@@ -257,6 +257,7 @@ class GroupedItems(QSortFilterProxyModel):
     def __init__(self, source: ItemListModel, parent: QObject | None = None):
         super().__init__(parent)
         self._collapsed: set[int] = set()
+        self._grouped = True          # 끄면 원본 순서 그대로 (ListView 의 모델은 바꾸지 않는다)
         self.setSourceModel(source)
         self.setSortRole(ItemListModel.CategoryIndexRole)
         self.setDynamicSortFilter(True)
@@ -265,13 +266,22 @@ class GroupedItems(QSortFilterProxyModel):
     def roleNames(self) -> dict:  # noqa: N802
         return self.sourceModel().roleNames()
 
+    def set_grouped(self, on: bool) -> None:
+        """분류별 묶기 켜기/끄기. 끄면 걸러내지도 정렬하지도 않는다."""
+        on = bool(on)
+        if on != self._grouped:
+            self._grouped = on
+            self.invalidate()
+
     def filterAcceptsRow(self, source_row: int, source_parent: QModelIndex) -> bool:  # noqa: N802
-        if not self._collapsed:
+        if not self._grouped or not self._collapsed:
             return True
         idx = self.sourceModel().index(source_row, 0, source_parent)
         return self.sourceModel().data(idx, ItemListModel.CategoryIndexRole) not in self._collapsed
 
     def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:  # noqa: N802
+        if not self._grouped:
+            return left.row() < right.row()        # 묶기를 끄면 원본 순서
         a = self.sourceModel().data(left, ItemListModel.CategoryIndexRole)
         b = self.sourceModel().data(right, ItemListModel.CategoryIndexRole)
         if a != b:
@@ -489,6 +499,7 @@ class Backend(QObject):
             self._group_by_category = v
             if not v:
                 self._grouped.expand_all()
+            self._grouped.set_grouped(v)
             self.groupsChanged.emit()
 
     groupByCategory = Property(bool, _get_group_by, _set_group_by, notify=groupsChanged)

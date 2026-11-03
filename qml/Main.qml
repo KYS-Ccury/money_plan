@@ -361,25 +361,36 @@ ApplicationWindow {
                         Layout.fillHeight: true
                         clip: true
                         spacing: 6
-                        model: backend.groupByCategory ? backend.groupedItems : backend.items
+                        // 모델은 바꾸지 않는다. 묶기를 끄면 프록시가 원본 순서로 돌아간다
+                        // (model 이나 section.property 를 런타임에 바꾸면 델리게이트가 파괴되면서 앱이 죽는다)
+                        model: backend.groupedItems
                         boundsBehavior: Flickable.StopAtBounds
 
                         // 분류별 묶기: 같은 분류가 연속으로 오도록 프록시가 정렬하고, 섹션 헤더가 그룹을 나눈다
-                        section.property: backend.groupByCategory ? "category" : ""
+                        // section.property 는 바꾸지 않는다 (바꾸면 섹션 델리게이트가 파괴되면서 앱이 죽는다).
+                        // 묶기를 끄면 헤더만 숨긴다.
+                        section.property: "category"
                         section.criteria: ViewSection.FullString
                         section.labelPositioning: ViewSection.InlineLabels | ViewSection.CurrentLabelAtStart
                         section.delegate: Rectangle {
                             id: secHeader
                             required property string section
+                            readonly property bool grouped: backend.groupByCategory
                             // backend.net / groupsChanged 참조로 값이 바뀔 때마다 다시 계산
                             property var info: (backend.net, backend.itemCount, backend.groupSummary(section))
                             property bool collapsed: (backend.groupByCategory, backend.isGroupCollapsed(info.catIndex))
                             Connections {
                                 target: backend
-                                function onGroupsChanged() { secHeader.collapsed = backend.isGroupCollapsed(secHeader.info.catIndex) }
+                                function onGroupsChanged() {
+                                    if (secHeader.info)
+                                        secHeader.collapsed = backend.isGroupCollapsed(secHeader.info.catIndex)
+                                }
                             }
+                            // ListView 가 섹션 아이템의 visible 을 되돌려 놓기 때문에 opacity 로 숨긴다
+                            opacity: grouped ? 1 : 0
+                            enabled: grouped
                             width: ListView.view.width - 14
-                            height: 36
+                            height: grouped ? 36 : 0
                             radius: 8
                             color: secHover.hovered ? "#232a44" : "#1a1f33"
                             border.color: Theme.accentSoft
