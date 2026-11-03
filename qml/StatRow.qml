@@ -22,7 +22,7 @@ RowLayout {
     }
     AnimatedMoney {
         value: row.value
-        prefix: row.prefix
+        prefix: row.value === 0 ? "" : row.prefix        // "-0원" 처럼 보이지 않게
         color: row.valueColor
         font.pixelSize: row.emphasis ? 18 : 15
         Behavior on color { ColorAnimation { duration: Theme.normal } }

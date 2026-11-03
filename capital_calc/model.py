@@ -446,14 +446,24 @@ class Item:
         return 0.0
 
     def once_cost_at(self, m: int, basis: date) -> float:
-        """m개월 시점에 묶여 있는 일시 지출. 지출일 전이면 0, 보증금은 반환일 이후 0(돌려받음)."""
+        """m개월 시점까지 이 계획 안에서 나간 일시 지출.
+
+        기준일 전에 이미 나간 돈은 보유 자금에 애초에 없으므로 세지 않는다.
+        (그러지 않으면 이미 치른 보증금이 순 자본에서 또 한 번 깎인다.)
+        """
         c = self.once_cost()
-        if c <= 0 or m < self.once_month(basis):
+        if c <= 0:
             return 0.0
+        om = self.once_month(basis)
+        return c if 0 <= om <= m else 0.0
+
+    def once_returned_at(self, m: int, basis: date) -> float:
+        """m개월 시점까지 돌려받은 보증금. 언제 냈든 돌려받는 건 그대로 들어온다."""
+        c = self.once_cost()
         r = self.return_month(basis)
-        if r is not None and m >= r:
+        if c <= 0 or r is None or r < 0:
             return 0.0
-        return c
+        return c if m >= r else 0.0
 
     def once_income(self) -> float:
         """일시 수입 금액 (날짜와 무관한 총액)."""
@@ -462,10 +472,10 @@ class Item:
         return 0.0
 
     def once_income_at(self, m: int, basis: date) -> float:
-        """m개월 시점까지 이미 들어온 일시 수입. 수입일이 아직 안 왔으면 0."""
+        """m개월 시점까지 들어온 일시 수입 (보증금 반환 포함). 수입일이 아직 안 왔으면 0."""
         c = self.once_income()
         if c <= 0:
-            return 0.0
+            return self.once_returned_at(m, basis)
         return c if m >= self.once_month(basis) else 0.0
 
     def monthly_cost_at(self, m: int, basis: date) -> float:

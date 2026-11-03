@@ -346,10 +346,16 @@ def test_backend_deposit_return():
 
     assert b.netAt(3) == 20_000_000 and b.netAt(26) == 20_000_000
     assert b.netAt(27) == 100_000_000
-    assert b.onceCost == 0                              # 36개월 시점엔 이미 돌려받음
+    # 나간 것은 나간 대로, 돌려받은 것은 일시 수입으로 잡힌다
+    assert b.onceCost == 80_000_000 and b.onceIncome == 80_000_000
 
     b.updateItem(1, "전세 보증금", 9, 80_000_000, 0, True, "2026-04-01", "")
-    assert b.netAt(27) == 20_000_000 and b.onceCost == 80_000_000
+    assert b.netAt(27) == 20_000_000 and b.onceCost == 80_000_000 and b.onceIncome == 0
+
+    # 기준일 전에 낸 보증금은 빼지 않고, 돌려받는 것만 들어온다
+    b.updateItem(1, "전세 보증금", 9, 80_000_000, 0, True, "2024-04-01", "2027-04-01")
+    assert b.onceCost == 0 and b.netAt(0) == 100_000_000
+    assert b.netAt(14) == 100_000_000 and b.netAt(15) == 180_000_000
 
 
 def test_backend_housing():

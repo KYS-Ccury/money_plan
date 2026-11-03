@@ -258,8 +258,11 @@ def test_once_cost_date():
     p.months = 2
     assert p.summary().once_cost == 0 and p.summary().required == 0
 
-    e.start_date = "2025-06-01"                                  # 기준일 전이면 계속 반영
-    assert p.once_cost_at(0) == 2_000_000
+    # 기준일 전에 이미 나간 돈은 보유 자금에 없으므로 세지 않는다 (또 깎으면 이중 계산)
+    e.start_date = "2025-06-01"
+    assert e.once_month(p.basis) == -7
+    assert p.once_cost_at(0) == 0 and p.net_at(0) == 10_000_000
+    assert p.summary().once_cost == 0
 
 
 def test_category_alias_from_old_file(tmp_path):
@@ -517,3 +520,30 @@ def test_planned_out_includes_loan_principal():
     assert p.monthly_cost_at(0) == 120_000
     assert p.planned_out_at(0) == 120_000 + 1_000_000
     assert loan.regular_repay_at(0, p.basis) == 1_000_000
+
+
+def test_past_once_costs_are_not_counted_again():
+    """기준일 전에 치른 보증금·이사비는 보유 자금에서 이미 빠져 있다. 또 빼면 이중 계산이다."""
+    p = Plan(months=12, start_date="2026-10-28")
+    p.add(Item("현금", Category.CASH, 5_000_000))
+    # 2023-12 에 들어간 반전세 보증금, 만기 없음
+    old = p.add(Item("전셋집", Category.DEPOSIT, 25_000_000, housing_type="banjeonse",
+                     monthly=300_000, start_date="2023-12-01"))
+    assert old.once_month(p.basis) < 0
+    assert p.once_cost_at(0) == 0 and p.net_at(0) == 5_000_000
+    assert p.summary().once_cost == 0
+    # 월세는 그대로 나간다 (이미 입주했으니 계속 활성)
+    assert p.monthly_cost_at(0) == 300_000
+
+    # 만기를 넣으면 그 달에 돌려받는 것만 들어온다
+    old.end_date = "2027-04-01"
+    assert old.return_month(p.basis) == 6
+    assert p.once_cost_at(6) == 0                       # 낸 적 없는 돈처럼 취급
+    assert p.once_income_at(5) == 0 and p.once_income_at(6) == 25_000_000
+    assert p.net_at(6) - p.net_at(5) == 25_000_000 - 300_000
+    assert p.summary().once_income == 25_000_000
+
+    # 이미 돌려받은 보증금은 아무 영향이 없다
+    old.start_date, old.end_date = "2023-12-01", "2025-12-01"
+    assert p.once_cost_at(0) == 0 and p.once_income_at(12) == 0
+    assert p.net_at(0) == 5_000_000
