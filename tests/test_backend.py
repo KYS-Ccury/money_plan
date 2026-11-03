@@ -931,3 +931,43 @@ def test_backend_saving_support_and_loan_interest():
     # 지원금을 안 주는 예전 호출도 그대로 동작한다
     b.addItem("적금", 2, 100_000, 0, True, "", "")
     assert b.items.data(b.items.index(3, 0), b.items.SupportRole) == 0
+
+
+def test_backend_locked_saving():
+    b = Backend(Plan(months=12, target=50_000_000, start_date="2026-01-01"))
+    assert b.categoryInfo(2)["canLock"] and not b.categoryInfo(1)["canLock"]
+
+    b.addItem("현금", 0, 10_000_000, 0, True)
+    # 마지막 인자가 '만기까지 묶임'
+    b.addItem("청년도약계좌", 2, 200_000, 0, True, "2026-01-01", "2031-01-01",
+              "[]", 0, "", "", 0, 0, 300_000, True)
+    idx = b.items.index(1, 0)
+    assert b.items.data(idx, b.items.LockedRole) is True
+    assert "만기까지 묶임 · 60개월 뒤 30,000,000원 수령" in b.items.data(idx, b.items.SubTextRole)
+
+    assert b.capital == 10_000_000                       # 만기 전에는 안 잡힌다
+    assert b.netAt(12) == 10_000_000 - 200_000 * 12
+    assert b.netAt(60) == 10_000_000 + 300_000 * 60
+
+    pi = b.pendingInflow
+    assert pi["has"] and [g["kind"] for g in pi["groups"]] == ["saving"]
+    g = pi["groups"][0]
+    assert g["label"] == "만기에 받을 적금" and g["total"] == 30_000_000
+    assert g["month"] == 60 and g["dateText"] == "2031년 1월"
+
+    # 묶임을 풀면 바로 자본이 되고 들어올 돈에서 빠진다
+    b.updateItem(1, "청년도약계좌", 2, 200_000, 0, True, "2026-01-01", "2031-01-01",
+                 "[]", 0, "", "", 0, 0, 300_000, False)
+    assert b.items.data(b.items.index(1, 0), b.items.LockedRole) is False
+    assert not b.pendingInflow["has"]
+    assert b.netAt(12) == 10_000_000 + 300_000 * 12
+
+    # 만기 없이 묶으면 그렇다고 알려 준다
+    b.updateItem(1, "청년도약계좌", 2, 200_000, 0, True, "2026-01-01", "",
+                 "[]", 0, "", "", 0, 0, 300_000, True)
+    assert "만기(종료일)가 없습니다" in b.items.data(b.items.index(1, 0), b.items.SubTextRole)
+    assert not b.pendingInflow["has"]
+
+    # 묶임을 안 주는 예전 호출도 그대로 동작한다
+    b.addItem("적금", 2, 100_000, 0, True, "", "")
+    assert b.items.data(b.items.index(2, 0), b.items.LockedRole) is False

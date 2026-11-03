@@ -58,6 +58,7 @@ class ItemListModel(QAbstractListModel):
     MonthlyRole = Qt.ItemDataRole.UserRole + 20     # 주거의 월세
     GrowthRole = Qt.ItemDataRole.UserRole + 21      # 연 상승률 %
     SupportRole = Qt.ItemDataRole.UserRole + 22     # 적금 월 지원금
+    LockedRole = Qt.ItemDataRole.UserRole + 23      # 만기 전까지 묶인 돈인가
 
     _ROLES = {
         NameRole: b"name",
@@ -82,6 +83,7 @@ class ItemListModel(QAbstractListModel):
         MonthlyRole: b"monthly",
         GrowthRole: b"growth",
         SupportRole: b"support",
+        LockedRole: b"locked",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -137,6 +139,8 @@ class ItemListModel(QAbstractListModel):
             return it.growth
         if role == self.SupportRole:
             return it.support
+        if role == self.LockedRole:
+            return it.locked
         if role == self.SubTextRole:
             if it.date_mode == "once":
                 d = parse_date(it.start_date) or (self._plan.basis if it.is_housing else None)
@@ -167,6 +171,11 @@ class ItemListModel(QAbstractListModel):
                 parts.append(f"{n}개월 후 {won(it.saving_balance_at(n, basis))} ({k}회 납입)")
                 if it.support > 0 and k > 0:
                     parts.append(f"받은 지원금 {won(it.support_total_at(n, basis))}")
+                if it.is_locked(basis):
+                    mat = it.maturity_month(basis)
+                    parts.append(f"만기까지 묶임 · {mat}개월 뒤 {won(it.saving_balance_at(mat, basis))} 수령")
+                elif it.locked:
+                    parts.append("묶임 설정했지만 만기(종료일)가 없습니다")
             if it.category == Category.LOAN:
                 basis = self._plan.basis
                 label = REPAY_METHODS.get(it.repay_method, "")
@@ -791,7 +800,7 @@ class Backend(QObject):
     def progress(self) -> float:
         return self._s().progress
 
-    PENDING_LABELS = {"deposit": "돌려받을 보증금", "loan": "받을 대출"}
+    PENDING_LABELS = {"deposit": "돌려받을 보증금", "saving": "만기에 받을 적금", "loan": "받을 대출"}
 
     @Property("QVariantMap", notify=summaryChanged)
     def pendingInflow(self) -> dict:
@@ -816,7 +825,7 @@ class Backend(QObject):
 
         groups = []
         running = net
-        for kind in ("deposit", "loan"):                 # 바에 칠하는 순서
+        for kind in ("deposit", "saving", "loan"):       # 바에 칠하는 순서
             part = [r for r in rows if r["kind"] == kind]
             if not part:
                 continue
@@ -929,6 +938,7 @@ class Backend(QObject):
             "isHousing": bool(info.get("housing")),
             "usesGrowth": bool(info.get("uses_growth")),
             "usesSupport": bool(info.get("uses_support")),
+            "canLock": cat == Category.SAVING,
             "flow": info["flow"],
             "onceWord": "수입" if info["flow"] == "income" else "지출",
         }
@@ -1064,7 +1074,7 @@ class Backend(QObject):
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
-                   support: float = 0.0) -> Item:
+                   support: float = 0.0, locked: bool = False) -> Item:
         cat = CATEGORY_LIST[max(0, min(cat_index, len(CATEGORY_LIST) - 1))]
         mode = CATEGORY_INFO[cat]["date_mode"]
         sd = parse_date(start_date) if mode in ("range", "once") else None   # once 면 지출일·수입일
@@ -1081,8 +1091,10 @@ class Backend(QObject):
             monthly=(max(0.0, float(monthly)) if cat == Category.DEPOSIT else 0.0),
             growth=max(0.0, float(growth)),
             support=max(0.0, float(support)),
+            locked=bool(locked),
         )
 
+    @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float)
@@ -1094,13 +1106,14 @@ class Backend(QObject):
                 start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                 monthly_repay_rate: float = 0.0, repay_method: str = "",
                 housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
-                support: float = 0.0) -> None:
+                support: float = 0.0, locked: bool = False) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
-                               growth, support)
+                               growth, support, locked)
         self._items.add(item)
         self._set_status(f"추가: {item.name}")
 
+    @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float)
@@ -1112,10 +1125,10 @@ class Backend(QObject):
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
-                   support: float = 0.0) -> None:
+                   support: float = 0.0, locked: bool = False) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
-                               growth, support)
+                               growth, support, locked)
         self._items.update(row, item)
         self._set_status(f"수정: {item.name}")
 

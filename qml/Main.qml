@@ -29,7 +29,8 @@ ApplicationWindow {
                                m.data(idx, Qt.UserRole + 12), m.data(idx, Qt.UserRole + 13), m.data(idx, Qt.UserRole + 14),
                                m.data(idx, Qt.UserRole + 16), m.data(idx, Qt.UserRole + 18),
                                m.data(idx, Qt.UserRole + 19), m.data(idx, Qt.UserRole + 20),
-                               m.data(idx, Qt.UserRole + 21), m.data(idx, Qt.UserRole + 22))
+                               m.data(idx, Qt.UserRole + 21), m.data(idx, Qt.UserRole + 22),
+                               m.data(idx, Qt.UserRole + 23))
     }
 
     function openEntryDialog() {                            // 테스트/외부 호출용
@@ -476,6 +477,7 @@ ApplicationWindow {
                             required property real monthly
                             required property real growth
                             required property real support
+                            required property bool locked
                             required property int sourceRow
 
                             // 접힌 분류의 줄은 목록에서 빼지 않고 높이만 0 으로 접는다
@@ -516,7 +518,8 @@ ApplicationWindow {
                                                                        rowItem.startDate, rowItem.endDate, rowItem.repayments,
                                                                        rowItem.monthlyRepayRate, rowItem.repayMethod,
                                                                        rowItem.housingType, rowItem.monthly,
-                                                                       rowItem.growth, rowItem.support)
+                                                                       rowItem.growth, rowItem.support,
+                                                                       rowItem.locked)
                             }
 
                             // 이름 아래 작은 글씨 — 줄 전체 폭을 쓴다

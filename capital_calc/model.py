@@ -183,6 +183,7 @@ class Item:
     monthly: float = 0.0             # 주거의 월세 (반전세·월세에서만)
     growth: float = 0.0              # 연 상승률 % (급여 인상, 물가·월세 인상). 해마다 한 번 오른다
     support: float = 0.0             # 월 지원금 (청년도약계좌처럼 남이 보태 주는 돈). 내 돈은 안 나가고 잔액만 는다
+    locked: bool = False             # 만기 전까지 못 쓰는 돈으로 볼지 (적금). 만기가 있어야 적용된다
 
     def __post_init__(self) -> None:
         if self.repay_method not in REPAY_METHODS:
@@ -196,6 +197,8 @@ class Item:
             self.growth = 0.0
         if not CATEGORY_INFO[self.category].get("uses_support"):
             self.support = 0.0
+        if self.category != Category.SAVING:
+            self.locked = False
 
     # ---- 기본 파생 값 ----
     def monthly_interest(self) -> float:
@@ -262,6 +265,17 @@ class Item:
     def support_total_at(self, m: int, basis: date) -> float:
         """m개월 시점까지 받은 지원금 누계."""
         return max(0.0, self.support) * self.saving_months(m, basis)
+
+    def maturity_month(self, basis: date) -> int | None:
+        """적금 만기(개월). 종료일이 없으면 None."""
+        if self.category != Category.SAVING:
+            return None
+        _start_m, end_m = self.active_range(basis)
+        return end_m
+
+    def is_locked(self, basis: date) -> bool:
+        """만기 전까지 손댈 수 없는 돈인가. 만기가 있어야 묶임이 성립한다."""
+        return bool(self.locked) and self.maturity_month(basis) is not None
 
     # ---- 해마다 오르는 금액 ----
     @property
@@ -478,6 +492,9 @@ class Item:
         if self.category in (Category.CASH, Category.BANK):
             return self.amount
         if self.category == Category.SAVING:
+            # 묶어 둔 적금은 만기가 되어야 보유 자금에 들어온다 (그 전에는 못 쓰는 돈)
+            if self.is_locked(basis) and m < self.maturity_month(basis):
+                return 0.0
             return self.saving_balance_at(m, basis)   # 넣은 만큼 쌓인다
         if self.category == Category.LOAN and self.include_principal and self.is_active(m, basis):
             return self.remaining_at(m, basis)   # 상환한 만큼 보유 자금에서 빠진다
@@ -592,6 +609,7 @@ class Item:
             monthly=float(d.get("monthly", 0.0) or 0.0),
             growth=float(d.get("growth", 0.0) or 0.0),
             support=float(d.get("support", 0.0) or 0.0),
+            locked=bool(d.get("locked", False)),
         )
 
 
@@ -766,6 +784,12 @@ class Plan:
             r = i.return_month(b)
             if r is not None and r > self.months and i.once_cost() > 0:
                 out.append({"name": i.name, "amount": i.once_cost(), "month": r, "kind": "deposit"})
+            if i.is_locked(b):
+                mat = i.maturity_month(b)
+                if mat > self.months:
+                    amount = i.saving_balance_at(mat, b)
+                    if amount > 0:
+                        out.append({"name": i.name, "amount": amount, "month": mat, "kind": "saving"})
             if i.category == Category.LOAN and i.include_principal:
                 start_m, end_m = i.active_range(b)
                 if start_m > self.months and (end_m is None or start_m < end_m):
@@ -947,7 +971,7 @@ def sample_plan() -> Plan:
     p = Plan(months=12, target=30_000_000)
     p.add(Item("보유 현금", Category.CASH, 20_000_000))
     p.add(Item("예금 (3.5%)", Category.BANK, 10_000_000, rate=3.5))
-    p.add(Item("청년도약계좌", Category.SAVING, 200_000, rate=3.0, support=300_000,
+    p.add(Item("청년도약계좌", Category.SAVING, 200_000, rate=3.0, support=300_000, locked=True,
                start_date=p.start_date, end_date=add_months(p.basis, 60).isoformat()))
     p.add(Item("전셋집", Category.DEPOSIT, 10_000_000, housing_type="banjeonse", monthly=500_000,
                end_date=add_months(p.basis, 24).isoformat()))

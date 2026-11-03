@@ -18,13 +18,16 @@ QtObject {
     readonly property color greenSoft: "#17372a"
     readonly property color redSoft: "#3a1f24"
     readonly property color violet: "#b57bee"   // 받을 대출 구간
+    readonly property color teal: "#4fc3dc"     // 만기에 받을 적금 구간
 
     // 시나리오별 선·점 색 (1번부터)
     readonly property var scenarioColors: ["#5b8def", "#4cd48a", "#f2c14e", "#b57bee", "#ff9f5a", "#4fc3dc", "#f06a6a", "#8a90a3"]
     function scenarioColor(i) { return scenarioColors[((i % scenarioColors.length) + scenarioColors.length) % scenarioColors.length] }
 
     // 앞으로 들어올 돈의 종류별 색 (목표 바 구간)
-    function pendingColor(kind) { return kind === "loan" ? violet : accent }
+    function pendingColor(kind) {
+        return kind === "loan" ? violet : (kind === "saving" ? teal : accent)
+    }
 
     readonly property int radius: 12
     readonly property int pad: 16

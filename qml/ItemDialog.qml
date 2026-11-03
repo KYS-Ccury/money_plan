@@ -19,6 +19,7 @@ Popup {
     property real monthly: 0                // 주거의 월세
     property real growth: 0                 // 연 상승률 % (급여 인상, 물가·월세 인상)
     property real support: 0                // 적금 월 지원금 (청년도약계좌처럼 보태 주는 돈)
+    property bool locked: false             // 만기 전까지 못 쓰는 돈으로 볼지 (적금)
     // 주거 형태별 입력 안내 (금액 이름, 월세 사용 여부, 반환 가능 여부)
     readonly property var houseInfo: backend.housingInfo(housingType)
     // 대출 상환 미리보기 (원금·이율·방식·기간이 바뀌면 다시 계산)
@@ -80,6 +81,7 @@ Popup {
         monthly = 0
         growth = 0
         support = 0
+        locked = false
         repModel.clear()
         open(); nameField.forceActiveFocus()
     }
@@ -92,7 +94,7 @@ Popup {
         methodBox.currentIndex = Math.max(0, methodBox.indexOfValue(dlg.repayMethod))
     }
     function openForEdit(row, name, catIndex, amount, rate, includePrincipal, startDate, endDate, repayments,
-                         monthlyRepayRate, repayMethod, housingType, monthly, growth, support) {
+                         monthlyRepayRate, repayMethod, housingType, monthly, growth, support, locked) {
         editRow = row
         nameField.text = name
         catBox.currentIndex = catIndex
@@ -108,6 +110,7 @@ Popup {
         dlg.monthly = monthly || 0
         dlg.growth = growth || 0
         dlg.support = support || 0
+        dlg.locked = locked === true
         loadRepayments(repayments)
         open(); nameField.forceActiveFocus()
     }
@@ -127,12 +130,13 @@ Popup {
         var mo = (dlg.info.isHousing && dlg.houseInfo.usesRent) ? dlg.monthly : 0
         var gr = dlg.info.usesGrowth ? dlg.growth : 0
         var sp = dlg.info.usesSupport ? dlg.support : 0
+        var lk = dlg.info.canLock ? dlg.locked : false
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
         if (editRow < 0)
-            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp)
+            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk)
         else
-            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp)
+            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk)
         close()
     }
 
@@ -241,6 +245,31 @@ Popup {
                     color: dlg.support > 0 ? Theme.green : Theme.textDim
                     font.pixelSize: 11; wrapMode: Text.Wrap
                     Layout.fillWidth: true; Layout.preferredWidth: 1
+                }
+            }
+
+            // ── 만기 전까지 묶인 돈 (적금) ──
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 2
+                visible: dlg.info.canLock
+
+                CheckBox {
+                    objectName: "lockedCheck"
+                    text: "만기 전까지는 못 쓰는 돈"
+                    checked: dlg.locked
+                    onToggled: dlg.locked = checked
+                }
+                Text {
+                    text: !dlg.locked
+                          ? "켜면 만기가 될 때까지 보유 자금·순 자본·목표에서 빼고, 만기에 한꺼번에 들어오는 것으로 봅니다."
+                          : (endField.value === "" || !endField.valid)
+                            ? "⚠ 만기(종료일)를 넣어야 묶임이 적용됩니다."
+                            : "만기까지 목표 바에 '만기에 받을 적금' 으로 따로 표시됩니다."
+                    color: dlg.locked && (endField.value === "" || !endField.valid) ? Theme.yellow : Theme.textDim
+                    font.pixelSize: 11; wrapMode: Text.Wrap
+                    Layout.fillWidth: true; Layout.preferredWidth: 1
+                    Layout.bottomMargin: 4
                 }
             }
 

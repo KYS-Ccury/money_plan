@@ -679,3 +679,59 @@ def test_saving_support():
     sv.support = 300_000
     assert Item.from_dict(sv.to_dict()).support == 300_000
     assert Item.from_dict({"name": "옛날", "category": "적금/저축(월)", "amount": 1}).support == 0.0
+
+
+def test_locked_saving():
+    """적금은 자본이지만 만기 전까지는 손댈 수 없다. 묶어 두면 만기에 한꺼번에 들어온다."""
+    p = Plan(months=12, target=50_000_000, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 10_000_000))
+    sv = p.add(Item("청년도약계좌", Category.SAVING, 200_000, support=300_000, locked=True,
+                    start_date="2026-01-01", end_date="2031-01-01"))
+
+    assert sv.maturity_month(p.basis) == 60 and sv.is_locked(p.basis)
+
+    # 만기 전에는 보유 자금에 안 들어간다 (나가는 돈만 반영)
+    assert p.capital_at(12) == 10_000_000
+    assert p.capital_at(59) == 10_000_000
+    assert p.net_at(12) == 10_000_000 - 200_000 * 12
+
+    # 만기에 한꺼번에 들어온다
+    assert p.capital_at(60) == 10_000_000 + 500_000 * 60
+    assert p.capital_at(72) == p.capital_at(60)           # 만기 뒤엔 그대로
+
+    # 묶임을 풀면 예전처럼 쌓이는 대로 자본
+    sv.locked = False
+    assert p.capital_at(12) == 10_000_000 + 500_000 * 12
+    assert p.net_at(12) == 10_000_000 + 300_000 * 12
+    sv.locked = True
+
+    # 만기가 없으면 묶임이 성립하지 않는다 (영원히 못 쓰는 돈은 없다)
+    sv.end_date = None
+    assert sv.maturity_month(p.basis) is None and not sv.is_locked(p.basis)
+    assert p.capital_at(12) == 10_000_000 + 500_000 * 12
+    sv.end_date = "2031-01-01"
+
+    # 목표 바의 '앞으로 들어올 돈' 에 만기 수령액이 잡힌다
+    rows = p.pending_inflows()
+    assert [(r["kind"], r["month"]) for r in rows] == [("saving", 60)]
+    assert rows[0]["amount"] == 500_000 * 60
+    assert p.pending_total("saving") == 500_000 * 60
+
+    # 기간이 만기를 넘으면 이미 순 자본에 있으므로 따로 세지 않는다
+    p.months = 60
+    assert p.pending_inflows() == []
+    p.months = 12
+
+    # 묶임을 풀면 들어올 돈이 아니라 이미 가진 돈이다
+    sv.locked = False
+    assert p.pending_inflows() == []
+
+    # 적금이 아닌 분류는 묶을 수 없다
+    for cat in (Category.CASH, Category.BANK, Category.LOAN, Category.DEPOSIT, Category.INCOME):
+        it = Item("x", cat, 1_000, locked=True)
+        assert it.locked is False and not it.is_locked(p.basis)
+
+    # 저장 / 불러오기
+    sv.locked = True
+    assert Item.from_dict(sv.to_dict()).locked is True
+    assert Item.from_dict({"name": "옛날", "category": "적금/저축(월)", "amount": 1}).locked is False
