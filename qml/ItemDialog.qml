@@ -17,6 +17,7 @@ Popup {
     property string repayMethod: "bullet"
     property string housingType: "jeonse"   // 전세 / 반전세 / 월세 / 매매
     property real monthly: 0                // 주거의 월세
+    property real growth: 0                 // 연 상승률 % (급여 인상, 물가·월세 인상)
     // 주거 형태별 입력 안내 (금액 이름, 월세 사용 여부, 반환 가능 여부)
     readonly property var houseInfo: backend.housingInfo(housingType)
     // 대출 상환 미리보기 (원금·이율·방식·기간이 바뀌면 다시 계산)
@@ -76,6 +77,7 @@ Popup {
         setRepayMethod("bullet")
         setHousingType("jeonse")
         monthly = 0
+        growth = 0
         repModel.clear()
         open(); nameField.forceActiveFocus()
     }
@@ -88,7 +90,7 @@ Popup {
         methodBox.currentIndex = Math.max(0, methodBox.indexOfValue(dlg.repayMethod))
     }
     function openForEdit(row, name, catIndex, amount, rate, includePrincipal, startDate, endDate, repayments,
-                         monthlyRepayRate, repayMethod, housingType, monthly) {
+                         monthlyRepayRate, repayMethod, housingType, monthly, growth) {
         editRow = row
         nameField.text = name
         catBox.currentIndex = catIndex
@@ -102,6 +104,7 @@ Popup {
         setRepayMethod(repayMethod)
         setHousingType(housingType)
         dlg.monthly = monthly || 0
+        dlg.growth = growth || 0
         loadRepayments(repayments)
         open(); nameField.forceActiveFocus()
     }
@@ -119,12 +122,13 @@ Popup {
         var ed = (dlg.info.dateMode === "range" || returnable) ? endDate : ""
         var ht = dlg.info.isHousing ? dlg.housingType : ""
         var mo = (dlg.info.isHousing && dlg.houseInfo.usesRent) ? dlg.monthly : 0
+        var gr = dlg.info.usesGrowth ? dlg.growth : 0
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
         if (editRow < 0)
-            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo)
+            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr)
         else
-            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo)
+            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr)
         close()
     }
 
@@ -207,6 +211,32 @@ Popup {
                 money: true
                 suffix: "원"
                 onEdited: (v) => dlg.monthly = v
+            }
+
+            // ── 해마다 오르는 금액 (급여 인상, 물가·월세 인상) ──
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                visible: dlg.info.usesGrowth
+
+                SliderInput {
+                    objectName: "growthInput"
+                    label: "연 상승률"
+                    value: dlg.growth
+                    from: 0; to: 20; stepSize: 0.5
+                    decimals: 1
+                    suffix: "%"
+                    onEdited: (v) => dlg.growth = v
+                }
+                Text {
+                    readonly property var gp: backend.growthPreview(dlg.amount, dlg.growth, 3)
+                    text: dlg.growth > 0
+                          ? "1년마다 한 번씩 오릅니다.  " + gp.text
+                          : "해마다 오르는 돈이면 상승률을 넣으세요 (급여 인상, 물가·월세 인상)"
+                    color: dlg.growth > 0 ? Theme.green : Theme.textDim
+                    font.pixelSize: 11; wrapMode: Text.Wrap
+                    Layout.fillWidth: true; Layout.preferredWidth: 1
+                }
             }
 
             // ── 지출/수입 시점 (보증금 / 일시 지출 / 일시 수입) ──

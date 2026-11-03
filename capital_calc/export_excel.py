@@ -204,7 +204,7 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
     # ---------------------------------------------------------- 항목
     ws = wb.create_sheet("항목")
     _header(ws, 1, ["이름", "분류", "금액", "연이율(%)", "원금 자본 포함", "시작일", "종료일",
-                    "상환 방식", "첫 달 상환액", "총 이자", "중도 상환", "월 환산(0개월)"])
+                    "상환 방식", "첫 달 상환액", "총 이자", "중도 상환", "월 환산(0개월)", "연 상승률(%)"])
     basis = plan.basis
     for r, it in enumerate(plan.items, start=2):
         info = CATEGORY_INFO[it.category]
@@ -231,6 +231,7 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
             ws.cell(row=r, column=10, value=it.total_interest(basis) or None).number_format = WON
         ws.cell(row=r, column=11, value=reps or None)
         ws.cell(row=r, column=12, value=it.monthly_net_at(0, basis)).number_format = WON
+        ws.cell(row=r, column=13, value=it.growth or None)
     _autowidth(ws)
 
     # ---------------------------------------------------------- 월별 추이 (+ 선 그래프)

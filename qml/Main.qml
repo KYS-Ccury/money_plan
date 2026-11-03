@@ -28,7 +28,8 @@ ApplicationWindow {
                                m.data(idx, Qt.UserRole + 4), m.data(idx, Qt.UserRole + 6), m.data(idx, Qt.UserRole + 10),
                                m.data(idx, Qt.UserRole + 12), m.data(idx, Qt.UserRole + 13), m.data(idx, Qt.UserRole + 14),
                                m.data(idx, Qt.UserRole + 16), m.data(idx, Qt.UserRole + 18),
-                               m.data(idx, Qt.UserRole + 19), m.data(idx, Qt.UserRole + 20))
+                               m.data(idx, Qt.UserRole + 19), m.data(idx, Qt.UserRole + 20),
+                               m.data(idx, Qt.UserRole + 21))
     }
 
     function openEntryDialog() {                            // 테스트/외부 호출용
@@ -473,6 +474,7 @@ ApplicationWindow {
                             required property string repayMethod
                             required property string housingType
                             required property real monthly
+                            required property real growth
                             required property int sourceRow
 
                             // 접힌 분류의 줄은 목록에서 빼지 않고 높이만 0 으로 접는다
@@ -512,7 +514,8 @@ ApplicationWindow {
                                                                        rowItem.amount, rowItem.rate, rowItem.includePrincipal,
                                                                        rowItem.startDate, rowItem.endDate, rowItem.repayments,
                                                                        rowItem.monthlyRepayRate, rowItem.repayMethod,
-                                                                       rowItem.housingType, rowItem.monthly)
+                                                                       rowItem.housingType, rowItem.monthly,
+                                                                       rowItem.growth)
                             }
 
                             RowLayout {

@@ -76,6 +76,7 @@ GROUP_CAPITAL, GROUP_INCOME, GROUP_COST = "자본", "수입", "지출"
 #   date_mode    : ""(날짜 없음) | "range"(시작일~종료일) | "once"(하루에 끝나는 돈)
 #   flow         : "cost"(나가는 돈) | "income"(들어오는 돈) | ""(자본·대출처럼 둘 다 아닌 것)
 #   group        : 자본 | 수입 | 지출
+#   uses_growth  : 해마다 오르는 돈인가 (급여 인상, 물가·월세 인상)
 #   returnable   : 돌려받을 수 있는 돈인가 (보증금). 반환일을 넣으면 그 달에 되돌아온다
 CATEGORY_INFO: dict[Category, dict] = {
     Category.CASH: {"group": GROUP_CAPITAL, "amount_label": "보유 금액", "uses_rate": False,
@@ -91,19 +92,19 @@ CATEGORY_INFO: dict[Category, dict] = {
                     "date_mode": "range", "flow": "",
                     "hint": "대출 기간 동안 원금은 자본에 포함, 이자는 잔액 기준 매달 지출. 정기·중도 상환으로 잔액을 줄일 수 있고 종료일에 잔액 상환"},
     Category.INCOME: {"group": GROUP_INCOME, "amount_label": "월 수입", "uses_rate": False,
-                      "date_mode": "range", "flow": "income",
+                      "uses_growth": True, "date_mode": "range", "flow": "income",
                       "hint": "급여·부업처럼 적용 기간 동안 매달 들어오는 돈 (종료일 비우면 계속)"},
     Category.INCOME_ONCE: {"group": GROUP_INCOME, "amount_label": "수입액", "uses_rate": False,
                            "date_mode": "once", "flow": "income",
                            "hint": "상여금·퇴직금·만기 적금처럼 한 번만 들어오는 돈. 수입일을 비우면 기준일에 들어옵니다"},
     Category.RENT: {"group": GROUP_COST, "amount_label": "월세", "uses_rate": False,
-                    "date_mode": "range", "flow": "cost",
+                    "uses_growth": True, "date_mode": "range", "flow": "cost",
                     "hint": "적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
     Category.MAINT: {"group": GROUP_COST, "amount_label": "월 관리비", "uses_rate": False,
-                     "date_mode": "range", "flow": "cost",
+                     "uses_growth": True, "date_mode": "range", "flow": "cost",
                      "hint": "적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
     Category.FIXED: {"group": GROUP_COST, "amount_label": "월 고정 지출", "uses_rate": False,
-                     "date_mode": "range", "flow": "cost",
+                     "uses_growth": True, "date_mode": "range", "flow": "cost",
                      "hint": "보험료·통신비·식비·교통비처럼 적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
     Category.DEPOSIT: {"group": GROUP_COST, "amount_label": "보증금", "uses_rate": False,
                        "date_mode": "once", "flow": "cost", "returnable": True, "housing": True,
@@ -179,6 +180,7 @@ class Item:
     repay_method: str = ""           # 상환 방식. "" 이면 자동 (상환율이 있으면 rate, 없으면 bullet)
     housing_type: str = ""           # 주거 형태 (전세/반전세/월세/매매). 주거 항목에서만 사용
     monthly: float = 0.0             # 주거의 월세 (반전세·월세에서만)
+    growth: float = 0.0              # 연 상승률 % (급여 인상, 물가·월세 인상). 해마다 한 번 오른다
 
     def __post_init__(self) -> None:
         if self.repay_method not in REPAY_METHODS:
@@ -188,6 +190,8 @@ class Item:
                 self.housing_type = "wolse" if self.monthly > 0 else "jeonse"
         else:
             self.housing_type, self.monthly = "", 0.0
+        if not CATEGORY_INFO[self.category].get("uses_growth"):
+            self.growth = 0.0
 
     # ---- 기본 파생 값 ----
     def monthly_interest(self) -> float:
@@ -235,6 +239,23 @@ class Item:
         mm = m if end_m is None else min(m, end_m)
         months_held = k * (mm - start_m) - k * (k - 1) / 2   # 각 납입분이 묶여 있던 개월 수의 합
         return principal + self.amount * mr * max(0.0, months_held)
+
+    # ---- 해마다 오르는 금액 ----
+    @property
+    def uses_growth(self) -> bool:
+        return bool(CATEGORY_INFO[self.category].get("uses_growth"))
+
+    def growth_factor(self, m: int, basis: date) -> float:
+        """m개월 시점의 배수. 시작한 지 1년이 지날 때마다 한 번씩 오른다."""
+        if not self.growth or not self.uses_growth:
+            return 1.0
+        start_m, _ = self.active_range(basis)
+        years = max(0, m - start_m) // 12
+        return (1.0 + self.growth / 100.0) ** years
+
+    def amount_at(self, m: int, basis: date) -> float:
+        """m개월 시점의 월 금액 (상승률 반영)."""
+        return self.amount * self.growth_factor(m, basis)
 
     @property
     def is_housing(self) -> bool:
@@ -485,7 +506,7 @@ class Item:
             rent = self.housing_rent()
             return rent if rent > 0 and self.housing_active(m, basis) else 0.0
         if self.category in MONTHLY_COST_CATEGORIES:
-            return self.amount if self.is_active(m, basis) else 0.0
+            return self.amount_at(m, basis) if self.is_active(m, basis) else 0.0
         if self.category == Category.LOAN:
             cost = self.interest_at(m, basis)        # 그 달 초 잔액 기준
             if not self.include_principal:
@@ -501,7 +522,7 @@ class Item:
 
     def monthly_income_at(self, m: int, basis: date) -> float:
         if self.category in MONTHLY_INCOME_CATEGORIES:
-            return self.amount if self.is_active(m, basis) else 0.0
+            return self.amount_at(m, basis) if self.is_active(m, basis) else 0.0
         if self.category == Category.BANK:
             return self.monthly_interest()
         return 0.0
@@ -546,6 +567,7 @@ class Item:
             repay_method=str(d.get("repay_method") or ""),
             housing_type=str(d.get("housing_type") or ""),
             monthly=float(d.get("monthly", 0.0) or 0.0),
+            growth=float(d.get("growth", 0.0) or 0.0),
         )
 
 
@@ -907,7 +929,7 @@ def sample_plan() -> Plan:
     p.add(Item("관리비", Category.MAINT, 100_000))
     p.add(Item("생활비 (식비·통신)", Category.FIXED, 800_000))
     p.add(Item("신용대출 (5%)", Category.LOAN, 5_000_000, rate=5.0, start_date=p.start_date))
-    p.add(Item("급여", Category.INCOME, 2_000_000, start_date=p.start_date))
+    p.add(Item("급여", Category.INCOME, 2_000_000, start_date=p.start_date, growth=3.0))
     p.add(Item("성과급", Category.INCOME_ONCE, 3_000_000, start_date=add_months(p.basis, 6).isoformat()))
     return p
 

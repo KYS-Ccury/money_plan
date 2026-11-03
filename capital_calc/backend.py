@@ -56,6 +56,7 @@ class ItemListModel(QAbstractListModel):
     RepayMethodRole = Qt.ItemDataRole.UserRole + 18
     HousingTypeRole = Qt.ItemDataRole.UserRole + 19
     MonthlyRole = Qt.ItemDataRole.UserRole + 20     # 주거의 월세
+    GrowthRole = Qt.ItemDataRole.UserRole + 21      # 연 상승률 %
 
     _ROLES = {
         NameRole: b"name",
@@ -78,6 +79,7 @@ class ItemListModel(QAbstractListModel):
         RepayMethodRole: b"repayMethod",
         HousingTypeRole: b"housingType",
         MonthlyRole: b"monthly",
+        GrowthRole: b"growth",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -129,6 +131,8 @@ class ItemListModel(QAbstractListModel):
             return it.housing_type
         if role == self.MonthlyRole:
             return it.monthly
+        if role == self.GrowthRole:
+            return it.growth
         if role == self.SubTextRole:
             if it.date_mode == "once":
                 d = parse_date(it.start_date) or (self._plan.basis if it.is_housing else None)
@@ -170,6 +174,8 @@ class ItemListModel(QAbstractListModel):
                     parts.append(label)
             if it.repayments:
                 parts.append(f"중도상환 {len(it.repayments)}건 {won(it.total_repaid())}")
+            if it.growth:
+                parts.append(f"해마다 {it.growth:g}% 인상")
             return "  ·  ".join(parts)
         if role in (self.MonthlyTextRole, self.MonthlyKindRole):
             basis = self._plan.basis
@@ -907,6 +913,7 @@ class Backend(QObject):
             "group": info["group"],
             "returnable": bool(info.get("returnable")),
             "isHousing": bool(info.get("housing")),
+            "usesGrowth": bool(info.get("uses_growth")),
             "flow": info["flow"],
             "onceWord": "수입" if info["flow"] == "income" else "지출",
         }
@@ -1041,7 +1048,7 @@ class Backend(QObject):
     def _make_item(self, name: str, cat_index: int, amount: float, rate: float, include_principal: bool,
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
-                   housing_type: str = "", monthly: float = 0.0) -> Item:
+                   housing_type: str = "", monthly: float = 0.0, growth: float = 0.0) -> Item:
         cat = CATEGORY_LIST[max(0, min(cat_index, len(CATEGORY_LIST) - 1))]
         mode = CATEGORY_INFO[cat]["date_mode"]
         sd = parse_date(start_date) if mode in ("range", "once") else None   # once 면 지출일·수입일
@@ -1056,8 +1063,10 @@ class Backend(QObject):
             repay_method=(repay_method if cat == Category.LOAN and repay_method in REPAY_METHODS else ""),
             housing_type=(housing_type if cat == Category.DEPOSIT else ""),
             monthly=(max(0.0, float(monthly)) if cat == Category.DEPOSIT else 0.0),
+            growth=max(0.0, float(growth)),
         )
 
+    @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float)
     @Slot(str, int, float, float, bool, str, str, str, float, str)
     @Slot(str, int, float, float, bool, str, str, str, float)
@@ -1066,12 +1075,13 @@ class Backend(QObject):
     def addItem(self, name: str, cat_index: int, amount: float, rate: float, include_principal: bool,
                 start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                 monthly_repay_rate: float = 0.0, repay_method: str = "",
-                housing_type: str = "", monthly: float = 0.0) -> None:
+                housing_type: str = "", monthly: float = 0.0, growth: float = 0.0) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
-                               repayments_json, monthly_repay_rate, repay_method, housing_type, monthly)
+                               repayments_json, monthly_repay_rate, repay_method, housing_type, monthly, growth)
         self._items.add(item)
         self._set_status(f"추가: {item.name}")
 
+    @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str)
     @Slot(int, str, int, float, float, bool, str, str, str, float)
@@ -1080,9 +1090,9 @@ class Backend(QObject):
     def updateItem(self, row: int, name: str, cat_index: int, amount: float, rate: float, include_principal: bool,
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
-                   housing_type: str = "", monthly: float = 0.0) -> None:
+                   housing_type: str = "", monthly: float = 0.0, growth: float = 0.0) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
-                               repayments_json, monthly_repay_rate, repay_method, housing_type, monthly)
+                               repayments_json, monthly_repay_rate, repay_method, housing_type, monthly, growth)
         self._items.update(row, item)
         self._set_status(f"수정: {item.name}")
 
@@ -1537,6 +1547,15 @@ class Backend(QObject):
         rows = self._ws.ledger.by_category(self.ledgerPeriod, kind if kind in ("income", "cost") else "cost")
         total = sum(v for _, v in rows)
         return [{"label": n, "value": v, "share": (v / total) if total else 0.0} for n, v in rows]
+
+    @Slot(float, float, int, result="QVariantMap")
+    def growthPreview(self, amount: float, growth: float, years: int) -> dict:
+        """해마다 growth% 씩 오르면 years 년 뒤에 얼마가 되는지. {amount, text}"""
+        years = max(1, min(40, int(years)))
+        later = max(0.0, amount) * ((1.0 + max(0.0, growth) / 100.0) ** years)
+        if growth <= 0 or amount <= 0:
+            return {"amount": amount, "text": "오르지 않습니다"}
+        return {"amount": later, "text": f"{years}년 뒤 {won(later)} (지금보다 +{won(later - amount)})"}
 
     @Slot(str, result=str)
     def ledgerKindOf(self, category: str) -> str:

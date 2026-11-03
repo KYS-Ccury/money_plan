@@ -806,3 +806,33 @@ def test_backend_pending_inflow():
     dep = b.pendingInflow["groups"][0]
     assert dep["count"] == 2 and dep["total"] == 35_000_000
     assert dep["month"] == 12 and "외 1건" in dep["name"]
+
+
+def test_backend_growth():
+    b = Backend(Plan(months=36, target=0, start_date="2026-01-01"))
+    assert b.categoryInfo(4)["usesGrowth"] and b.categoryInfo(6)["usesGrowth"]      # 월 수입, 월세
+    assert b.categoryInfo(8)["usesGrowth"]                                          # 고정 지출
+    assert not b.categoryInfo(0)["usesGrowth"] and not b.categoryInfo(5)["usesGrowth"]
+
+    # 4 = 월 수입, 마지막 인자가 연 상승률
+    b.addItem("급여", 4, 2_000_000, 0, True, "", "", "[]", 0, "", "", 0, 5.0)
+    idx = b.items.index(0, 0)
+    assert b.items.data(idx, b.items.GrowthRole) == 5.0
+    assert "해마다 5% 인상" in b.items.data(idx, b.items.SubTextRole)
+
+    assert b.monthlyIncome == 2_000_000                   # 0개월은 그대로
+    assert b.netAt(12) == 2_000_000 * 12
+    assert b.netAt(24) == 2_000_000 * 12 + 2_100_000 * 12
+
+    pv = b.growthPreview(2_000_000, 5.0, 3)
+    assert abs(pv["amount"] - 2_000_000 * 1.05 ** 3) < 1e-6 and "3년 뒤" in pv["text"]
+    assert b.growthPreview(2_000_000, 0, 3)["text"] == "오르지 않습니다"
+
+    # 상승률을 빼면 다시 평평해진다
+    b.updateItem(0, "급여", 4, 2_000_000, 0, True, "", "", "[]", 0, "", "", 0, 0)
+    assert b.items.data(b.items.index(0, 0), b.items.GrowthRole) == 0
+    assert b.netAt(24) == 2_000_000 * 24
+
+    # 상승률을 안 주는 예전 호출도 그대로 동작한다
+    b.addItem("부업", 4, 100_000, 0, True)
+    assert b.items.data(b.items.index(1, 0), b.items.GrowthRole) == 0

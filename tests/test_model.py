@@ -594,3 +594,46 @@ def test_pending_inflows():
     late.end_date = "2028-01-01"
     soon.end_date = "2027-06-01"
     assert [r["month"] for r in p.pending_inflows()] == [10, 17, 24]
+
+
+def test_growth_rate():
+    """해마다 한 번씩 오르는 금액 (급여 인상, 물가·월세 인상)."""
+    p = Plan(months=36, start_date="2026-01-01")
+    pay = p.add(Item("급여", Category.INCOME, 2_000_000, growth=5.0))
+    assert pay.uses_growth and pay.growth == 5.0
+
+    # 1년마다 한 번, 그 사이에는 그대로
+    assert pay.growth_factor(0, p.basis) == 1.0
+    assert p.monthly_income_at(11) == 2_000_000
+    assert p.monthly_income_at(12) == 2_100_000
+    assert p.monthly_income_at(23) == 2_100_000
+    assert p.monthly_income_at(24) == 2_205_000
+    assert abs(p.monthly_income_at(36) - 2_000_000 * 1.05 ** 3) < 1e-6
+
+    # 시작일이 뒤면 그 시점부터 1년을 센다
+    pay.start_date = "2026-07-01"
+    assert p.monthly_income_at(17) == 2_000_000          # 시작 11개월째
+    assert p.monthly_income_at(18) == 2_100_000          # 시작 12개월째
+    pay.start_date = None
+
+    # 지출도 오른다 (물가·월세)
+    rent = p.add(Item("월세", Category.RENT, 500_000, growth=4.0))
+    assert p.monthly_cost_at(11) == 500_000 and p.monthly_cost_at(12) == 520_000
+    fixed = p.add(Item("생활비", Category.FIXED, 1_000_000, growth=2.0))
+    assert p.monthly_cost_at(12) == 520_000 + 1_020_000
+
+    # 순 자본에도 그대로 반영된다 (1년차 12달 + 2년차 12달 ...)
+    p.items = [pay]
+    assert p.net_at(24) == (2_000_000 * 12) + (2_100_000 * 12)
+
+    # 상승률을 쓰지 않는 분류는 값을 갖지 않는다
+    for cat in (Category.CASH, Category.BANK, Category.LOAN, Category.DEPOSIT,
+                Category.EXPENSE, Category.INCOME_ONCE, Category.SAVING):
+        it = Item("x", cat, 1_000, growth=5.0)
+        assert not it.uses_growth and it.growth == 0
+        assert it.growth_factor(24, p.basis) == 1.0
+
+    # 저장/불러오기
+    assert Item.from_dict(rent.to_dict()).growth == 4.0
+    assert Item.from_dict({"name": "옛날", "category": "월세", "amount": 1}).growth == 0.0
+    assert fixed.growth == 2.0
