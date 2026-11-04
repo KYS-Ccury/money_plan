@@ -1048,6 +1048,7 @@ ApplicationWindow {
                         }
 
                         TrendChart {
+                            objectName: "trendChart"
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             Layout.minimumHeight: 180

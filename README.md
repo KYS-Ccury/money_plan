@@ -32,6 +32,8 @@ python main.py
 | `capital_calc/app.py` | (구버전) GLFW + OpenGL + ImGui 창 |
 | `qml/Main.qml` | 메인 화면. `Card`, `StatRow`, `AnimatedMoney`, `TrendChart`, `ItemDialog`, `ConfirmDialog` 를 조합 |
 | `qml/LedgerView.qml` | 가계부 화면 (내역 · 월별 표 · 분류별 도넛 · 연도별) |
+| `qml/TrendChart.qml` | 월별 순 자본 추이 (QtQuick.Shapes — GPU 로 그린다) |
+| `qml/PieChart.qml` | 도넛형 비중 그래프 (QtQuick.Shapes — GPU 로 그린다) |
 | `qml/Theme.qml` | 색상·간격·애니메이션 시간 싱글톤 |
 | `tests/` | 모델·백엔드 테스트 (`python -m pytest tests`) |
 | `capital_data.json` | 저장 버튼을 누르면 생성되는 데이터 파일 |
@@ -208,3 +210,24 @@ python main.py
 - 가계부는 시나리오와 무관하게 하나만 있고, 계획과 **같은 파일에 함께 저장**됩니다
   (`{"ledger": {"entries": [...]}}`, 버전 3). 가계부가 없는 예전 파일도 그대로 열립니다.
 - 엑셀 내보내기에 기록이 있으면 **가계부 내역 / 가계부 월별(막대 그래프) / 가계부 연도별** 시트가 추가됩니다.
+
+## 그리기
+
+화면은 Qt Quick 장면 그래프가 그립니다. 윈도우에서는 **Direct3D 11** 을 쓰므로 창·목록·글자는 모두 GPU 가 그립니다.
+
+두 그래프(`TrendChart`, `PieChart`)는 예전에 `Canvas` 로 그렸습니다. `Canvas` 는 매번 CPU 에서 그림을 그려
+텍스처로 올리는 방식이라, 마우스를 움직이거나 값이 바뀔 때마다 CPU 가 그래프 영역을 통째로 다시 칠했습니다.
+지금은 **`QtQuick.Shapes`** 로 바꿔서 선·호·면이 장면 그래프의 도형이 되었고, 눈금·마커·라벨은 평범한
+`Rectangle` 과 `Text` 입니다. 전부 GPU 가 그립니다.
+
+1200×700 그래프를 쉬지 않고 다시 그리게 하고 잰 CPU 시간입니다 (각 3회).
+
+| | CPU / 프레임 | CPU 점유 |
+|---|---|---|
+| `Canvas` (예전) | 2.6 ~ 3.0 ms | 15 ~ 18% |
+| `QtQuick.Shapes` (지금) | 1.2 ~ 1.7 ms | 7 ~ 10% |
+
+그림은 그대로입니다. 같은 데이터로 창 전체를 찍어 비교하면 다른 픽셀이 0.16% (가장자리 안티앨리어싱) 뿐입니다.
+
+도넛의 마우스 판정은 `PieChart.sliceAt(dx, dy)` 로 떼어 두었습니다. 가운데에서 떨어진 거리와 각도로
+몇 번째 조각인지 돌려주고, 링 밖이면 -1 입니다.

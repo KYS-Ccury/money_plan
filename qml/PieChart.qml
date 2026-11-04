@@ -1,7 +1,12 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Shapes
 
 // 도넛형 비중 그래프 + 범례. slices: [{label, value, share, color}]
+//
+// 그리기는 QtQuick.Shapes 가 맡는다 (장면 그래프가 GPU 로 그린다).
+// 예전에는 Canvas 로 그렸는데, Canvas 는 매번 CPU 에서 그림을 그려
+// 텍스처로 올리는 방식이라 값이 바뀔 때마다 CPU 가 일했다.
 Item {
     id: chart
     property var slices: []
@@ -10,14 +15,46 @@ Item {
     property real reveal: 1.0            // 0 → 1 로 원이 그려지는 애니메이션
     property int hovered: -1
 
+    // 링 크기는 한 곳에서 정한다 (그리기와 마우스 판정이 같은 값을 써야 한다)
+    readonly property real ringOuter: Math.min(pieArea.width, pieArea.height) / 2 - 6
+    readonly property real ringInner: ringOuter * 0.6
+
     readonly property var palette: [Theme.accent, Theme.green, Theme.yellow, Theme.red, "#b57bee", "#4fc3dc", "#ff9f5a", "#8a90a3"]
 
-    onSlicesChanged: { reveal = 0; revealAnim.restart(); canvas.requestPaint() }
-    onRevealChanged: canvas.requestPaint()
-    onHoveredChanged: canvas.requestPaint()
+    // 조각마다 시작 각도와 크기를 미리 계산한다 (도 단위, 12시 = -90°, 시계 방향)
+    readonly property var wedges: {
+        var s = chart.slices || []
+        var sum = 0
+        for (var i = 0; i < s.length; i++) sum += Number(s[i].value) || 0
+        var out = []
+        var a = -90
+        for (i = 0; i < s.length; i++) {
+            var sweep = sum > 0 ? (Number(s[i].value) || 0) / sum * 360 : 0
+            out.push({ start: a, sweep: sweep })
+            a += sweep
+        }
+        return out
+    }
+
+    onSlicesChanged: { reveal = 0; revealAnim.restart() }
     NumberAnimation { id: revealAnim; target: chart; property: "reveal"; from: 0; to: 1; duration: 800; easing.type: Easing.OutCubic }
 
     function colorOf(i) { return (slices[i] && slices[i].color) ? slices[i].color : palette[i % palette.length] }
+
+    // 도넛 가운데에서 (dx, dy) 만큼 떨어진 곳이 몇 번째 조각인가. 링 밖이면 -1.
+    // (마우스 판정에 쓰고, 따로 떼어 두어 검사하기 쉽게 한다)
+    function sliceAt(dx, dy) {
+        var d = Math.sqrt(dx * dx + dy * dy)
+        if (d > ringOuter + 6 || d < ringInner) return -1
+        var ang = Math.atan2(dy, dx) * 180 / Math.PI + 90      // 12시 = 0도, 시계 방향
+        if (ang < 0) ang += 360
+        var w = chart.wedges
+        for (var i = 0; i < w.length; i++) {
+            var from = w[i].start + 90
+            if (ang >= from && ang <= from + w[i].sweep) return i
+        }
+        return -1
+    }
 
     RowLayout {
         anchors.fill: parent
@@ -28,57 +65,75 @@ Item {
             Layout.preferredWidth: Math.min(parent.height, 190)
             Layout.fillHeight: true
 
-            Canvas {
-                id: canvas
+            readonly property real cx: width / 2
+            readonly property real cy: height / 2
+            // 애니메이션으로 지금까지 그려진 끝 각도
+            readonly property real revealEnd: -90 + 360 * chart.reveal
+
+            // 배경 링
+            Shape {
                 anchors.fill: parent
-                onPaint: {
-                    var ctx = getContext("2d")
-                    ctx.clearRect(0, 0, width, height)
-                    var cx = width / 2, cy = height / 2
-                    var R = Math.min(width, height) / 2 - 6, r = R * 0.6
-                    var s = chart.slices || []
-                    var total = 0
-                    for (var i = 0; i < s.length; i++) total += Number(s[i].value) || 0
-                    // 배경 링
-                    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.arc(cx, cy, r, Math.PI * 2, 0, true)
-                    ctx.closePath(); ctx.fillStyle = "#1c2030"; ctx.fill()
-                    if (total <= 0) return
-                    var a0 = -Math.PI / 2, sweepTotal = Math.PI * 2 * chart.reveal
-                    for (i = 0; i < s.length; i++) {
-                        var frac = (Number(s[i].value) || 0) / total
-                        var a1 = a0 + frac * Math.PI * 2
-                        var drawEnd = Math.min(a1, -Math.PI / 2 + sweepTotal)
-                        if (drawEnd <= a0) break
-                        var grow = chart.hovered === i ? 5 : 0
-                        ctx.beginPath()
-                        ctx.arc(cx, cy, R + grow, a0, drawEnd)
-                        ctx.arc(cx, cy, r, drawEnd, a0, true)
-                        ctx.closePath()
-                        ctx.fillStyle = chart.colorOf(i); ctx.fill()
-                        ctx.strokeStyle = "#171a23"; ctx.lineWidth = 2; ctx.stroke()
-                        a0 = a1
+                preferredRendererType: Shape.CurveRenderer
+                ShapePath {
+                    fillColor: "#1c2030"
+                    strokeColor: "transparent"
+                    fillRule: ShapePath.OddEvenFill
+                    PathAngleArc {
+                        centerX: pieArea.cx; centerY: pieArea.cy
+                        radiusX: chart.ringOuter; radiusY: chart.ringOuter
+                        startAngle: 0; sweepAngle: 360
+                    }
+                    PathAngleArc {
+                        centerX: pieArea.cx; centerY: pieArea.cy
+                        radiusX: chart.ringInner; radiusY: chart.ringInner
+                        startAngle: 0; sweepAngle: 360
+                        moveToStart: true
                     }
                 }
-                // 마우스가 올라간 조각 찾기
-                HoverHandler {
-                    onPointChanged: {
-                        var cx = canvas.width / 2, cy = canvas.height / 2
-                        var dx = point.position.x - cx, dy = point.position.y - cy
-                        var d = Math.sqrt(dx * dx + dy * dy)
-                        var R = Math.min(canvas.width, canvas.height) / 2 - 6
-                        if (d > R + 6 || d < R * 0.6) { chart.hovered = -1; return }
-                        var ang = Math.atan2(dy, dx) + Math.PI / 2
-                        if (ang < 0) ang += Math.PI * 2
-                        var s = chart.slices || [], total = 0, acc = 0
-                        for (var i = 0; i < s.length; i++) total += Number(s[i].value) || 0
-                        for (i = 0; i < s.length; i++) {
-                            acc += (Number(s[i].value) || 0) / total * Math.PI * 2
-                            if (ang <= acc) { chart.hovered = i; return }
+            }
+
+            // 조각
+            Repeater {
+                model: chart.wedges
+                delegate: Shape {
+                    id: wedge
+                    required property var modelData
+                    required property int index
+                    // 애니메이션 중에는 끝 각도까지만 그린다
+                    readonly property real drawn:
+                        Math.max(0, Math.min(modelData.sweep, pieArea.revealEnd - modelData.start))
+                    readonly property real grow: chart.hovered === index ? 5 : 0
+
+                    anchors.fill: parent
+                    visible: drawn > 0.01
+                    preferredRendererType: Shape.CurveRenderer
+
+                    ShapePath {
+                        fillColor: chart.colorOf(wedge.index)
+                        strokeColor: "#171a23"
+                        strokeWidth: 2
+                        PathAngleArc {
+                            centerX: pieArea.cx; centerY: pieArea.cy
+                            radiusX: chart.ringOuter + wedge.grow; radiusY: chart.ringOuter + wedge.grow
+                            startAngle: wedge.modelData.start; sweepAngle: wedge.drawn
+                            moveToStart: true
                         }
-                        chart.hovered = -1
+                        PathAngleArc {
+                            // moveToStart 를 꺼야 바깥 호 끝에서 선으로 이어져 가운데가 뚫린 조각이 된다
+                            moveToStart: false
+                            centerX: pieArea.cx; centerY: pieArea.cy
+                            radiusX: chart.ringInner; radiusY: chart.ringInner
+                            startAngle: wedge.modelData.start + wedge.drawn; sweepAngle: -wedge.drawn
+                        }
                     }
-                    onHoveredChanged: if (!hovered) chart.hovered = -1
                 }
+            }
+
+            // 마우스가 올라간 조각 찾기
+            HoverHandler {
+                onPointChanged: chart.hovered = chart.sliceAt(point.position.x - pieArea.cx,
+                                                              point.position.y - pieArea.cy)
+                onHoveredChanged: if (!hovered) chart.hovered = -1
             }
 
             // 가운데 글자: 호버 중이면 그 조각, 아니면 합계
