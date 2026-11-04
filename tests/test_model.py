@@ -807,3 +807,55 @@ def test_net_series_matches_net_at():
 
     assert p.net_series(0) == [p.net_at(0)]
     assert p.net_series(-5) == [p.net_at(0)]        # 음수는 0개월로 본다
+
+
+def test_first_month_reaching():
+    """목표에 닿는 달을 한 번에 찾는다. 한 달씩 net_at 을 부르던 것과 값이 같아야 한다."""
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 1_000_000))
+    p.add(Item("급여", Category.INCOME, 500_000))
+    p.add(Item("월세", Category.RENT, 300_000))      # 월 +200,000
+
+    # 1,000,000 에서 월 200,000 씩 → 3,000,000 은 10개월째
+    assert p.first_month_reaching(3_000_000) == 10
+    assert p.net_at(10) >= 3_000_000 and p.net_at(9) < 3_000_000
+    assert p.first_month_reaching(1_000_000) == 0          # 이미 넘었으면 0개월
+    assert p.first_month_reaching(0) == 0
+
+    # after 를 주면 그 이후에서 찾는다
+    assert p.first_month_reaching(3_000_000, after=20) == 20
+    assert p.first_month_reaching(1_000_000, after=5) == 5
+
+    # 못 닿으면 None
+    assert p.first_month_reaching(10_000_000, limit=12) is None
+    p.items[1].amount = 300_000                            # 수입 = 지출, 더 안 는다
+    assert p.first_month_reaching(2_000_000) is None
+
+    # 한 달씩 훑은 결과와 끝까지 같은지
+    p.items[1].amount = 500_000
+    for goal in (500_000, 1_200_000, 2_600_000, 5_000_000):
+        want = next((m for m in range(601) if p.net_at(m) >= goal), None)
+        assert p.first_month_reaching(goal) == want, goal
+
+
+def test_goal_month_uses_fast_search():
+    """Summary 의 달성 예측도 같은 값을 돌려줘야 한다."""
+    p = Plan(months=6, target=3_000_000, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 1_000_000))
+    p.add(Item("급여", Category.INCOME, 200_000))
+
+    s = p.summary()
+    assert s.goal_month() == 10
+    assert s.months_to_goal() == 4                          # 기간 6개월 + 4
+    assert s.net == p.net_at(6)
+
+    # 목표가 없거나 이미 넘었으면
+    p.target = 0
+    assert p.summary().goal_month() == 0
+    p.target = 1_000_000
+    assert p.summary().months_to_goal() == 0
+
+    # 영영 못 닿는 경우
+    p.target = 99_000_000_000
+    assert p.summary().goal_month() is None
+    assert p.summary().months_to_goal() is None

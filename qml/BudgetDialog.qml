@@ -127,7 +127,7 @@ Popup {
                             // 치는 동안에도 반영 (잠깐 멈추면)
                             Timer {
                                 id: budgetTimer
-                                interval: 350
+                                interval: 200
                                 onTriggered: {
                                     budgetRow.apply(parseFloat(budgetField.text.replace(/,/g, "")) || 0)
                                     budgetSlider.value = budgetRow.limit

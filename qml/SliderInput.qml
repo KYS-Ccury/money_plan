@@ -16,9 +16,9 @@ ColumnLayout {
     property string suffix: ""           // "개월", "%" 등
     property bool money: false           // true 면 오른쪽 표시값을 1,234원 형식으로
     property int fieldWidth: 130
-    // 끄는 동안 계산이 무거운 값(기간·목표)은 이 값을 주면
-    // 손을 멈출 때까지 기다렸다가 한 번만 반영한다 (0 이면 끄는 내내 바로 반영)
-    property int dragDelay: 0
+    // 끄는 동안에는 숫자만 손을 따라가고, 멈추면 그때 한 번 반영한다.
+    // 손을 떼면 기다리지 않고 바로 반영한다. 0 이면 끄는 내내 바로 반영.
+    property int dragDelay: 200
     // 화면에 보이는 값. 기다리는 동안에는 슬라이더를 따라가고, 반영되면 value 와 같아진다
     property real shown: value
     property alias inputField: field     // 테스트에서 입력칸을 직접 건드릴 때
@@ -70,7 +70,7 @@ ColumnLayout {
     // 중간값이 쏟아지므로 잠깐 멈출 때까지만 기다린다.
     Timer {
         id: liveTimer
-        interval: 350
+        interval: 200
         onTriggered: root.commitText()
     }
     function commitText() {

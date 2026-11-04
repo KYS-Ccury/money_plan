@@ -636,6 +636,8 @@ class Summary:
     last_cost: float = 0.0      # 기간 마지막 달의 월 지출
     last_income: float = 0.0    # 기간 마지막 달의 월 수입
     _net_at: callable = field(default=None, repr=False, compare=False)
+    _find: callable = field(default=None, repr=False, compare=False)
+    _net: float | None = field(default=None, repr=False, compare=False)
 
     @property
     def monthly_net(self) -> float:
@@ -664,8 +666,10 @@ class Summary:
 
     @property
     def net(self) -> float:
-        """기간 종료 시점의 순 자본."""
-        return self.net_at(self.months)
+        """기간 종료 시점의 순 자본. 여러 곳에서 읽으므로 한 번만 구한다."""
+        if self._net is None:
+            self._net = self.net_at(self.months)
+        return self._net
 
     @property
     def gap(self) -> float:
@@ -689,6 +693,8 @@ class Summary:
         """
         if self.target <= 0:
             return 0
+        if self._find is not None:
+            return self._find(self.target, 0, self.MAX_LOOKAHEAD)
         for m in range(0, self.MAX_LOOKAHEAD + 1):
             if self.net_at(m) >= self.target:
                 return m
@@ -698,6 +704,9 @@ class Summary:
         """기간 종료 이후 목표에 닿기까지 몇 달 더 걸리는지. 이미 달성이면 0, 50년 내 불가능이면 None."""
         if self.gap >= 0:
             return 0
+        if self._find is not None:
+            m = self._find(self.target, self.months + 1, self.MAX_LOOKAHEAD)
+            return None if m is None else m - self.months
         for extra in range(1, self.MAX_LOOKAHEAD + 1):
             if self.net_at(self.months + extra) >= self.target:
                 return extra
@@ -851,6 +860,21 @@ class Plan:
             flow += sum(i.monthly_net_at(m, b) for i in self.items)
         return out
 
+    def first_month_reaching(self, amount: float, after: int = 0, limit: int = 600) -> int | None:
+        """순 자본이 amount 이상이 되는 첫 달 (after 개월 이후). 못 닿으면 None.
+
+        net_at 을 한 달씩 부르면 그때마다 0개월부터 다시 더하므로 비용이 제곱으로 는다.
+        여기서는 달을 한 번만 훑으면서 월 수지를 쌓고, 닿는 순간 멈춘다.
+        """
+        b = self.basis
+        flow = 0.0
+        for m in range(max(0, limit) + 1):
+            v = self.capital_at(m) - self.once_cost_at(m) + self.once_income_at(m) + flow
+            if m >= after and v >= amount:
+                return m
+            flow += sum(i.monthly_net_at(m, b) for i in self.items)
+        return None
+
     SHORTFALL_HORIZON = 36      # 부족 경고는 최소 3년까지 살펴본다
 
     def shortfall(self, horizon: int | None = None) -> dict:
@@ -891,6 +915,7 @@ class Plan:
             last_cost=costs[-1],
             last_income=incomes[-1],
             _net_at=self.net_at,
+            _find=self.first_month_reaching,
         )
 
     # ---- 저장 / 불러오기 ----

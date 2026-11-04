@@ -674,6 +674,8 @@ class Backend(QObject):
     def compareRows(self) -> list[dict]:
         """비교표: 현재 시나리오의 기간(N개월) 기준으로 모든 시나리오를 나란히.
         [{index, name, active, net, diff, monthlyNet, target, goalText}]"""
+        if "rows" in self._cache:
+            return self._cache["rows"]
         n = max(0, self._plan.months)
         base = self._plan.net_at(n)
         rows = []
@@ -689,6 +691,7 @@ class Backend(QObject):
                 "target": p.target,
                 "goalText": self._goal_text(p),
             })
+        self._cache["rows"] = rows
         return rows
 
     @Property(str, notify=statusChanged)
@@ -781,6 +784,13 @@ class Backend(QObject):
 
     def _pending(self):
         return self._cached("pending", self._plan.pending_inflows)
+
+    def _series(self, upto: int) -> list[float]:
+        """0..upto 개월 순 자본. 한 번 구해 두고 모자랄 때만 더 멀리까지 다시 구한다."""
+        s = self._cache.get("series")
+        if s is None or len(s) <= upto:
+            s = self._cache["series"] = self._plan.net_series(max(upto, self._plan.months, 36))
+        return s
 
     @Property(float, notify=summaryChanged)
     def capital(self) -> float:
@@ -967,11 +977,12 @@ class Backend(QObject):
     def trendFor(self, months: int) -> list[float]:
         """임의 기간의 월별 순 자본 (그래프 보기 기간 전환용)."""
         n = max(1, months)
-        return self._cached(f"trend{n}", lambda: self._plan.net_series(n))
+        return self._series(n)[:n + 1]
 
     @Slot(int, result=float)
     def netAt(self, month: int) -> float:
-        return self._s().net_at(month)
+        m = max(0, int(month))
+        return self._series(m)[m]
 
     # ------------------------------------------------------------ 슬롯
     @Slot(float, result=str)
