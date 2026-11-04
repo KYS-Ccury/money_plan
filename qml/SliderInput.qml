@@ -16,6 +16,11 @@ ColumnLayout {
     property string suffix: ""           // "개월", "%" 등
     property bool money: false           // true 면 오른쪽 표시값을 1,234원 형식으로
     property int fieldWidth: 130
+    // 끄는 동안 계산이 무거운 값(기간·목표)은 이 값을 주면
+    // 손을 멈출 때까지 기다렸다가 한 번만 반영한다 (0 이면 끄는 내내 바로 반영)
+    property int dragDelay: 0
+    // 화면에 보이는 값. 기다리는 동안에는 슬라이더를 따라가고, 반영되면 value 와 같아진다
+    property real shown: value
     property alias inputField: field     // 테스트에서 입력칸을 직접 건드릴 때
     signal edited(real newValue)
 
@@ -45,12 +50,21 @@ ColumnLayout {
         root.commit(Math.max(root.from, v))
     }
     function sync() {
-        if (!field.activeFocus) field.text = fmtNum(value)
+        if (!field.activeFocus) field.text = fmtNum(shown)
         if (value > slider.to) slider.to = value * 1.25
         slider.value = value                            // 드래그로 끊긴 슬라이더 바인딩 보정
     }
-    onValueChanged: sync()
-    Component.onCompleted: field.text = fmtNum(value)
+    onValueChanged: { shown = value; sync() }
+    // 기다리는 동안에도 입력칸은 손을 따라간다
+    onShownChanged: if (!field.activeFocus) field.text = fmtNum(shown)
+    Component.onCompleted: { shown = value; field.text = fmtNum(value) }
+
+    // 끄는 동안 잠깐 멈추면 그때 한 번 반영한다
+    Timer {
+        id: dragTimer
+        interval: root.dragDelay
+        onTriggered: root.commit(root.shown)
+    }
 
     // 치는 동안에도 반영한다. 글자마다 바로 계산하면 "2 → 20 → 200" 처럼
     // 중간값이 쏟아지므로 잠깐 멈출 때까지만 기다린다.
@@ -72,8 +86,11 @@ ColumnLayout {
         Text { text: root.label; color: Theme.textDim; font.pixelSize: 12; visible: root.label !== "" }
         Item { Layout.fillWidth: true }
         Text {
-            text: root.fmt(root.value)
+            text: root.fmt(root.shown)
             color: Theme.text; font.pixelSize: 12; font.bold: true
+            // 아직 반영 전이면 살짝 흐리게 — 기다리는 중이라는 표시
+            opacity: dragTimer.running ? 0.65 : 1
+            Behavior on opacity { NumberAnimation { duration: Theme.fast } }
         }
     }
 
@@ -89,12 +106,21 @@ ColumnLayout {
             stepSize: root.stepSize
             value: root.value
             snapMode: Slider.SnapAlways
-            onMoved: root.commit(value)
-            onPressedChanged: if (!pressed) root.sync()
+            onMoved: {
+                root.shown = value
+                if (root.dragDelay > 0) dragTimer.restart()   // 멈출 때까지 기다린다
+                else root.commit(value)
+            }
+            // 손을 떼면 기다리지 않고 바로 반영한다
+            onPressedChanged: {
+                if (pressed) return
+                dragTimer.stop()
+                root.commit(value)
+            }
 
             // 값 라벨이 핸들 위에 따라다닌다 (드래그 중에만)
             Rectangle {
-                visible: slider.pressed
+                visible: slider.pressed || dragTimer.running
                 x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width)
                 y: -height - 4
                 width: tip.implicitWidth + 12; height: tip.implicitHeight + 6

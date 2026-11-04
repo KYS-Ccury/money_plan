@@ -290,6 +290,7 @@ ApplicationWindow {
                         value: backend.months
                         from: 0; to: 120; stepSize: 1
                         suffix: "개월"
+                        dragDelay: 500          // 끄는 내내 다시 계산하면 끊긴다. 멈출 때 한 번만
                         fieldWidth: 90
                         Layout.preferredWidth: 1
                         onEdited: (v) => backend.months = Math.round(v)
@@ -299,6 +300,7 @@ ApplicationWindow {
                         value: backend.target
                         from: 0; to: 1000000000; stepSize: 1000000
                         money: true
+                        dragDelay: 500
                         suffix: "원"
                         fieldWidth: 150
                         Layout.preferredWidth: 2
