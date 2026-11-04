@@ -25,7 +25,18 @@ Item {
     readonly property int lastMonth: values ? values.length - 1 : 0
     readonly property bool ready: values && values.length >= 2
 
-    onValuesChanged: { reveal = 0; revealAnim.restart() }
+    // 값이 바뀌면 선을 왼쪽에서 오른쪽으로 다시 그린다.
+    // 다만 슬라이더를 끄는 중처럼 값이 연달아 바뀔 때는 애니메이션을 건너뛴다.
+    // (매번 0.9초씩 다시 그리면 그 시간 내내 화면을 계속 그려 대느라 끊긴다)
+    property double lastChange: 0
+    onValuesChanged: {
+        var now = Date.now()
+        var rapid = now - lastChange < 1200
+        lastChange = now
+        revealAnim.stop()
+        if (rapid) reveal = 1
+        else { reveal = 0; revealAnim.restart() }
+    }
     NumberAnimation { id: revealAnim; target: chart; property: "reveal"; from: 0; to: 1; duration: 900; easing.type: Easing.OutCubic }
 
     // ---- 값 → 화면 좌표 ----

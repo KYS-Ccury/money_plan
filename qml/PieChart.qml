@@ -36,7 +36,16 @@ Item {
         return out
     }
 
-    onSlicesChanged: { reveal = 0; revealAnim.restart() }
+    // 연달아 바뀔 때는 다시 그리는 애니메이션을 건너뛴다 (슬라이더를 끄는 중 등)
+    property double lastChange: 0
+    onSlicesChanged: {
+        var now = Date.now()
+        var rapid = now - lastChange < 1200
+        lastChange = now
+        revealAnim.stop()
+        if (rapid) reveal = 1
+        else { reveal = 0; revealAnim.restart() }
+    }
     NumberAnimation { id: revealAnim; target: chart; property: "reveal"; from: 0; to: 1; duration: 800; easing.type: Easing.OutCubic }
 
     function colorOf(i) { return (slices[i] && slices[i].color) ? slices[i].color : palette[i % palette.length] }

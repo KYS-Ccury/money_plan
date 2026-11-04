@@ -682,7 +682,11 @@ class Summary:
     MAX_LOOKAHEAD = 600
 
     def goal_month(self) -> int | None:
-        """기준일로부터 몇 개월째에 처음 목표에 닿는지 (0 = 이미 달성). 50년 내 불가능이면 None."""
+        """기준일로부터 몇 개월째에 처음 목표에 닿는지 (0 = 이미 달성). 50년 내 불가능이면 None.
+
+        대개 가까운 달에 닿으므로 한 달씩 보는 편이 빠르다 (여러 달을 한 번에 구하면
+        닿은 뒤의 달까지 쓸데없이 계산한다).
+        """
         if self.target <= 0:
             return 0
         for m in range(0, self.MAX_LOOKAHEAD + 1):
@@ -832,6 +836,21 @@ class Plan:
         """종류를 주면 그 종류만, 비우면 전부."""
         return sum(d["amount"] for d in self.pending_inflows() if not kind or d["kind"] == kind)
 
+    def net_series(self, n: int) -> list[float]:
+        """0..n 개월의 순 자본을 한 번에 구한다.
+
+        net_at(m) 은 0..m-1 개월의 월 수지를 매번 다시 더하므로, 그래프처럼
+        여러 달을 연달아 물으면 비용이 제곱으로 는다. 여기서는 달을 한 번만
+        훑으면서 월 수지를 쌓아 간다.
+        """
+        b = self.basis
+        out: list[float] = []
+        flow = 0.0
+        for m in range(max(0, n) + 1):
+            out.append(self.capital_at(m) - self.once_cost_at(m) + self.once_income_at(m) + flow)
+            flow += sum(i.monthly_net_at(m, b) for i in self.items)
+        return out
+
     SHORTFALL_HORIZON = 36      # 부족 경고는 최소 3년까지 살펴본다
 
     def shortfall(self, horizon: int | None = None) -> dict:
@@ -839,11 +858,11 @@ class Plan:
         {month: 처음 부족해지는 개월(없으면 None), months: 부족한 달 수,
          min_month / min_net: 가장 낮은 시점과 그때 순 자본, horizon: 살펴본 개월}"""
         h = max(self.months, self.SHORTFALL_HORIZON) if horizon is None else max(0, horizon)
+        series = self.net_series(h)
         first: int | None = None
         count = 0
-        min_m, min_v = 0, self.net_at(0)
-        for m in range(h + 1):
-            v = self.net_at(m)
+        min_m, min_v = 0, series[0]
+        for m, v in enumerate(series):
             if v < min_v:
                 min_m, min_v = m, v
             if v < 0:

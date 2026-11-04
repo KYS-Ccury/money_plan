@@ -1031,3 +1031,38 @@ def test_backend_average_monthly():
     assert not b.monthlyVaries and b.avgMonthlyCost == 1_000_000
     b.months = 24
     assert b.monthlyVaries and b.avgMonthlyCost > 1_000_000
+
+
+def test_summary_cache_is_cleared_on_change():
+    """요약을 담아 두되, 계획이 바뀌면 반드시 버려야 한다."""
+    b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
+    b.addItem("현금", 0, 1_000_000, 0, True)
+    assert b.capital == 1_000_000
+
+    calls = []
+    real = b._plan.summary
+    b._plan.summary = lambda: (calls.append(1), real())[1]
+    b._clear_cache()                       # 이미 담아 둔 것을 비우고 센다
+
+    # 한 번 계산하면 여러 번 읽어도 다시 계산하지 않는다
+    for _ in range(5):
+        _ = b.capital, b.net, b.required, b.monthlyNet
+    assert len(calls) == 1
+
+    # 항목이 바뀌면 다시 계산한다
+    b.addItem("급여", 4, 500_000, 0, True)
+    assert b.monthlyIncome == 500_000
+    assert len(calls) == 2
+
+    # 기간이 바뀌어도
+    b.months = 24
+    assert b.months == 24 and b.net == 1_000_000 + 500_000 * 24
+    assert len(calls) == 3
+
+    # 시나리오를 바꾸면 그 시나리오의 요약이 나온다
+    b._plan.summary = real
+    b.duplicateScenario()
+    b.addItem("보너스", 5, 7_000_000, 0, True)
+    other = b.net
+    b.activeScenario = 0
+    assert b.net != other

@@ -784,3 +784,26 @@ def test_summary_monthly_reflects_period():
     s = p.summary()
     assert s.last_cost > s.monthly_cost and s.avg_cost > 1_000_000
     assert s.monthly_varies
+
+
+def test_net_series_matches_net_at():
+    """net_series 는 net_at 을 한 번에 구하는 빠른 길이다. 값이 달라지면 안 된다."""
+    p = Plan(months=24, target=50_000_000, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 30_000_000))
+    p.add(Item("급여", Category.INCOME, 2_000_000, growth=5.0, start_date="2026-03-01"))
+    p.add(Item("생활비", Category.FIXED, 900_000))
+    p.add(Item("전셋집", Category.DEPOSIT, 20_000_000, housing_type="banjeonse", monthly=400_000,
+               start_date="2026-05-01", end_date="2028-05-01"))
+    p.add(Item("대출", Category.LOAN, 50_000_000, rate=3.5, start_date="2026-05-01",
+               end_date="2031-05-01", repay_method="equal_principal"))
+    p.add(Item("청약", Category.SAVING, 200_000, rate=3.0, support=300_000, locked=True,
+               start_date="2026-01-01", end_date="2029-01-01"))
+    p.add(Item("성과급", Category.INCOME_ONCE, 3_000_000, start_date="2026-09-01"))
+
+    series = p.net_series(60)
+    assert len(series) == 61
+    for m in range(61):
+        assert abs(series[m] - p.net_at(m)) < 1e-6, f"{m}개월에서 어긋남"
+
+    assert p.net_series(0) == [p.net_at(0)]
+    assert p.net_series(-5) == [p.net_at(0)]        # 음수는 0개월로 본다

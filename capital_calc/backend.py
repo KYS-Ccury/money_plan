@@ -485,6 +485,11 @@ class Backend(QObject):
         self._grouped = GroupedItems(self._items, self)
         self._group_by_category = True
         self._status = ""
+        # 한 번 계산한 요약·부족 구간·들어올 돈을 담아 둔다.
+        # QML 은 바인딩마다 이 값을 읽으므로 (기간 1개월 바꾸면 summary 만 187번)
+        # 계획이 바뀔 때까지는 같은 결과를 돌려준다.
+        self._cache: dict = {}
+        self.summaryChanged.connect(self._clear_cache)
         self._data_path = Path(DATA_FILE)
         # 모델이 바뀌면 요약도 다시 계산되도록 연결
         for sig in (
@@ -649,6 +654,9 @@ class Backend(QObject):
     @Slot(int, result="QVariantList")
     def compareTrends(self, horizon: int) -> list[dict]:
         """모든 시나리오의 0..horizon 개월 순 자본. [{index, name, active, values, goalMonth}]"""
+        key = f"cmp{max(1, horizon)}"
+        if key in self._cache:
+            return self._cache[key]
         out = []
         for i, p in enumerate(self._ws.plans):
             gm = p.summary().goal_month() if p.target > 0 else None
@@ -656,9 +664,10 @@ class Backend(QObject):
                 "index": i,
                 "name": p.name,
                 "active": i == self._ws.active,
-                "values": [p.net_at(m) for m in range(max(1, horizon) + 1)],
+                "values": p.net_series(max(1, horizon)),
                 "goalMonth": -1 if gm is None else gm,
             })
+        self._cache[key] = out
         return out
 
     @Slot(result="QVariantList")
@@ -753,9 +762,25 @@ class Backend(QObject):
     def isValidDate(self, v: str) -> bool:
         return v.strip() == "" or parse_date(v) is not None
 
+    def _clear_cache(self) -> None:
+        """계획이 바뀌었으니 담아 둔 계산 결과를 버린다 (summaryChanged 가 올 때마다)."""
+        self._cache.clear()
+
+    def _cached(self, key: str, make):
+        v = self._cache.get(key)
+        if v is None:
+            v = self._cache[key] = make()
+        return v
+
     # 요약 값들 (전부 summaryChanged 로 갱신)
     def _s(self):
-        return self._plan.summary()
+        return self._cached("summary", self._plan.summary)
+
+    def _sf(self):
+        return self._cached("shortfall", self._plan.shortfall)
+
+    def _pending(self):
+        return self._cached("pending", self._plan.pending_inflows)
 
     @Property(float, notify=summaryChanged)
     def capital(self) -> float:
@@ -847,7 +872,7 @@ class Backend(QObject):
         def frac(v: float) -> float:
             return max(0.0, v / target) if target > 0 else 1.0
 
-        rows = self._plan.pending_inflows()
+        rows = self._pending()
         total = sum(r["amount"] for r in rows)
         if not rows or total <= 0:
             return {"has": False, "total": 0.0, "count": 0, "withNet": net,
@@ -941,8 +966,8 @@ class Backend(QObject):
     @Slot(int, result="QVariantList")
     def trendFor(self, months: int) -> list[float]:
         """임의 기간의 월별 순 자본 (그래프 보기 기간 전환용)."""
-        s = self._s()
-        return [s.net_at(m) for m in range(max(1, months) + 1)]
+        n = max(1, months)
+        return self._cached(f"trend{n}", lambda: self._plan.net_series(n))
 
     @Slot(int, result=float)
     def netAt(self, month: int) -> float:
@@ -1054,7 +1079,7 @@ class Backend(QObject):
     @Property("QVariantMap", notify=summaryChanged)
     def shortfall(self) -> dict:
         """순 자본이 음수가 되는 구간. has 가 False 면 경고 없음."""
-        s = self._plan.shortfall()
+        s = self._sf()
         m = s["month"]
         return {
             "has": m is not None,
@@ -1754,6 +1779,7 @@ class Backend(QObject):
 
     def _replace_plan(self, plan: Plan) -> None:
         self._plan = plan
+        self._cache.clear()
         self._items.set_plan(plan)
         self._grouped.expand_all()
         self.monthsChanged.emit()
