@@ -1066,3 +1066,37 @@ def test_summary_cache_is_cleared_on_change():
     other = b.net
     b.activeScenario = 0
     assert b.net != other
+
+
+def test_end_date_sets_months():
+    """기간을 개월 수 대신 끝 날짜로도 정할 수 있다."""
+    b = Backend(Plan(months=12, target=0, start_date="2026-10-28"))
+    assert b.endDate == "2027-10-01"                 # 기준일 + 12개월
+    assert b.endDateText == "2027년 10월"
+
+    b.endDate = "2029-01-01"
+    assert b.months == 27
+    assert b.endDate == "2029-01-01"                 # 되읽어도 같다
+
+    b.months = 6
+    assert b.endDate == "2027-04-01"                 # 개월 수를 바꾸면 끝 날짜도
+
+    # 기준일을 바꾸면 끝 날짜가 따라 움직인다 (기간은 그대로)
+    b.basisDate = "2027-01-01"
+    assert b.months == 6 and b.endDate == "2027-07-01"
+
+    # 이상한 값은 무시한다
+    b.endDate = "이상한값"
+    assert b.months == 6
+    b.endDate = ""
+    assert b.months == 6
+
+    # 기준일보다 앞선 날짜는 0개월
+    b.endDate = "2020-01-01"
+    assert b.months == 0 and b.endDate == "2027-01-01"
+
+    # 날짜가 바뀌면 알림이 간다 (요약이 다시 계산되도록)
+    hits = []
+    b.summaryChanged.connect(lambda: hits.append(1))
+    b.endDate = "2028-01-01"
+    assert hits and b.months == 12

@@ -280,10 +280,18 @@ ApplicationWindow {
                     DateField {
                         label: "기준일 (0개월)"
                         Layout.fillWidth: false
-                        Layout.preferredWidth: 170
+                        Layout.preferredWidth: 150
                         Layout.alignment: Qt.AlignBottom
                         value: backend.basisDate
                         onEdited: (v) => backend.basisDate = v
+                    }
+                    DateField {
+                        label: "종료일 (" + backend.months + "개월)"
+                        Layout.fillWidth: false
+                        Layout.preferredWidth: 150
+                        Layout.alignment: Qt.AlignBottom
+                        value: backend.endDate
+                        onEdited: (v) => backend.endDate = v
                     }
                     SliderInput {
                         label: "기간"

@@ -732,6 +732,25 @@ class Backend(QObject):
 
     months = Property(int, _get_months, _set_months, notify=monthsChanged)
 
+    def _get_end_date(self) -> str:
+        """기간의 끝 날짜. 기준일에서 months 개월 뒤."""
+        return add_months(self._plan.basis, self._plan.months).isoformat()
+
+    def _set_end_date(self, v: str) -> None:
+        """끝 날짜로 기간을 정한다 (개월 수를 거꾸로 계산)."""
+        d = parse_date(v)
+        if d is None:
+            return
+        self.months = max(0, month_offset(self._plan.basis, d))
+
+    # 기준일이 바뀌어도 끝 날짜가 달라지므로 summaryChanged 로 알린다 (둘 다에서 올라온다)
+    endDate = Property(str, _get_end_date, _set_end_date, notify=summaryChanged)
+
+    @Property(str, notify=summaryChanged)
+    def endDateText(self) -> str:
+        """'2029년 1월' — 기간 옆에 곁들여 보여 준다."""
+        return self._month_text(self._plan.months)
+
     def _get_target(self) -> float:
         return self._plan.target
 
