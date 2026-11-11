@@ -10,6 +10,7 @@ ColumnLayout {
     property bool optional: false
     property string placeholder: (label !== "" ? label : "YYYY-MM-DD") + (optional ? " (비우면 계속)" : "")
     readonly property bool valid: backend.isValidDate(field.text) && (optional || field.text.trim() !== "")
+    property alias inputField: field     // 테스트에서 입력칸을 직접 건드릴 때
     signal edited(string newValue)
 
     // 다 쳤는데 엔터를 안 누르면 반영되지 않아, 저장 버튼이 잠긴 채로 남는 일이 있었다.

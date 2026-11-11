@@ -158,14 +158,16 @@ def parse_date(s: str | None) -> date | None:
 
 
 def month_offset(basis: date, d: date) -> int:
-    """basis 부터 d 까지 몇 달이 온전히 지났는지. 일(日)까지 센다.
+    """d 가 몇 번째 달 칸에 들어가는지. 일(日)까지 센다.
 
-    기준일이 10월 28일이면 한 달은 11월 28일에 찬다. 11월 1일은 아직 0개월째다.
+    시간 축은 기준일에 못을 박은 한 달 간격의 눈금이다 (기준일이 10월 28일이면
+    0개월 = 10/28, 1개월 = 11/28, …). 날짜는 **그 날이 지난 첫 눈금**으로 올려 붙인다.
+    그래야 12월 1일에 나갈 돈이 11월 28일 칸에서 미리 나가 버리는 일이 없다.
     기준일보다 앞선 날짜는 음수가 된다.
     """
     months = (d.year - basis.year) * 12 + (d.month - basis.month)
-    if d.day < basis.day:
-        months -= 1
+    if d.day > basis.day:
+        months += 1
     return months
 
 

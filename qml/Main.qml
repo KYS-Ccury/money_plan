@@ -279,6 +279,7 @@ ApplicationWindow {
                     spacing: 24
                     DateField {
                         label: "기준일 (0개월)"
+                        objectName: "basisField"
                         Layout.fillWidth: false
                         Layout.preferredWidth: 150
                         Layout.alignment: Qt.AlignBottom
@@ -287,6 +288,7 @@ ApplicationWindow {
                     }
                     DateField {
                         label: "종료일"
+                        objectName: "endField"
                         Layout.fillWidth: false
                         Layout.preferredWidth: 150
                         Layout.alignment: Qt.AlignBottom
@@ -310,7 +312,7 @@ ApplicationWindow {
                                 font.pixelSize: 16
                                 implicitWidth: 34; implicitHeight: 40
                                 enabled: backend.months > 0
-                                autoRepeat: true
+                                // 꾹 누르면 계속 줄어들어 기간이 저도 모르게 멀리 가 버린다 → 한 번에 한 달
                                 onClicked: backend.months = backend.months - 1
                                 ToolTip.visible: hovered; ToolTip.delay: 700
                                 ToolTip.text: "종료일을 한 달 당기기"
@@ -323,8 +325,9 @@ ApplicationWindow {
                                     text: modelData.t
                                     font.pixelSize: 12
                                     implicitHeight: 40
-                                    checkable: true
-                                    checked: backend.months === modelData.m
+                                    // checkable 을 쓰면 누르는 순간 바인딩이 끊겨 기간이 바뀌어도
+                                    // 계속 켜진 채로 남는다. 바인딩만으로 지금 기간을 표시한다.
+                                    highlighted: backend.months === modelData.m
                                     onClicked: backend.months = modelData.m
                                     ToolTip.visible: hovered; ToolTip.delay: 700
                                     ToolTip.text: "종료일을 기준일 + " + modelData.t + " 로"
@@ -334,7 +337,6 @@ ApplicationWindow {
                                 text: "＋"
                                 font.pixelSize: 14
                                 implicitWidth: 34; implicitHeight: 40
-                                autoRepeat: true
                                 onClicked: backend.months = backend.months + 1
                                 ToolTip.visible: hovered; ToolTip.delay: 700
                                 ToolTip.text: "종료일을 한 달 미루기"

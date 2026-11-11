@@ -1075,7 +1075,7 @@ def test_end_date_sets_months():
     assert b.endDateText == "2027년 10월"
 
     b.endDate = "2029-01-15"
-    assert b.months == 26                            # 기준일이 28일이라 15일은 아직 26개월째
+    assert b.months == 27                            # 기준일이 28일이라 15일은 아직 26개월째
     assert b.endDate == "2029-01-15"                 # 친 날짜 그대로 되읽는다
 
     b.months = 6

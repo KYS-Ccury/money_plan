@@ -154,8 +154,10 @@ def test_goal_month_prediction():
     from datetime import date
     assert add_months(date(2026, 10, 28), 3) == date(2027, 1, 28)   # 날짜(일)를 지킨다
     assert add_months(date(2026, 12, 31), 2) == date(2027, 2, 28)   # 없는 날은 말일로
-    assert month_offset(date(2026, 10, 28), date(2026, 11, 27)) == 0   # 아직 한 달이 안 찼다
-    assert month_offset(date(2026, 10, 28), date(2026, 11, 28)) == 1
+    # 날짜는 그 날이 지난 첫 눈금으로 올려 붙인다 (미리 나가는 일이 없게)
+    assert month_offset(date(2026, 10, 28), date(2026, 12, 1)) == 2    # 1개월 칸(11/28)보다 뒤
+    assert month_offset(date(2026, 10, 28), date(2026, 11, 28)) == 1   # 눈금에 딱 맞는 날
+    assert month_offset(date(2026, 10, 28), date(2026, 11, 29)) == 2   # 하루 늦으면 다음 눈금
     assert add_months(date(2026, 1, 1), 24) == date(2028, 1, 1)
 
     p = Plan(months=12, target=2_000_000, start_date="2026-01-01")
@@ -541,10 +543,10 @@ def test_past_once_costs_are_not_counted_again():
 
     # 만기를 넣으면 그 달에 돌려받는 것만 들어온다
     old.end_date = "2027-04-01"
-    assert old.return_month(p.basis) == 5      # 기준일이 28일이라 4월 1일은 아직 5개월째
-    assert p.once_cost_at(5) == 0                       # 낸 적 없는 돈처럼 취급
-    assert p.once_income_at(4) == 0 and p.once_income_at(5) == 25_000_000
-    assert p.net_at(5) - p.net_at(4) == 25_000_000 - 300_000
+    assert old.return_month(p.basis) == 6      # 기준일이 28일이라 4월 1일은 아직 5개월째
+    assert p.once_cost_at(6) == 0                       # 낸 적 없는 돈처럼 취급
+    assert p.once_income_at(5) == 0 and p.once_income_at(6) == 25_000_000
+    assert p.net_at(6) - p.net_at(5) == 25_000_000 - 300_000
     assert p.summary().once_income == 25_000_000
 
     # 이미 돌려받은 보증금은 아무 영향이 없다
