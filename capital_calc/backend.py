@@ -828,6 +828,16 @@ class Backend(QObject):
         return self._s().capital
 
     @Property(float, notify=summaryChanged)
+    def capitalAtEnd(self) -> float:
+        """기간이 끝나는 시점의 보유 자금. 적금이 쌓이고 예금 이자가 붙어 지금과 다르다."""
+        return self._plan.capital_at(self._plan.months)
+
+    @Property(float, notify=summaryChanged)
+    def capitalGrowth(self) -> float:
+        """보유 자금이 기간 동안 얼마나 늘었는지 (적금 적립·이자·대출 원금 유입)."""
+        return self.capitalAtEnd - self._s().capital
+
+    @Property(float, notify=summaryChanged)
     def onceCost(self) -> float:
         return self._s().once_cost
 

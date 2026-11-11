@@ -712,7 +712,23 @@ ApplicationWindow {
                         id: summaryCol
                         anchors.fill: parent
                         spacing: 6
-                        StatRow { label: "보유 자금"; value: backend.capital; valueColor: Theme.green }
+                        StatRow { label: "보유 자금 (지금)"; value: backend.capital; valueColor: Theme.green }
+                        // 적금은 매달 '월 지출' 로 빠져나가지만 그만큼 통장에 쌓인다.
+                        // 그 쌓인 돈이 어디로 갔는지 보이지 않아 숫자가 안 맞아 보였다.
+                        StatRow {
+                            label: backend.months + "개월 후 보유 자금"
+                            value: backend.capitalAtEnd; valueColor: Theme.green
+                            visible: Math.round(backend.capitalGrowth) !== 0
+                        }
+                        Text {
+                            visible: Math.round(backend.capitalGrowth) !== 0
+                            text: "적금 적립 · 예금 이자 · 대출 원금이 더해져 "
+                                  + (backend.capitalGrowth >= 0 ? "+" : "-")
+                                  + backend.won(Math.abs(backend.capitalGrowth))
+                            color: Theme.textDim; font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true; Layout.preferredWidth: 1
+                        }
                         StatRow {
                             label: "일시 지출"; value: backend.onceCost; prefix: "-"; valueColor: Theme.red
                             visible: backend.onceCost > 0
