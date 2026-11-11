@@ -489,6 +489,7 @@ class Backend(QObject):
         # QML 은 바인딩마다 이 값을 읽으므로 (기간 1개월 바꾸면 summary 만 187번)
         # 계획이 바뀔 때까지는 같은 결과를 돌려준다.
         self._cache: dict = {}
+        self._end_text = ""            # 사용자가 직접 친 종료일 (개월 수와 맞는 동안 그대로 보여 준다)
         self.summaryChanged.connect(self._clear_cache)
         self._data_path = Path(DATA_FILE)
         # 모델이 바뀌면 요약도 다시 계산되도록 연결
@@ -726,6 +727,7 @@ class Backend(QObject):
         v = max(0, int(v))
         if v != self._plan.months:
             self._plan.months = v
+            self._end_text = ""            # 슬라이더로 바꿨으니 기억해 둔 종료일은 버린다
             self._items.refresh_all()      # 목록의 'N개월 후 …' 표시가 기간을 따라간다
             self.monthsChanged.emit()
             self.summaryChanged.emit()
@@ -733,15 +735,25 @@ class Backend(QObject):
     months = Property(int, _get_months, _set_months, notify=monthsChanged)
 
     def _get_end_date(self) -> str:
-        """기간의 끝 날짜. 기준일에서 months 개월 뒤."""
+        """기간의 끝 날짜. 직접 친 날짜가 있으면 그대로, 아니면 기준일에서 months 개월 뒤."""
+        if self._end_text:
+            d = parse_date(self._end_text)
+            if d and month_offset(self._plan.basis, d) == self._plan.months:
+                return self._end_text          # 친 날짜가 지금 기간과 맞으면 그대로
         return add_months(self._plan.basis, self._plan.months).isoformat()
 
     def _set_end_date(self, v: str) -> None:
-        """끝 날짜로 기간을 정한다 (개월 수를 거꾸로 계산)."""
+        """끝 날짜로 기간을 정한다 (개월 수를 거꾸로 계산). 친 날짜는 그대로 기억한다."""
         d = parse_date(v)
         if d is None:
             return
-        self.months = max(0, month_offset(self._plan.basis, d))
+        months = max(0, month_offset(self._plan.basis, d))
+        if months == self._plan.months:
+            self._end_text = d.isoformat()
+            self.summaryChanged.emit()         # 개월 수는 그대로여도 보여 줄 날짜가 바뀐다
+        else:
+            self.months = months               # 여기서 _end_text 를 비우므로
+            self._end_text = d.isoformat()     # 친 날짜는 그 뒤에 기억한다
 
     # 기준일이 바뀌어도 끝 날짜가 달라지므로 summaryChanged 로 알린다 (둘 다에서 올라온다)
     endDate = Property(str, _get_end_date, _set_end_date, notify=summaryChanged)

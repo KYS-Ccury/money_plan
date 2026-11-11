@@ -1071,15 +1071,15 @@ def test_summary_cache_is_cleared_on_change():
 def test_end_date_sets_months():
     """기간을 개월 수 대신 끝 날짜로도 정할 수 있다."""
     b = Backend(Plan(months=12, target=0, start_date="2026-10-28"))
-    assert b.endDate == "2027-10-01"                 # 기준일 + 12개월
+    assert b.endDate == "2027-10-28"                 # 기준일 + 12개월 (날짜도 지킨다)
     assert b.endDateText == "2027년 10월"
 
-    b.endDate = "2029-01-01"
-    assert b.months == 27
-    assert b.endDate == "2029-01-01"                 # 되읽어도 같다
+    b.endDate = "2029-01-15"
+    assert b.months == 26                            # 기준일이 28일이라 15일은 아직 26개월째
+    assert b.endDate == "2029-01-15"                 # 친 날짜 그대로 되읽는다
 
     b.months = 6
-    assert b.endDate == "2027-04-01"                 # 개월 수를 바꾸면 끝 날짜도
+    assert b.endDate == "2027-04-28"                 # 개월 수를 바꾸면 끝 날짜도
 
     # 기준일을 바꾸면 끝 날짜가 따라 움직인다 (기간은 그대로)
     b.basisDate = "2027-01-01"

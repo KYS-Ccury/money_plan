@@ -9,6 +9,7 @@ UI(QML)와 분리되어 있어 단독으로 테스트할 수 있다.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import math
 from dataclasses import dataclass, field, asdict
@@ -157,14 +158,22 @@ def parse_date(s: str | None) -> date | None:
 
 
 def month_offset(basis: date, d: date) -> int:
-    """basis 기준으로 d 가 몇 개월 뒤인지 (월 단위, 일은 무시)."""
-    return (d.year - basis.year) * 12 + (d.month - basis.month)
+    """basis 부터 d 까지 몇 달이 온전히 지났는지. 일(日)까지 센다.
+
+    기준일이 10월 28일이면 한 달은 11월 28일에 찬다. 11월 1일은 아직 0개월째다.
+    기준일보다 앞선 날짜는 음수가 된다.
+    """
+    months = (d.year - basis.year) * 12 + (d.month - basis.month)
+    if d.day < basis.day:
+        months -= 1
+    return months
 
 
 def add_months(basis: date, m: int) -> date:
-    """basis 에서 m개월 뒤의 같은 달 1일."""
+    """basis 에서 m개월 뒤. 날짜(일)는 그대로 두되 그 달에 없으면 말일로 맞춘다."""
     y, mo = divmod(basis.month - 1 + m, 12)
-    return date(basis.year + y, mo + 1, 1)
+    year, month = basis.year + y, mo + 1
+    return date(year, month, min(basis.day, calendar.monthrange(year, month)[1]))
 
 
 @dataclass
