@@ -286,21 +286,60 @@ ApplicationWindow {
                         onEdited: (v) => backend.basisDate = v
                     }
                     DateField {
-                        label: "종료일 (" + backend.months + "개월)"
+                        label: "종료일"
                         Layout.fillWidth: false
                         Layout.preferredWidth: 150
                         Layout.alignment: Qt.AlignBottom
                         value: backend.endDate
                         onEdited: (v) => backend.endDate = v
                     }
-                    SliderInput {
-                        label: "기간"
-                        value: backend.months
-                        from: 0; to: 120; stepSize: 1
-                        suffix: "개월"
-                        fieldWidth: 90
-                        Layout.preferredWidth: 1
-                        onEdited: (v) => backend.months = Math.round(v)
+                    // 기간은 기준일과 종료일 사이에서 나온다. 직접 치는 칸은 없고,
+                    // 자주 쓰는 길이만 단추로 두고 ±는 종료일을 한 달씩 민다.
+                    ColumnLayout {
+                        Layout.fillWidth: false
+                        Layout.alignment: Qt.AlignBottom
+                        spacing: 2
+                        Text {
+                            text: "기간  " + backend.months + "개월"
+                            color: Theme.textDim; font.pixelSize: 12
+                        }
+                        RowLayout {
+                            spacing: 4
+                            ToolButton {
+                                text: "−"
+                                font.pixelSize: 16
+                                implicitWidth: 34; implicitHeight: 40
+                                enabled: backend.months > 0
+                                autoRepeat: true
+                                onClicked: backend.months = backend.months - 1
+                                ToolTip.visible: hovered; ToolTip.delay: 700
+                                ToolTip.text: "종료일을 한 달 당기기"
+                            }
+                            Repeater {
+                                model: [{t: "6개월", m: 6}, {t: "1년", m: 12},
+                                        {t: "2년", m: 24}, {t: "3년", m: 36}, {t: "5년", m: 60}]
+                                ToolButton {
+                                    required property var modelData
+                                    text: modelData.t
+                                    font.pixelSize: 12
+                                    implicitHeight: 40
+                                    checkable: true
+                                    checked: backend.months === modelData.m
+                                    onClicked: backend.months = modelData.m
+                                    ToolTip.visible: hovered; ToolTip.delay: 700
+                                    ToolTip.text: "종료일을 기준일 + " + modelData.t + " 로"
+                                }
+                            }
+                            ToolButton {
+                                text: "＋"
+                                font.pixelSize: 14
+                                implicitWidth: 34; implicitHeight: 40
+                                autoRepeat: true
+                                onClicked: backend.months = backend.months + 1
+                                ToolTip.visible: hovered; ToolTip.delay: 700
+                                ToolTip.text: "종료일을 한 달 미루기"
+                            }
+                        }
                     }
                     SliderInput {
                         label: "목표 자본금"
