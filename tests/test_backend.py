@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 
 from capital_calc.backend import Backend  # noqa: E402
-from capital_calc.model import Plan, sample_plan  # noqa: E402
+from capital_calc.model import Category, Item, Plan, sample_plan  # noqa: E402
 
 _app = QGuiApplication.instance() or QGuiApplication([])
 
@@ -1100,3 +1100,25 @@ def test_end_date_sets_months():
     b.summaryChanged.connect(lambda: hits.append(1))
     b.endDate = "2028-01-01"
     assert hits and b.months == 12
+
+
+def test_capital_at_end_makes_the_summary_add_up():
+    """요약을 위에서 아래로 더하면 'N개월 후 순 자본' 이 나와야 한다.
+    적금 납입은 월 지출로 보이는데 쌓이는 쪽이 안 보여서 숫자가 안 맞아 보였다."""
+    p = Plan(months=12, target=0, start_date="2026-11-02")
+    p.add(Item("현금", Category.CASH, 10_000_000))
+    p.add(Item("적금", Category.SAVING, 300_000, rate=5.0))
+    p.add(Item("급여", Category.INCOME, 2_000_000))
+    b = Backend(p)
+
+    assert b.capital == p.capital_at(0)
+    assert b.capitalAtEnd == p.capital_at(12)
+    assert abs(b.capitalGrowth - (p.capital_at(12) - p.capital_at(0))) < 0.5
+    assert b.capitalGrowth > 0                      # 적금이 쌓였으니 늘어야 한다
+    assert abs((b.capitalAtEnd - b.required + b.periodIncome) - b.net) < 0.5
+
+    # 쌓일 게 없으면 줄이 숨도록 0 이 나와야 한다
+    p2 = Plan(months=12, target=0, start_date="2026-11-02")
+    p2.add(Item("현금", Category.CASH, 1_000_000))
+    assert Backend(p2).capitalGrowth == 0
+
