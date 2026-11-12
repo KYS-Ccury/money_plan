@@ -326,6 +326,40 @@ class Ledger:
             totals[e.category] = totals.get(e.category, 0.0) + e.amount
         return sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
 
+    def range_summary(self, yms: list[str]) -> dict:
+        """여러 달을 한꺼번에 더한 {income, cost, net, count}."""
+        want = set(yms)
+        income = cost = 0.0
+        count = 0
+        for e in self.entries:
+            if e.ym not in want:
+                continue
+            count += 1
+            if e.is_income:
+                income += e.amount
+            else:
+                cost += e.amount
+        return {"income": income, "cost": cost, "net": income - cost, "count": count}
+
+    def range_by_category(self, yms: list[str], kind: str = COST) -> list[tuple[str, float]]:
+        """여러 달의 분류별 합계, 큰 금액부터."""
+        want = set(yms)
+        totals: dict[str, float] = {}
+        for e in self.entries:
+            if e.kind != kind or e.ym not in want:
+                continue
+            totals[e.category] = totals.get(e.category, 0.0) + e.amount
+        return sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+
+    def recent_months(self, n: int = 12, upto: str = "") -> list[dict]:
+        """최근 n개월의 {ym, label, income, cost, net, count}. 오래된 달이 앞."""
+        last = upto or month_key(date.today())
+        out = []
+        for i in range(n - 1, -1, -1):
+            ym = shift_month(last, -i)
+            out.append({"ym": ym, "label": f"{int(ym[5:7])}월", **self.summary(ym)})
+        return out
+
     def year_months(self, year: str) -> list[dict]:
         """그 해 1~12월의 {month, ym, income, cost, net}. 기록이 없는 달도 0 으로 채운다."""
         out = []

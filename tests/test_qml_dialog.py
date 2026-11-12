@@ -265,3 +265,32 @@ def test_fixed_dialog_creates_a_rule():
     app.processEvents()
     assert backend.fixedCount == 1
     assert dlg.property("formOpen") is True
+
+
+def test_overview_page_loads_with_every_chart():
+    """'한눈에' 화면이 뜨고, 추이·막대·도넛이 모두 값을 받는지."""
+    app, engine, backend, win = _load()
+    backend.loadSample()
+    QMetaObject.invokeMethod(win, "openOverview")
+    app.processEvents()
+    assert win.property("mode") == "overview"
+
+    view = win.findChild(QObject, "overviewView")
+    assert view is not None and view.property("visible") is True
+
+    trend = win.findChild(QObject, "overviewTrend")
+    bars = win.findChild(QObject, "overviewBars")
+    pie = win.findChild(QObject, "overviewPie")
+    assert trend is not None and bars is not None and pie is not None
+
+    assert len(trend.property("values")) == backend.months + 1
+    rows = bars.property("rows")
+    assert len(rows) == 12 and rows[-1]["isThis"]
+    slices = pie.property("slices")
+    assert slices and abs(sum(s["share"] for s in slices) - 1.0) < 1e-6
+
+    # 계획을 바꾸면 그래프도 따라간다
+    before = list(trend.property("values"))
+    backend.setProperty("months", backend.months + 6)
+    app.processEvents()
+    assert len(trend.property("values")) == len(before) + 6

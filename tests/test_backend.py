@@ -1231,3 +1231,54 @@ def test_fixed_from_entry_starts_next_month():
     made = [e for e in ws.ledger.entries if e.rule == rid]
     assert [e.ym for e in made] == [month_key(date.today())]     # 이번 달치만 새로 생겼다
     assert b.fixedFromEntry(ws.ledger.entries.index(made[0])) != ""   # 고정이 적은 줄은 거절
+
+
+def test_overview_numbers_agree_with_the_other_screens():
+    """한눈에 보기는 따로 계산하지 않는다 — 계획·가계부 화면과 같은 값이어야 한다."""
+    b = Backend()
+    b.loadSample()
+
+    plan = b.overviewPlan
+    assert plan["capital"] == b.capital
+    assert plan["net"] == b.net
+    assert plan["months"] == b.months
+    assert plan["target"] == b.target
+    assert plan["goalMonth"] == b.goalMonth
+    assert plan["itemCount"] == b.itemCount
+
+    months = b.overviewMonths
+    assert len(months) == 12
+    assert sum(m["isThis"] for m in months) == 1 and months[-1]["isThis"]
+
+    led = b.overviewLedger
+    assert led["income"] == sum(m["income"] for m in months)
+    assert led["cost"] == sum(m["cost"] for m in months)
+    assert led["net"] == led["income"] - led["cost"]
+    assert led["months"] == sum(1 for m in months if m["count"] > 0)
+
+    pie = b.overviewByCategory("cost")
+    assert abs(sum(r["value"] for r in pie) - led["cost"]) < 1
+    assert abs(sum(r["share"] for r in pie) - 1.0) < 1e-9
+    assert pie == sorted(pie, key=lambda r: -r["value"])      # 큰 금액부터
+
+    now = b.overviewThisMonth
+    assert now["ym"] == months[-1]["ym"]
+    assert (now["income"], now["cost"]) == (months[-1]["income"], months[-1]["cost"])
+    assert now["vsPlan"] == b.planVsActualFor(now["ym"])
+
+
+def test_overview_is_empty_but_well_formed_without_a_ledger():
+    """가계부가 비어도 칸이 모두 채워져 와야 한다 (QML 바인딩이 undefined 를 보지 않게)."""
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    b = Backend(ws)
+
+    led = b.overviewLedger
+    assert led["has"] is False and led["count"] == 0 and led["avgNet"] == 0
+    assert led["bestLabel"] == "" and led["worstLabel"] == ""
+    assert len(b.overviewMonths) == 12 and all(m["count"] == 0 for m in b.overviewMonths)
+    assert b.overviewByCategory("cost") == [] and b.overviewBudgets == []
+    assert b.overviewThisMonth["vsPlan"]["has"] is False

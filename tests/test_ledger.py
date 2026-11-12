@@ -408,3 +408,38 @@ def test_fixed_update_keeps_what_was_already_written():
     assert lg.apply_fixed("2026-10") == []           # 이미 적은 달은 그대로
     assert lg.entries[0].amount == 600_000           # 지난 내역을 고치지 않는다
     assert lg.apply_fixed("2026-11")[0].amount == 650_000
+
+
+# ───────────────────────── 한눈에 보기 (집계)
+
+def test_recent_months_counts_back_from_this_month():
+    from capital_calc.ledger import Entry, Ledger
+
+    lg = Ledger()
+    lg.add(Entry("2026-11-05", "식비", 100_000))
+    lg.add(Entry("2026-10-05", "급여", 2_000_000))
+    lg.add(Entry("2025-11-05", "식비", 50_000))      # 12개월 창 밖 (2025-12 부터이므로)
+
+    rows = lg.recent_months(12, upto="2026-11")
+    assert len(rows) == 12
+    assert rows[0]["ym"] == "2025-12" and rows[-1]["ym"] == "2026-11"
+    assert rows[-1]["cost"] == 100_000 and rows[-2]["income"] == 2_000_000
+    assert sum(r["count"] for r in rows) == 2       # 2025-11 은 빠진다
+    assert rows[0]["label"] == "12월"
+
+
+def test_range_aggregates_match_the_months_they_cover():
+    from capital_calc.ledger import Entry, Ledger
+
+    lg = Ledger()
+    for ym in ("2026-09", "2026-10", "2026-11"):
+        lg.add(Entry(f"{ym}-05", "식비", 300_000))
+        lg.add(Entry(f"{ym}-25", "급여", 2_000_000))
+    yms = ["2026-10", "2026-11"]
+
+    s = lg.range_summary(yms)
+    assert (s["income"], s["cost"], s["net"], s["count"]) == (4_000_000, 600_000, 3_400_000, 4)
+    # 달별 합을 더한 것과 같아야 한다
+    assert s["cost"] == sum(lg.summary(ym)["cost"] for ym in yms)
+    assert lg.range_by_category(yms, "cost") == [("식비", 600_000)]
+    assert lg.range_by_category(yms, "income") == [("급여", 4_000_000)]

@@ -1864,7 +1864,14 @@ class Backend(QObject):
         """지금 보고 있는 기간의 계획과 가계부 실적 비교.
         {has, scenario, months, planIn, planOut, planNet, actIn, actOut, actNet,
          inDiff, outDiff, netDiff, outPct}"""
-        period = self.ledgerPeriod
+        return self._plan_vs_actual(self.ledgerPeriod)
+
+    @Slot(str, result="QVariantMap")
+    def planVsActualFor(self, period: str) -> dict:
+        """기간을 직접 주고 비교한다 ('2026-11' 또는 '2026')."""
+        return self._plan_vs_actual(period)
+
+    def _plan_vs_actual(self, period: str) -> dict:
         empty = {
             "has": False, "scenario": self._plan.name, "months": 0,
             "planIn": 0.0, "planOut": 0.0, "planNet": 0.0,
@@ -1886,7 +1893,7 @@ class Backend(QObject):
         if counted == 0 or (plan_in <= 0 and plan_out <= 0):
             return empty
 
-        s = self._ws.ledger.summary(period)
+        s = self._ws.ledger.summary(period)   # noqa: E501
         plan_net = plan_in - plan_out
         return {
             "has": True,
@@ -1899,6 +1906,83 @@ class Backend(QObject):
             "netDiff": s["net"] - plan_net,
             "outPct": ((s["cost"] - plan_out) / plan_out * 100.0) if plan_out > 0 else 0.0,
         }
+
+    # ---- 한눈에 보기 (대시보드) ----
+    OVERVIEW_MONTHS = 12
+
+    def _recent_yms(self) -> list[str]:
+        """대시보드가 보는 기간 — 이번 달까지 최근 12개월."""
+        last = month_key(date.today())
+        return [shift_month(last, -i) for i in range(self.OVERVIEW_MONTHS - 1, -1, -1)]
+
+    @Property("QVariantMap", notify=summaryChanged)
+    def overviewPlan(self) -> dict:
+        """계획 쪽 한눈 요약. 숫자는 모두 지금 고른 시나리오 기준이다."""
+        p = self._plan
+        s = self._s()
+        sf = self.shortfall
+        return {
+            "scenario": p.name, "months": p.months,
+            "basis": p.start_date, "end": self.endDate,
+            "capital": s.capital, "capitalAtEnd": self.capitalAtEnd,
+            "required": s.required, "periodIncome": s.period_income,
+            "net": s.net, "target": p.target, "gap": self.gap,
+            "progress": self.progress, "peak": self.peakNet,
+            "goalMonth": self.goalMonth, "goalDateText": self.goalDateText,
+            "monthlyNet": self.monthlyNet, "avgMonthlyNet": self.avgMonthlyNet,
+            "itemCount": self.itemCount,
+            "shortfallMonth": sf.get("month", -1) if sf.get("has") else -1,
+            "shortfallText": sf.get("dateText", ""),
+        }
+
+    @Property("QVariantList", notify=ledgerChanged)
+    def overviewMonths(self) -> list[dict]:
+        """최근 12개월의 가계부 수입·지출·수지 (오래된 달이 앞)."""
+        rows = self._ws.ledger.recent_months(self.OVERVIEW_MONTHS)
+        this = month_key(date.today())
+        for r in rows:
+            r["isThis"] = r["ym"] == this
+        return rows
+
+    @Property("QVariantMap", notify=ledgerChanged)
+    def overviewLedger(self) -> dict:
+        """최근 12개월 가계부 합계와 월평균. 기록이 있는 달만으로 평균을 낸다."""
+        yms = self._recent_yms()
+        s = self._ws.ledger.range_summary(yms)
+        rows = [r for r in self._ws.ledger.recent_months(self.OVERVIEW_MONTHS) if r["count"] > 0]
+        n = len(rows) or 1
+        best = max(rows, key=lambda r: r["net"], default=None)
+        worst = min(rows, key=lambda r: r["net"], default=None)
+        return {
+            "has": s["count"] > 0,
+            "from": yms[0], "to": yms[-1], "months": len(rows),
+            "income": s["income"], "cost": s["cost"], "net": s["net"], "count": s["count"],
+            "avgIncome": s["income"] / n, "avgCost": s["cost"] / n, "avgNet": s["net"] / n,
+            "bestLabel": best["label"] if best else "", "bestNet": best["net"] if best else 0.0,
+            "worstLabel": worst["label"] if worst else "", "worstNet": worst["net"] if worst else 0.0,
+        }
+
+    @Slot(str, result="QVariantList")
+    def overviewByCategory(self, kind: str) -> list[dict]:
+        """최근 12개월 분류별 합계 [{label, value, share}] — 도넛용."""
+        rows = self._ws.ledger.range_by_category(self._recent_yms(), kind)
+        total = sum(v for _, v in rows)
+        return [{"label": n, "value": v, "share": (v / total) if total else 0.0}
+                for n, v in rows]
+
+    @Property("QVariantList", notify=budgetsChanged)
+    def overviewBudgets(self) -> list[dict]:
+        """이번 달 예산 현황 (예산을 정한 분류만, 많이 쓴 순)."""
+        rows = self._ws.ledger.budget_rows(month_key(date.today()))
+        return [r for r in rows if r["limit"] > 0]
+
+    @Property("QVariantMap", notify=ledgerChanged)
+    def overviewThisMonth(self) -> dict:
+        """이번 달 가계부 {ym, label, income, cost, net, count} 와 계획 대비."""
+        ym = month_key(date.today())
+        s = self._ws.ledger.summary(ym)
+        return {"ym": ym, "label": f"{int(ym[:4])}년 {int(ym[5:7])}월", **s,
+                "vsPlan": self._plan_vs_actual(ym)}
 
     @Property(bool, notify=ledgerChanged)
     def canCopyPreviousMonth(self) -> bool:

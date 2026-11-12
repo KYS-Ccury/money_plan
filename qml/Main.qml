@@ -41,6 +41,9 @@ ApplicationWindow {
         win.mode = "ledger"
         ledgerView.openBudget()
     }
+    function openOverview() {                               // 테스트/외부 호출용
+        win.mode = "overview"
+    }
 
     ItemDialog { id: itemDialog }
 
@@ -157,7 +160,8 @@ ApplicationWindow {
                         spacing: 0
                         leftPadding: 12
                         Repeater {
-                            model: [{ m: "plan", t: "계획" }, { m: "ledger", t: "가계부" }]
+                            model: [{ m: "plan", t: "계획" }, { m: "ledger", t: "가계부" },
+                                    { m: "overview", t: "한눈에" }]
                             delegate: Rectangle {
                                 required property var modelData
                                 readonly property bool on: win.mode === modelData.m
@@ -1260,6 +1264,15 @@ ApplicationWindow {
                 }
             }   // rightCol
             }   // rightFlick
+        }
+
+        // ───────────── 본문 (한눈에 보기)
+        OverviewView {
+            objectName: "overviewView"
+            id: overviewView
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: win.mode === "overview"
         }
 
         // ───────────── 본문 (가계부)
