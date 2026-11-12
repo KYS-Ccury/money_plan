@@ -237,3 +237,66 @@ def test_aggregates_add_up_across_views():
         assert r["over"] == (r["limit"] > 0 and r["spent"] > r["limit"])
     assert abs(lg.budget_totals("2026")["limit"] - tot["limit"] * 12) < 0.5
 
+
+
+def test_custom_categories():
+    """분류를 직접 만들 수 있다. 수입으로 만든 분류는 수입으로 기록된다."""
+    from capital_calc.ledger import Entry, Ledger, LEDGER_CATEGORIES
+
+    lg = Ledger()
+    assert lg.add_category("반려동물", "cost") == ""
+    assert lg.add_category("부모님 용돈", "income") == ""
+    assert "반려동물" in lg.cost_categories()
+    assert "부모님 용돈" in lg.income_categories()
+    assert lg.kind_of("반려동물") == "cost"
+    assert lg.kind_of("부모님 용돈") == "income"
+    assert lg.kind_of("식비") == "cost"            # 기본 분류는 그대로
+
+    # 겹치는 이름·빈 이름·너무 긴 이름은 거절
+    assert lg.add_category("식비", "cost") != ""
+    assert lg.add_category("반려동물", "cost") != ""
+    assert lg.add_category("   ", "cost") != ""
+    assert lg.add_category("가" * 13, "cost") != ""
+
+    # 기본 분류는 지울 수 없다
+    assert lg.remove_category("식비") != ""
+    assert set(LEDGER_CATEGORIES) <= set(lg.categories())
+
+    # 쓰고 있으면 못 지운다
+    lg.add(Entry("2026-11-11", "반려동물", 50_000, "사료", kind=lg.kind_of("반려동물")))
+    assert lg.category_in_use("반려동물") == 1
+    assert lg.remove_category("반려동물") != ""
+    # 내역을 치우면 지울 수 있다
+    lg.remove(0)
+    assert lg.remove_category("반려동물") == ""
+    assert "반려동물" not in lg.cost_categories()
+
+
+def test_custom_categories_survive_save(tmp_path):
+    from capital_calc.ledger import Entry, Ledger
+
+    lg = Ledger()
+    lg.add_category("반려동물", "cost")
+    lg.add_category("부모님 용돈", "income")
+    lg.add(Entry("2026-11-11", "부모님 용돈", 300_000, "엄마", kind="income"))
+    lg.set_budget("반려동물", 80_000)
+
+    lg2 = Ledger.from_dict(lg.to_dict())
+    assert lg2.custom == {"반려동물": "cost", "부모님 용돈": "income"}
+    assert lg2.kind_of("부모님 용돈") == "income"
+    assert lg2.summary("")["income"] == 300_000      # 지출로 둔갑하지 않는다
+    assert lg2.budget_of("반려동물") == 80_000
+
+
+def test_repeat_and_copy_keep_custom_kind():
+    """반복·복사로 만든 내역도 수입/지출을 그대로 물려받는다."""
+    from capital_calc.ledger import Entry, Ledger
+
+    lg = Ledger()
+    lg.add_category("부모님 용돈", "income")
+    e = lg.add(Entry("2026-01-10", "부모님 용돈", 200_000, "엄마", kind="income"))
+    made = lg.repeat(e, 3)
+    assert len(made) == 2 and all(m.is_income for m in made)
+    copied = lg.copy_month("2026-01", "2026-06")
+    assert copied and all(c.is_income for c in copied)
+    assert lg.summary("2026")["cost"] == 0

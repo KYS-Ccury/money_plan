@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import QtQuick.Controls.Material
 
 // 가계부 내역 추가 / 수정 팝업
 Popup {
@@ -12,6 +13,24 @@ Popup {
     property real amount: 0
     property int repeatMonths: 1             // 1 이면 한 번만, 2 이상이면 다음 달부터 반복
     readonly property string kind: backend.ledgerKindOf(category)
+    property string newCatKind: "cost"       // 분류를 만들 때 고른 수입/지출
+    // 지금 고른 분류가 직접 만든 것인가 (기본 분류는 지울 수 없다)
+    readonly property bool categoryIsCustom: {
+        var all = backend.ledgerCategories
+        for (var i = 0; i < all.length; i++)
+            if (all[i].value === dlg.category) return all[i].custom === true
+        return false
+    }
+
+    function createCategory() {
+        var name = newCatName.text.trim()
+        if (name === "") return
+        if (backend.addLedgerCategory(name, dlg.newCatKind) === "") {
+            newCatName.text = ""
+            newCatButton.checked = false
+            dlg.setCategory(name)              // 방금 만든 분류를 바로 고른다
+        }
+    }
 
     modal: true
     focus: true
@@ -109,11 +128,90 @@ Popup {
             ComboBox {
                 id: catBox
                 objectName: "entryCategory"
-                Layout.preferredWidth: 180
+                Layout.preferredWidth: 150
                 model: backend.ledgerCategories
                 textRole: "value"
                 valueRole: "value"
                 onActivated: dlg.category = catBox.currentValue
+                // 목록이 늘어나도 고른 분류를 계속 가리키게
+                Connections {
+                    target: backend
+                    function onLedgerChanged() {
+                        var i = catBox.indexOfValue(dlg.category)
+                        if (i >= 0 && i !== catBox.currentIndex) catBox.currentIndex = i
+                    }
+                }
+            }
+            ToolButton {
+                id: newCatButton
+                objectName: "newCategoryToggle"
+                text: "＋"
+                implicitWidth: 34; implicitHeight: 40
+                checkable: true
+                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.text: "분류를 직접 만듭니다"
+                onToggled: if (checked) { newCatName.text = ""; newCatName.forceActiveFocus() }
+            }
+            ToolButton {
+                text: "✕"
+                implicitWidth: 34; implicitHeight: 40
+                Material.foreground: Theme.red
+                visible: dlg.categoryIsCustom && !newCatButton.checked
+                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.text: "직접 만든 이 분류를 지웁니다"
+                onClicked: {
+                    if (backend.removeLedgerCategory(dlg.category) === "")
+                        dlg.setCategory("식비")
+                }
+            }
+        }
+
+        // 분류 직접 만들기 (＋ 를 누르면 열린다)
+        Rectangle {
+            Layout.fillWidth: true
+            visible: newCatButton.checked
+            implicitHeight: newCatRow.implicitHeight + 16
+            radius: 8
+            color: Theme.rowHover
+            border.color: Theme.cardBorder
+
+            RowLayout {
+                id: newCatRow
+                anchors.fill: parent
+                anchors.margins: 8
+                spacing: 8
+
+                TextField {
+                    id: newCatName
+                    objectName: "newCategoryName"
+                    Layout.fillWidth: true
+                    placeholderText: "새 분류 이름 (12자까지)"
+                    maximumLength: 12
+                    onAccepted: dlg.createCategory()
+                }
+                Repeater {
+                    model: [{ k: "cost", t: "지출" }, { k: "income", t: "수입" }]
+                    delegate: Rectangle {
+                        required property var modelData
+                        readonly property bool on: dlg.newCatKind === modelData.k
+                        width: 50; height: 28; radius: 14
+                        color: on ? (modelData.k === "income" ? Theme.green : Theme.red) : "transparent"
+                        border.color: on ? "transparent" : Theme.cardBorder
+                        TapHandler { onTapped: dlg.newCatKind = modelData.k }
+                        Text {
+                            anchors.centerIn: parent
+                            text: modelData.t
+                            color: parent.on ? "#ffffff" : Theme.textDim
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+                Button {
+                    text: "추가"
+                    highlighted: true
+                    enabled: newCatName.text.trim() !== ""
+                    onClicked: dlg.createCategory()
+                }
             }
         }
 

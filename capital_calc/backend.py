@@ -1533,7 +1533,8 @@ class Backend(QObject):
                        name: str, note: str, months: int) -> None:
         """같은 내역을 months 달 동안 (이번 달 포함) 넣는다."""
         months = max(1, min(60, int(months)))
-        e = Entry(date_str, category, amount, name.strip(), note=note.strip())
+        e = Entry(date_str, category, amount, name.strip(),
+                  kind=self._ws.ledger.kind_of(category), note=note.strip())
         self._ws.ledger.add(e)
         made = self._ws.ledger.repeat(e, months)
         if not self._ledger_year:
@@ -1671,7 +1672,7 @@ class Backend(QObject):
     def budgetEditRows(self) -> list[dict]:
         """예산 설정 팝업용 — 지출 분류 전체와 지금 정해진 한 달 예산."""
         return [{"category": c, "limit": self._ws.ledger.budget_of(c)}
-                for c in LEDGER_COST_CATEGORIES]
+                for c in self._ws.ledger.cost_categories()]
 
     @Slot(str, float)
     def setBudget(self, category: str, amount: float) -> None:
@@ -1754,11 +1755,36 @@ class Backend(QObject):
         """가계부 내역 모델 (현재 기간)."""
         return self._ledger_model
 
-    @Property("QVariantList", constant=True)
+    @Property("QVariantList", notify=ledgerChanged)
     def ledgerCategories(self) -> list[dict]:
-        """가계부 분류 [{value, kind}] — 수입 먼저, 지출 다음."""
-        return ([{"value": c, "kind": "income"} for c in LEDGER_INCOME_CATEGORIES]
-                + [{"value": c, "kind": "cost"} for c in LEDGER_COST_CATEGORIES])
+        """가계부 분류 [{value, kind, custom}] — 수입 먼저, 지출 다음."""
+        lg = self._ws.ledger
+        return ([{"value": c, "kind": "income", "custom": c in lg.custom}
+                 for c in lg.income_categories()]
+                + [{"value": c, "kind": "cost", "custom": c in lg.custom}
+                   for c in lg.cost_categories()])
+
+    @Slot(str, str, result=str)
+    def addLedgerCategory(self, name: str, kind: str) -> str:
+        """분류를 직접 만든다. 만들었으면 빈 문자열, 못 만들었으면 까닭을 돌려준다."""
+        why = self._ws.ledger.add_category(name, kind)
+        if why:
+            self.failed.emit(why)
+        else:
+            self._ledger_touched()
+            self._set_status(f"분류 추가: {name.strip()}")
+        return why
+
+    @Slot(str, result=str)
+    def removeLedgerCategory(self, name: str) -> str:
+        """직접 만든 분류를 지운다 (그 분류로 적어 둔 내역이 있으면 거절)."""
+        why = self._ws.ledger.remove_category(name)
+        if why:
+            self.failed.emit(why)
+        else:
+            self._ledger_touched()
+            self._set_status(f"분류 삭제: {name}")
+        return why
 
     @Property(str, constant=True)
     def today(self) -> str:
@@ -1843,13 +1869,14 @@ class Backend(QObject):
 
     @Slot(str, result=str)
     def ledgerKindOf(self, category: str) -> str:
-        return kind_of(category)
+        return self._ws.ledger.kind_of(category)
 
     @Slot(str, str, float, str, str)
     @Slot(str, str, float, str)
     @Slot(str, str, float)
     def addEntry(self, date_str: str, category: str, amount: float, name: str = "", note: str = "") -> None:
-        e = Entry(date_str, category, amount, name.strip(), note=note.strip())
+        e = Entry(date_str, category, amount, name.strip(),
+                  kind=self._ws.ledger.kind_of(category), note=note.strip())
         self._ws.ledger.add(e)
         if not self._ledger_year:                 # 첫 기록이면 그 달로 맞춘다
             self._ledger_year, self._ledger_month = e.year, e.day.month
@@ -1862,7 +1889,9 @@ class Backend(QObject):
     @Slot(int, str, str, float)
     def updateEntry(self, row: int, date_str: str, category: str, amount: float,
                     name: str = "", note: str = "") -> None:
-        if self._ws.ledger.update(row, Entry(date_str, category, amount, name.strip(), note=note.strip())):
+        if self._ws.ledger.update(row, Entry(date_str, category, amount, name.strip(),
+                                            kind=self._ws.ledger.kind_of(category),
+                                            note=note.strip())):
             self._ledger_touched()
             self._set_status("가계부 수정")
 

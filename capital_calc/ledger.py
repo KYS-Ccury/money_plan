@@ -121,6 +121,51 @@ class Entry:
 class Ledger:
     entries: list[Entry] = field(default_factory=list)
     budgets: dict[str, float] = field(default_factory=dict)   # 분류 → 한 달 예산(원)
+    custom: dict[str, str] = field(default_factory=dict)      # 직접 만든 분류 → "income" | "cost"
+
+    # ---- 분류 (기본 + 직접 만든 것) ----
+    def kind_of(self, category: str) -> str:
+        """직접 만든 분류를 먼저 보고, 없으면 기본 분류표를 본다."""
+        k = self.custom.get(category)
+        return k if k in (INCOME, COST) else kind_of(category)
+
+    def income_categories(self) -> list[str]:
+        return LEDGER_INCOME_CATEGORIES + [c for c, k in self.custom.items() if k == INCOME]
+
+    def cost_categories(self) -> list[str]:
+        return LEDGER_COST_CATEGORIES + [c for c, k in self.custom.items() if k == COST]
+
+    def categories(self) -> list[str]:
+        return self.income_categories() + self.cost_categories()
+
+    def add_category(self, name: str, kind: str = COST) -> str:
+        """분류를 하나 만든다. 만들었으면 빈 문자열, 못 만들었으면 까닭을 돌려준다."""
+        name = (name or "").strip()
+        if not name:
+            return "이름을 적어 주세요."
+        if len(name) > 12:
+            return "이름이 너무 깁니다 (12자까지)."
+        if name in LEDGER_CATEGORIES:
+            return f"'{name}' 은 이미 있는 분류입니다."
+        if name in self.custom:
+            return f"'{name}' 은 이미 만들어 둔 분류입니다."
+        self.custom[name] = INCOME if kind == INCOME else COST
+        return ""
+
+    def category_in_use(self, name: str) -> int:
+        """그 분류로 적어 둔 내역 수."""
+        return sum(1 for e in self.entries if e.category == name)
+
+    def remove_category(self, name: str) -> str:
+        """직접 만든 분류를 지운다. 지웠으면 빈 문자열, 못 지웠으면 까닭."""
+        if name not in self.custom:
+            return "기본 분류는 지울 수 없습니다."
+        used = self.category_in_use(name)
+        if used:
+            return f"'{name}' 으로 적어 둔 내역이 {used}건 있습니다."
+        self.custom.pop(name, None)
+        self.budgets.pop(name, None)
+        return ""
 
     # ---- 목록 조작 ----
     def add(self, entry: Entry) -> Entry:
@@ -312,7 +357,8 @@ class Ledger:
         for i in range(1, max(1, months)):
             ym = shift_month(entry.ym, i)
             made.append(self.add(Entry(same_day_in(ym, entry.day.day), entry.category,
-                                       entry.amount, entry.name, note=entry.note)))
+                                       entry.amount, entry.name, kind=entry.kind,
+                                       note=entry.note)))
         return made
 
     def copy_month(self, src_ym: str, dst_ym: str) -> list[Entry]:
@@ -327,13 +373,14 @@ class Ledger:
             if key in exists:
                 continue
             exists.add(key)
-            made.append(self.add(Entry(d, e.category, e.amount, e.name, note=e.note)))
+            made.append(self.add(Entry(d, e.category, e.amount, e.name, kind=e.kind, note=e.note)))
         return made
 
     # ---- 저장 / 불러오기 ----
     def to_dict(self) -> dict:
         return {"entries": [e.to_dict() for e in self.entries],
-                "budgets": {k: v for k, v in self.budgets.items() if v > 0}}
+                "budgets": {k: v for k, v in self.budgets.items() if v > 0},
+                "custom": dict(self.custom)}
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Ledger":
@@ -346,7 +393,13 @@ class Ledger:
                     budgets[str(k)] = float(v)
             except (TypeError, ValueError):
                 continue
-        return cls([Entry.from_dict(x) for x in d.get("entries", []) if isinstance(x, dict)], budgets)
+        custom = {}
+        for k, v in (d.get("custom") or {}).items():
+            name = str(k).strip()
+            if name and name not in LEDGER_CATEGORIES:
+                custom[name] = INCOME if str(v) == INCOME else COST
+        return cls([Entry.from_dict(x) for x in d.get("entries", []) if isinstance(x, dict)],
+                   budgets, custom)
 
 
 def sample_ledger(basis: date | None = None) -> Ledger:

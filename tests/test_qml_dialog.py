@@ -161,3 +161,54 @@ def test_ledger_delete_asks_first():
     QMetaObject.invokeMethod(dlg, "accepted")
     app.processEvents()
     assert len(ws.ledger.entries) == before - 1
+
+
+def test_entry_dialog_can_make_a_category():
+    """팝업의 ＋ 로 분류를 만들면 바로 그 분류가 골라지고, 수입/지출 표시도 따라간다."""
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Workspace
+
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    backend = Backend(ws)
+    engine = QQmlApplicationEngine()
+    engine.addImportPath(str(ROOT))
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+    assert engine.rootObjects(), "QML 로드 실패"
+    win = engine.rootObjects()[0]
+    win.setProperty("mode", "ledger")
+    app.processEvents()
+
+    dlg = win.findChild(QObject, "entryDialog")
+    QMetaObject.invokeMethod(dlg, "openForAdd", Q_ARG("QVariant", "2026-11-11"))
+    app.processEvents()
+    assert dlg.property("kind") == "cost"
+    assert dlg.property("categoryIsCustom") is False
+
+    name = dlg.findChild(QObject, "newCategoryName")
+    toggle = dlg.findChild(QObject, "newCategoryToggle")
+    assert name is not None and toggle is not None
+
+    # 수입으로 '부모님 용돈' 을 만든다
+    toggle.setProperty("checked", True)
+    dlg.setProperty("newCatKind", "income")
+    name.setProperty("text", "부모님 용돈")
+    QMetaObject.invokeMethod(dlg, "createCategory")
+    app.processEvents()
+
+    assert "부모님 용돈" in ws.ledger.income_categories()
+    assert dlg.property("category") == "부모님 용돈", "만든 분류가 바로 골라져야 한다"
+    assert dlg.property("kind") == "income", "수입으로 기록된다고 보여야 한다"
+    assert dlg.property("categoryIsCustom") is True
+    assert not toggle.property("checked"), "만들고 나면 입력칸이 닫힌다"
+
+    # 그 분류로 적으면 수입으로 들어간다
+    backend.addEntry("2026-11-11", "부모님 용돈", 300_000, "엄마")
+    assert ws.ledger.summary("")["income"] == 300_000
+
+    # 쓰고 있는 분류는 못 지운다
+    assert backend.removeLedgerCategory("부모님 용돈") != ""
+    assert "부모님 용돈" in ws.ledger.income_categories()
