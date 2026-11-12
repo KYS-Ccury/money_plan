@@ -24,8 +24,9 @@ from PySide6.QtCore import (
 )
 
 from .export_excel import composition, export_plan
-from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Ledger,
-                     kind_of, prev_period, same_day_in, sample_ledger, shift_month)
+from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Fixed,
+                     Ledger, kind_of, month_key, prev_period, same_day_in, sample_ledger,
+                     shift_month)
 from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
                      REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS, month_offset,
                      Category, Item, Plan, Workspace, add_months, parse_date, sample_plan, won)
@@ -389,6 +390,7 @@ class LedgerModel(QAbstractListModel):
     NoteRole = Qt.ItemDataRole.UserRole + 8
     SourceRowRole = Qt.ItemDataRole.UserRole + 9   # Ledger.entries 에서의 번호
     DaySectionRole = Qt.ItemDataRole.UserRole + 10  # 날짜 구분 헤더용
+    RuleRole = Qt.ItemDataRole.UserRole + 11        # 고정 규칙이 적어 준 줄이면 그 번호
 
     _ROLES = {
         DateRole: b"date",
@@ -401,6 +403,7 @@ class LedgerModel(QAbstractListModel):
         NoteRole: b"note",
         SourceRowRole: b"sourceRow",
         DaySectionRole: b"daySection",
+        RuleRole: b"rule",
     }
 
     def __init__(self, ledger: Ledger, parent: QObject | None = None):
@@ -445,6 +448,8 @@ class LedgerModel(QAbstractListModel):
             return src
         if role == self.DaySectionRole:
             return e.date
+        if role == self.RuleRole:
+            return e.rule
         return None
 
     # ---- 갱신 ----
@@ -494,6 +499,7 @@ class Backend(QObject):
     scenariosChanged = Signal()     # 시나리오 추가/삭제/이름/활성 변경
     ledgerChanged = Signal()        # 가계부 내역·기간 변경
     budgetsChanged = Signal()       # 예산만 변경 (가계부 집계는 그대로)
+    fixedChanged = Signal()         # 고정 지출·수입 규칙 변경
     saved = Signal(str)        # 저장 완료 (경로)
     exported = Signal(str)     # 엑셀 내보내기 완료 (경로)
     loaded = Signal(str)       # 불러오기 완료 (경로)
@@ -1396,8 +1402,13 @@ class Backend(QObject):
         self._set_status("예시 데이터를 불러왔습니다.")
 
     # ------------------------------------------------------------ 가계부
+    def _apply_fixed(self) -> int:
+        """이번 달까지 아직 안 적힌 고정 지출·수입을 적는다. 적은 건수를 돌려준다."""
+        return len(self._ws.ledger.apply_fixed(month_key(date.today())))
+
     def _reset_ledger(self) -> None:
         """가계부가 통째로 바뀐 뒤 (불러오기·예시) 기간을 최신으로 맞춘다."""
+        self._apply_fixed()              # 안 쓴 동안 밀린 고정 지출·수입을 먼저 적는다
         self._ledger_model.set_ledger(self._ws.ledger)
         months = self._ws.ledger.months()
         if months:                                   # 가장 최근 달을 보여준다
@@ -1413,6 +1424,7 @@ class Backend(QObject):
         self._ledger_model.set_filters(self._ledger_query, self._ledger_kind, self._ledger_category)
         self.ledgerChanged.emit()
         self.budgetsChanged.emit()
+        self.fixedChanged.emit()
 
     def _apply_filters(self) -> None:
         self._ledger_model.set_filters(self._ledger_query, self._ledger_kind, self._ledger_category)
@@ -1694,6 +1706,150 @@ class Backend(QObject):
         self._set_status(f"{self.ledgerPeriodText} 실적으로 예산 {n}개를 채웠습니다."
                          if n else "채울 지출 기록이 없습니다.")
 
+    # ---- 고정 지출·수입 ----
+    @Property("QVariantList", notify=fixedChanged)
+    def fixedRows(self) -> list[dict]:
+        """고정 지출·수입 규칙 목록 (수입 먼저, 그 다음 금액이 큰 것부터)."""
+        lg = self._ws.ledger
+        rows = []
+        for f in lg.fixed:
+            rows.append({
+                "rid": f.rid, "name": f.name, "label": f.label,
+                "category": f.category, "amount": f.amount,
+                "amountText": ("+" if f.is_income else "-") + won(f.amount),
+                "day": f.day, "kind": f.kind, "note": f.note,
+                "start": f.start, "end": f.end, "active": f.active,
+                "made": len(lg.fixed_entries(f.rid)),
+                "periodText": (f.start or "") + " ~ " + (f.end or "계속"),
+            })
+        rows.sort(key=lambda r: (r["kind"] != "income", -r["amount"]))
+        return rows
+
+    @Property("QVariantMap", notify=fixedChanged)
+    def fixedTotals(self) -> dict:
+        """쉬지 않는 규칙의 한 달 합계 {income, cost, net, count}."""
+        return self._ws.ledger.fixed_totals()
+
+    @Property(int, notify=fixedChanged)
+    def fixedCount(self) -> int:
+        return len(self._ws.ledger.fixed)
+
+    def _fixed_touched(self, status: str = "") -> None:
+        n = self._apply_fixed()
+        if not self._ledger_year and self._ws.ledger.entries:
+            m = self._ws.ledger.months()[0]
+            self._ledger_year, self._ledger_month = m[:4], int(m[5:7])
+            self._ledger_model.set_period(self.ledgerPeriod)
+        self.fixedChanged.emit()
+        self._ledger_touched()
+        if status:
+            self._set_status(status + (f" · 내역 {n}건 적음" if n else ""))
+
+    @Slot(str, str, float, int, str, str, str, result=str)
+    @Slot(str, str, float, int, str, str, result=str)
+    @Slot(str, str, float, int, str, result=str)
+    @Slot(str, str, float, int, result=str)
+    def addFixed(self, name: str, category: str, amount: float, day: int,
+                 note: str = "", start: str = "", end: str = "") -> str:
+        """고정 지출·수입을 하나 만든다. 만들었으면 빈 문자열, 아니면 까닭을 돌려준다."""
+        why = self._check_fixed(category, amount, start, end)
+        if why:
+            self.failed.emit(why)
+            return why
+        f = self._ws.ledger.add_fixed(Fixed(name=name, category=category, amount=amount,
+                                            day=day, note=note.strip(),
+                                            start=start[:7], end=end[:7]))
+        self._fixed_touched(f"고정 {'수입' if f.is_income else '지출'} 추가: {f.label} {won(f.amount)}")
+        return ""
+
+    @Slot(str, str, str, float, int, str, str, str, result=str)
+    @Slot(str, str, str, float, int, str, str, result=str)
+    @Slot(str, str, str, float, int, str, result=str)
+    @Slot(str, str, str, float, int, result=str)
+    def updateFixed(self, rid: str, name: str, category: str, amount: float, day: int,
+                    note: str = "", start: str = "", end: str = "") -> str:
+        """규칙 내용을 바꾼다 (이미 적어 둔 내역은 그대로 둔다)."""
+        why = self._check_fixed(category, amount, start, end)
+        if why:
+            self.failed.emit(why)
+            return why
+        ok = self._ws.ledger.update_fixed(rid, Fixed(name=name, category=category,
+                                                     amount=amount, day=day,
+                                                     note=note.strip(),
+                                                     start=start[:7], end=end[:7]))
+        if not ok:
+            return "없는 규칙입니다."
+        self._fixed_touched("고정 항목 수정")
+        return ""
+
+    def _check_fixed(self, category: str, amount: float, start: str, end: str) -> str:
+        if not category:
+            return "분류를 골라 주세요."
+        if not amount or float(amount) <= 0:
+            return "금액을 넣어 주세요."
+        s, e = (start or "")[:7], (end or "")[:7]
+        for v in (s, e):
+            if v and (len(v) != 7 or not v[:4].isdigit() or not v[5:7].isdigit()):
+                return "달은 2026-03 처럼 적어 주세요."
+        if s and e and s > e:
+            return "끝나는 달이 시작하는 달보다 앞설 수 없습니다."
+        return ""
+
+    @Slot(str, result=bool)
+    def toggleFixed(self, rid: str) -> bool:
+        """쉬게 하거나 다시 돌린다. 다시 돌리면 밀린 달도 그때 적는다."""
+        f = self._ws.ledger.fixed_of(rid)
+        if f is None:
+            return False
+        self._ws.ledger.set_fixed_active(rid, not f.active)
+        self._fixed_touched(f"{f.label} 고정 항목을 " + ("다시 돌립니다." if f.active else "쉬게 했습니다."))
+        return True
+
+    @Slot(str, bool, result=int)
+    @Slot(str, result=int)
+    def removeFixed(self, rid: str, purge: bool = False) -> int:
+        """규칙을 지운다. purge 면 그 규칙이 적어 둔 내역까지 지운다. 지운 내역 수."""
+        f = self._ws.ledger.fixed_of(rid)
+        if f is None:
+            return -1
+        label = f.label
+        gone = self._ws.ledger.remove_fixed(rid, purge)
+        self.fixedChanged.emit()
+        self._ledger_touched()
+        self._set_status(f"고정 항목 삭제: {label}" + (f" · 내역 {gone}건도 지움" if gone else ""))
+        return gone
+
+    @Slot(str, result=int)
+    def fixedEntryCount(self, rid: str) -> int:
+        return len(self._ws.ledger.fixed_entries(rid))
+
+    @Slot(int, result=str)
+    def fixedFromEntry(self, row: int) -> str:
+        """적어 둔 내역 하나를 고정 항목으로 올린다 (그 달은 이미 적혀 있으니 다음 달부터)."""
+        if not (0 <= row < len(self._ws.ledger.entries)):
+            return "없는 내역입니다."
+        e = self._ws.ledger.entries[row]
+        if e.rule:
+            why = "이미 고정 항목이 적어 준 내역입니다."
+            self.failed.emit(why)
+            return why
+        f = self._ws.ledger.add_fixed(Fixed(name=e.name, category=e.category, amount=e.amount,
+                                            day=e.day.day, kind=e.kind, note=e.note,
+                                            start=shift_month(e.ym, 1)))
+        self._fixed_touched(f"고정 항목 등록: {f.label} {won(f.amount)} (매달 {f.day}일)")
+        return ""
+
+    @Slot(result=int)
+    def applyFixedNow(self) -> int:
+        """밀린 고정 항목을 지금 적는다 (보통은 앱을 열 때 저절로 적힌다)."""
+        n = self._apply_fixed()
+        if n:
+            self._fixed_touched("")
+            self._set_status(f"고정 항목으로 내역 {n}건을 적었습니다.")
+        else:
+            self._set_status("밀린 고정 항목이 없습니다.")
+        return n
+
     # ---- 계획 대비 실적 ----
     def _period_months(self, period: str) -> list[str]:
         """'2026-03' → ['2026-03'], '2026' → 1~12월."""
@@ -1889,9 +2045,11 @@ class Backend(QObject):
     @Slot(int, str, str, float)
     def updateEntry(self, row: int, date_str: str, category: str, amount: float,
                     name: str = "", note: str = "") -> None:
+        old = self._ws.ledger.entries[row] if 0 <= row < len(self._ws.ledger.entries) else None
         if self._ws.ledger.update(row, Entry(date_str, category, amount, name.strip(),
                                             kind=self._ws.ledger.kind_of(category),
-                                            note=note.strip())):
+                                            note=note.strip(),
+                                            rule=old.rule if old else "")):
             self._ledger_touched()
             self._set_status("가계부 수정")
 

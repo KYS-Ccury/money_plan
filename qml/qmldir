@@ -12,3 +12,4 @@ PieChart 1.0 PieChart.qml
 EntryDialog 1.0 EntryDialog.qml
 LedgerView 1.0 LedgerView.qml
 BudgetDialog 1.0 BudgetDialog.qml
+FixedDialog 1.0 FixedDialog.qml

@@ -67,6 +67,7 @@ class Entry:
     name: str = ""                 # 쓴 곳 / 받은 곳
     kind: str = ""                 # "income" | "cost". 비우면 분류로 자동 판정
     note: str = ""
+    rule: str = ""                 # 고정 지출·수입 규칙이 만든 줄이면 그 규칙 번호
 
     def __post_init__(self) -> None:
         if self.kind not in (INCOME, COST):
@@ -103,7 +104,7 @@ class Entry:
 
     def to_dict(self) -> dict:
         return {"date": self.date, "category": self.category, "amount": self.amount,
-                "name": self.name, "kind": self.kind, "note": self.note}
+                "name": self.name, "kind": self.kind, "note": self.note, "rule": self.rule}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Entry":
@@ -114,6 +115,102 @@ class Entry:
             name=str(d.get("name") or ""),
             kind=str(d.get("kind") or ""),
             note=str(d.get("note") or ""),
+            rule=str(d.get("rule") or ""),
+        )
+
+
+@dataclass
+class Fixed:
+    """고정 지출·수입 규칙. 달마다 같은 내역을 저절로 적어 준다.
+
+    규칙은 '앞으로도 계속 나갈 돈' 이고, 그것이 실제로 적힌 줄은 보통 Entry 다.
+    규칙이 만든 줄에는 rule 에 규칙 번호가 남고, 규칙은 이미 적어 준 달을 done 에
+    기억한다. 그래서 적힌 줄을 지워도 다시 살아나지 않는다 (지웠다는 뜻이므로).
+    """
+
+    rid: str = ""                  # 규칙 번호
+    name: str = ""                 # 내는 곳 (월세, 통신비 …)
+    category: str = "기타 지출"
+    amount: float = 0.0
+    day: int = 1                   # 매달 며칟날. 말일을 넘으면 그 달 말일로
+    kind: str = ""                 # 비우면 분류로 판정
+    note: str = ""
+    start: str = ""                # 'YYYY-MM' 부터 (비우면 만드는 달부터)
+    end: str = ""                  # 'YYYY-MM' 까지 (비우면 끝없이)
+    active: bool = True
+    done: list[str] = field(default_factory=list)   # 이미 적어 준 달
+
+    def __post_init__(self) -> None:
+        if self.kind not in (INCOME, COST):
+            self.kind = kind_of(self.category)
+        self.amount = max(0.0, float(self.amount))
+        self.day = max(1, min(31, int(self.day or 1)))
+        self.name = (self.name or "").strip()
+        self.start = (self.start or "")[:7]
+        self.end = (self.end or "")[:7]
+        self.done = sorted({str(x)[:7] for x in self.done if str(x)[:7]})
+
+    @property
+    def is_income(self) -> bool:
+        return self.kind == INCOME
+
+    @property
+    def signed(self) -> float:
+        return self.amount if self.is_income else -self.amount
+
+    @property
+    def label(self) -> str:
+        return self.name or self.category
+
+    def covers(self, ym: str) -> bool:
+        """그 달에 적을 규칙인가 (쉬는 중이면 아니다)."""
+        if not self.active or len(ym) != 7:
+            return False
+        if self.start and ym < self.start:
+            return False
+        if self.end and ym > self.end:
+            return False
+        return True
+
+    def months_upto(self, upto_ym: str) -> list[str]:
+        """start 부터 upto_ym 까지 (end 가 있으면 거기까지) 의 달 목록."""
+        if not self.active or len(upto_ym) != 7:
+            return []
+        first = self.start or upto_ym
+        last = min(self.end, upto_ym) if self.end else upto_ym
+        if first > last:
+            return []
+        out, ym = [], first
+        while ym <= last and len(out) < 600:          # 600달이면 50년, 그 이상은 막는다
+            out.append(ym)
+            ym = shift_month(ym, 1)
+        return out
+
+    def entry_for(self, ym: str) -> Entry:
+        """그 달에 적을 한 줄."""
+        return Entry(same_day_in(ym, self.day), self.category, self.amount,
+                     self.name, kind=self.kind, note=self.note, rule=self.rid)
+
+    def to_dict(self) -> dict:
+        return {"rid": self.rid, "name": self.name, "category": self.category,
+                "amount": self.amount, "day": self.day, "kind": self.kind,
+                "note": self.note, "start": self.start, "end": self.end,
+                "active": self.active, "done": list(self.done)}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Fixed":
+        return cls(
+            rid=str(d.get("rid") or ""),
+            name=str(d.get("name") or ""),
+            category=str(d.get("category") or "기타 지출"),
+            amount=float(d.get("amount", 0) or 0),
+            day=int(d.get("day", 1) or 1),
+            kind=str(d.get("kind") or ""),
+            note=str(d.get("note") or ""),
+            start=str(d.get("start") or ""),
+            end=str(d.get("end") or ""),
+            active=bool(d.get("active", True)),
+            done=list(d.get("done") or []),
         )
 
 
@@ -122,6 +219,7 @@ class Ledger:
     entries: list[Entry] = field(default_factory=list)
     budgets: dict[str, float] = field(default_factory=dict)   # 분류 → 한 달 예산(원)
     custom: dict[str, str] = field(default_factory=dict)      # 직접 만든 분류 → "income" | "cost"
+    fixed: list[Fixed] = field(default_factory=list)          # 고정 지출·수입 규칙
 
     # ---- 분류 (기본 + 직접 만든 것) ----
     def kind_of(self, category: str) -> str:
@@ -350,6 +448,100 @@ class Ledger:
             self.set_budget(c, round(v / months / 1000) * 1000)     # 천원 단위로
         return len(spent)
 
+    # ---- 고정 지출·수입 ----
+    def _rids_in_use(self) -> set[str]:
+        """규칙이 쓰는 번호 + 지워진 규칙이 적어 둔 내역에 남은 번호.
+
+        번호를 다시 쓰면 옛 규칙이 적어 둔 줄이 새 규칙의 것으로 둔갑한다.
+        """
+        return {f.rid for f in self.fixed} | {e.rule for e in self.entries if e.rule}
+
+    def _new_rid(self) -> str:
+        used = self._rids_in_use()
+        n = 1
+        while f"f{n}" in used:
+            n += 1
+        return f"f{n}"
+
+    def add_fixed(self, f: Fixed, today: date | None = None) -> Fixed:
+        """규칙을 하나 더한다. 번호가 없으면 붙이고, 시작 달이 없으면 이번 달로 둔다."""
+        if not f.rid or f.rid in self._rids_in_use():
+            f.rid = self._new_rid()
+        if not f.start:
+            f.start = month_key(today or date.today())
+        if f.kind not in (INCOME, COST):
+            f.kind = self.kind_of(f.category)
+        self.fixed.append(f)
+        return f
+
+    def fixed_of(self, rid: str) -> Fixed | None:
+        for f in self.fixed:
+            if f.rid == rid:
+                return f
+        return None
+
+    def update_fixed(self, rid: str, new: Fixed) -> bool:
+        """번호와 '이미 적어 준 달' 은 그대로 두고 내용만 바꾼다."""
+        old = self.fixed_of(rid)
+        if old is None:
+            return False
+        new.rid = rid
+        new.done = list(old.done)
+        if new.kind not in (INCOME, COST):
+            new.kind = self.kind_of(new.category)
+        self.fixed[self.fixed.index(old)] = new
+        return True
+
+    def set_fixed_active(self, rid: str, on: bool) -> bool:
+        f = self.fixed_of(rid)
+        if f is None:
+            return False
+        f.active = bool(on)
+        return True
+
+    def fixed_entries(self, rid: str) -> list[Entry]:
+        """그 규칙이 적어 둔 내역."""
+        return [e for e in self.entries if e.rule == rid]
+
+    def remove_fixed(self, rid: str, purge: bool = False) -> int:
+        """규칙을 지운다. purge 면 그 규칙이 적어 둔 내역까지 지우고, 지운 내역 수를 돌려준다."""
+        f = self.fixed_of(rid)
+        if f is None:
+            return -1
+        self.fixed.remove(f)
+        if not purge:
+            return 0
+        gone = self.fixed_entries(rid)
+        self.entries = [e for e in self.entries if e.rule != rid]
+        return len(gone)
+
+    def apply_fixed(self, upto_ym: str = "") -> list[Entry]:
+        """upto_ym 까지 아직 적지 않은 달을 모두 적는다 (앱을 열 때·규칙을 만들 때 부른다)."""
+        upto = upto_ym or month_key(date.today())
+        made = []
+        for f in self.fixed:
+            for ym in f.months_upto(upto):
+                if ym in f.done:
+                    continue                      # 이미 적었다 (지웠더라도 되살리지 않는다)
+                made.append(self.add(f.entry_for(ym)))
+                f.done.append(ym)
+            f.done.sort()
+        return made
+
+    def fixed_totals(self) -> dict:
+        """쉬지 않는 규칙의 한 달 합계 {income, cost, net, count}."""
+        income = cost = 0.0
+        count = 0
+        for f in self.fixed:
+            if not f.active:
+                continue
+            count += 1
+            if f.is_income:
+                income += f.amount
+            else:
+                cost += f.amount
+        return {"income": income, "cost": cost, "net": income - cost, "count": count}
+
     # ---- 반복 / 복사 ----
     def repeat(self, entry: Entry, months: int) -> list[Entry]:
         """같은 내역을 다음 달부터 months-1 번 더 넣는다 (entry 자신은 이미 들어있다고 본다)."""
@@ -380,7 +572,8 @@ class Ledger:
     def to_dict(self) -> dict:
         return {"entries": [e.to_dict() for e in self.entries],
                 "budgets": {k: v for k, v in self.budgets.items() if v > 0},
-                "custom": dict(self.custom)}
+                "custom": dict(self.custom),
+                "fixed": [f.to_dict() for f in self.fixed]}
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Ledger":
@@ -398,8 +591,9 @@ class Ledger:
             name = str(k).strip()
             if name and name not in LEDGER_CATEGORIES:
                 custom[name] = INCOME if str(v) == INCOME else COST
+        fixed = [Fixed.from_dict(x) for x in d.get("fixed") or [] if isinstance(x, dict)]
         return cls([Entry.from_dict(x) for x in d.get("entries", []) if isinstance(x, dict)],
-                   budgets, custom)
+                   budgets, custom, fixed)
 
 
 def sample_ledger(basis: date | None = None) -> Ledger:

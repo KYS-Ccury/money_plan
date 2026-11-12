@@ -300,3 +300,111 @@ def test_repeat_and_copy_keep_custom_kind():
     copied = lg.copy_month("2026-01", "2026-06")
     assert copied and all(c.is_income for c in copied)
     assert lg.summary("2026")["cost"] == 0
+
+
+# ───────────────────────── 고정 지출·수입
+
+def test_fixed_fills_missed_months_once():
+    """고정 항목은 밀린 달까지 한 번씩만 적는다."""
+    from capital_calc.ledger import Fixed, Ledger
+
+    lg = Ledger()
+    lg.add_fixed(Fixed(name="월세", category="주거/관리비", amount=600_000, day=5,
+                       start="2026-09"))
+    made = lg.apply_fixed("2026-11")
+    assert [e.date for e in made] == ["2026-09-05", "2026-10-05", "2026-11-05"]
+    assert all(e.rule == "f1" and e.kind == "cost" for e in made)
+
+    assert lg.apply_fixed("2026-11") == []          # 두 번 적지 않는다
+    assert lg.apply_fixed("2026-12")[0].date == "2026-12-05"
+
+
+def test_fixed_does_not_resurrect_deleted_entries():
+    """적힌 줄을 지우는 건 '그 달은 아니다' 라는 뜻이므로 되살리지 않는다."""
+    from capital_calc.ledger import Fixed, Ledger
+
+    lg = Ledger()
+    lg.add_fixed(Fixed(name="통신", category="통신", amount=88_000, day=12, start="2026-10"))
+    lg.apply_fixed("2026-11")
+    lg.remove(0)                                     # 10월치를 지운다
+    assert lg.apply_fixed("2026-11") == []
+    assert len(lg.entries) == 1
+
+
+def test_fixed_respects_end_month_and_pause():
+    from capital_calc.ledger import Fixed, Ledger
+
+    lg = Ledger()
+    f = lg.add_fixed(Fixed(name="적금", category="저축/투자", amount=300_000, day=25,
+                           start="2026-01", end="2026-03"))
+    assert [e.date for e in lg.apply_fixed("2026-12")] == [
+        "2026-01-25", "2026-02-25", "2026-03-25"]
+
+    g = lg.add_fixed(Fixed(name="급여", category="급여", amount=2_000_000, day=25,
+                           start="2026-01"))
+    assert g.is_income
+    lg.set_fixed_active(g.rid, False)
+    assert lg.apply_fixed("2026-03") == []           # 쉬는 중에는 적지 않는다
+    lg.set_fixed_active(g.rid, True)
+    assert len(lg.apply_fixed("2026-03")) == 3       # 다시 돌리면 밀린 달까지
+    assert f.rid != g.rid
+
+
+def test_fixed_end_of_month_is_clamped():
+    from capital_calc.ledger import Fixed, Ledger
+
+    lg = Ledger()
+    lg.add_fixed(Fixed(name="카드", category="기타 지출", amount=100_000, day=31,
+                       start="2026-01"))
+    dates = [e.date for e in lg.apply_fixed("2026-03")]
+    assert dates == ["2026-01-31", "2026-02-28", "2026-03-31"]
+
+
+def test_fixed_remove_can_keep_or_purge_entries():
+    from capital_calc.ledger import Fixed, Ledger
+
+    lg = Ledger()
+    lg.add_fixed(Fixed(name="월세", category="주거/관리비", amount=600_000, day=5,
+                       start="2026-09"))
+    lg.apply_fixed("2026-11")
+    assert lg.remove_fixed("f1") == 0                # 규칙만 지운다
+    assert len(lg.entries) == 3                      # 실제로 쓴 돈은 남는다
+
+    lg.add_fixed(Fixed(name="월세", category="주거/관리비", amount=600_000,
+                       day=5, start="2026-12"))
+    lg.apply_fixed("2026-12")
+    assert lg.fixed[0].rid != "f1"                   # 번호를 다시 쓰면 옛 내역이 딸려 간다
+    assert lg.remove_fixed(lg.fixed[0].rid, purge=True) == 1
+    assert len(lg.entries) == 3
+
+
+def test_fixed_survives_save():
+    from capital_calc.ledger import Fixed, Ledger
+
+    lg = Ledger()
+    lg.add_fixed(Fixed(name="월세", category="주거/관리비", amount=600_000, day=5,
+                       start="2026-09", end="2027-08", note="집주인"))
+    lg.apply_fixed("2026-10")
+    lg2 = Ledger.from_dict(lg.to_dict())
+    assert len(lg2.fixed) == 1
+    f = lg2.fixed[0]
+    assert (f.name, f.day, f.start, f.end, f.note) == ("월세", 5, "2026-09", "2027-08", "집주인")
+    assert f.done == ["2026-09", "2026-10"]
+    assert lg2.apply_fixed("2026-10") == []          # 저장 뒤에도 다시 적지 않는다
+    assert lg2.entries[0].rule == "f1"
+    assert lg2.fixed_totals()["cost"] == 600_000
+
+
+def test_fixed_update_keeps_what_was_already_written():
+    from capital_calc.ledger import Fixed, Ledger
+
+    lg = Ledger()
+    lg.add_fixed(Fixed(name="월세", category="주거/관리비", amount=600_000, day=5,
+                       start="2026-09"))
+    lg.apply_fixed("2026-10")
+    lg.update_fixed("f1", Fixed(name="월세", category="주거/관리비", amount=650_000,
+                                day=5, start="2026-09"))
+    assert lg.fixed[0].amount == 650_000
+    assert lg.apply_fixed("2026-10") == []           # 이미 적은 달은 그대로
+    assert lg.entries[0].amount == 600_000           # 지난 내역을 고치지 않는다
+    assert lg.apply_fixed("2026-11")[0].amount == 650_000

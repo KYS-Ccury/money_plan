@@ -10,6 +10,7 @@ RowLayout {
     // 기간이 바뀌어도 같은 달에 계속 적게 기본 날짜를 맞춰 준다
     function openAdd() { entryDialog.openForAdd(view.defaultDate()) }
     function openBudget() { budgetDialog.open() }
+    function openFixed() { fixedDialog.open() }
 
     function defaultDate() {
         if (backend.ledgerMonth > 0)
@@ -19,6 +20,7 @@ RowLayout {
 
     EntryDialog { id: entryDialog }
     BudgetDialog { id: budgetDialog }
+    FixedDialog { id: fixedDialog }
 
     // 계획 화면의 항목 삭제와 같게. 되돌릴 수 없으므로 한 번 묻는다.
     ConfirmDialog {
@@ -37,6 +39,12 @@ RowLayout {
             + (name !== "" ? "'" + name + "'" : category)
             + "  " + amountText + " 내역을 삭제할까요?"
         removeEntryDialog.open()
+    }
+
+    // ⟳ 를 눌렀을 때. 고정으로 올리고 바로 그 목록을 보여 준다.
+    function makeFixed(row) {
+        if (backend.fixedFromEntry(row) === "")
+            fixedDialog.open()
     }
 
     ConfirmDialog {
@@ -128,6 +136,13 @@ RowLayout {
                 id: actionRow
                 Layout.alignment: Qt.AlignRight
                 spacing: 8
+                Button {
+                    text: "고정"; flat: true; leftPadding: 10; rightPadding: 10
+                    Material.foreground: backend.fixedCount > 0 ? Theme.accent : Theme.textDim
+                    onClicked: fixedDialog.open()
+                    ToolTip.visible: hovered; ToolTip.delay: 500
+                    ToolTip.text: "월세·통신비처럼 달마다 똑같이 오가는 돈을 저절로 적습니다"
+                }
                 Button {
                     text: "예산"; flat: true; leftPadding: 10; rightPadding: 10
                     Material.foreground: backend.hasBudgets ? Theme.accent : Theme.textDim
@@ -305,6 +320,7 @@ RowLayout {
                     required property string kind
                     required property string note
                     required property int sourceRow
+                    required property string rule
 
                     width: ListView.view.width - 10
                     height: 44
@@ -337,6 +353,23 @@ RowLayout {
                             implicitHeight: 22
                             Text { id: catText; anchors.centerIn: parent; text: entryRow.category; color: Theme.text; font.pixelSize: 11 }
                         }
+                        // 고정 항목이 저절로 적어 준 줄
+                        Rectangle {
+                            visible: entryRow.rule !== ""
+                            radius: 10
+                            color: "transparent"
+                            border.color: Theme.accent
+                            implicitWidth: fixedTag.implicitWidth + 12
+                            implicitHeight: 20
+                            Text {
+                                id: fixedTag
+                                anchors.centerIn: parent
+                                text: "고정"; color: Theme.accent; font.pixelSize: 10
+                            }
+                            HoverHandler { id: tagHover }
+                            ToolTip.visible: tagHover.hovered
+                            ToolTip.text: "고정 항목이 저절로 적은 내역입니다"
+                        }
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 0
@@ -358,6 +391,14 @@ RowLayout {
                             font.pixelSize: 14; font.bold: true
                         }
                         ToolButton {
+                            text: "⟳"; implicitWidth: 28; implicitHeight: 28
+                            visible: entryRow.rule === ""
+                            Material.foreground: Theme.accent
+                            ToolTip.visible: hovered; ToolTip.delay: 700
+                            ToolTip.text: "이 내역을 고정 항목으로 올립니다 (다음 달부터 저절로)"
+                            onClicked: view.makeFixed(entryRow.sourceRow)
+                        }
+                        ToolButton {
                             text: "✕"; implicitWidth: 28; implicitHeight: 28
                             Material.foreground: Theme.red
                             ToolTip.visible: hovered; ToolTip.delay: 700
@@ -371,7 +412,7 @@ RowLayout {
             }
 
             Text {
-                text: "행 더블클릭: 수정  ·  ✕: 삭제"
+                text: "행 더블클릭: 수정  ·  ⟳: 고정 항목으로  ·  ✕: 삭제"
                 color: Theme.textDim; font.pixelSize: 11
             }
         }

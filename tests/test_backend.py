@@ -1171,3 +1171,63 @@ def test_move_in_group_reorders_within_category_only():
 
     # 번호는 언제나 자기 자리와 같다
     assert [m.data(m.index(r, 0), m.SourceRowRole) for r in range(m.rowCount())] == [0, 1, 2, 3]
+
+
+def test_fixed_entries_are_written_and_kept_on_edit():
+    """고정 항목을 만들면 밀린 달까지 적히고, 그 줄을 고쳐도 '고정' 표시가 남는다."""
+    from datetime import date
+
+    from capital_calc.ledger import Ledger, month_key
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    b = Backend(ws)
+    start = "2026-09"
+    assert b.addFixed("월세", "주거/관리비", 600_000, 5, "", start, "") == ""
+
+    rows = b.fixedRows
+    assert len(rows) == 1 and rows[0]["made"] > 0 and rows[0]["active"] is True
+    assert b.fixedTotals["cost"] == 600_000
+    # 이번 달까지 한 번씩
+    made = [e for e in ws.ledger.entries if e.rule == rows[0]["rid"]]
+    assert {e.ym for e in made} == set(_months_between(start, month_key(date.today())))
+
+    row = ws.ledger.entries.index(made[0])
+    b.updateEntry(row, made[0].date, "주거/관리비", 610_000, "월세", "")
+    assert ws.ledger.entries[row].rule == rows[0]["rid"]     # 표시가 사라지지 않는다
+
+    # 쉬게 하면 다음 달부터 적지 않는다
+    assert b.toggleFixed(rows[0]["rid"]) is True
+    assert b.fixedRows[0]["active"] is False
+    assert b.fixedTotals["count"] == 0
+
+
+def _months_between(a: str, b: str) -> list[str]:
+    from capital_calc.ledger import shift_month
+
+    out, ym = [], a
+    while ym <= b:
+        out.append(ym)
+        ym = shift_month(ym, 1)
+    return out
+
+
+def test_fixed_from_entry_starts_next_month():
+    """적어 둔 내역을 고정으로 올리면 그 달은 그대로 두고 다음 달부터 적는다."""
+    from capital_calc.ledger import Entry, Ledger, month_key, shift_month
+    from capital_calc.model import Workspace
+    from datetime import date
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    last = shift_month(month_key(date.today()), -1)
+    ws.ledger.add(Entry(f"{last}-12", "통신", 88_000, "휴대폰"))
+    b = Backend(ws)
+
+    assert b.fixedFromEntry(0) == ""
+    rid = b.fixedRows[0]["rid"]
+    assert b.fixedRows[0]["day"] == 12
+    made = [e for e in ws.ledger.entries if e.rule == rid]
+    assert [e.ym for e in made] == [month_key(date.today())]     # 이번 달치만 새로 생겼다
+    assert b.fixedFromEntry(ws.ledger.entries.index(made[0])) != ""   # 고정이 적은 줄은 거절

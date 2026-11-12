@@ -212,3 +212,56 @@ def test_entry_dialog_can_make_a_category():
     # 쓰고 있는 분류는 못 지운다
     assert backend.removeLedgerCategory("부모님 용돈") != ""
     assert "부모님 용돈" in ws.ledger.income_categories()
+
+
+def test_fixed_dialog_creates_a_rule():
+    """고정 팝업의 칸을 채우고 '추가' 를 누르면 규칙이 생기고 내역이 적힌다."""
+    from datetime import date
+
+    from capital_calc.ledger import Ledger, month_key
+    from capital_calc.model import Workspace
+
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    backend = Backend(ws)
+    engine = QQmlApplicationEngine()
+    engine.addImportPath(str(ROOT))
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+    assert engine.rootObjects(), "QML 로드 실패"
+    win = engine.rootObjects()[0]
+    win.setProperty("mode", "ledger")
+    app.processEvents()
+
+    dlg = win.findChild(QObject, "fixedDialog")
+    assert dlg is not None
+    QMetaObject.invokeMethod(dlg, "openNew")
+    app.processEvents()
+    assert dlg.property("formOpen") is True
+
+    this_month = month_key(date.today())
+    dlg.findChild(QObject, "fixedName").setProperty("text", "월세")
+    dlg.findChild(QObject, "fixedAmount").setProperty("text", "600000")
+    dlg.findChild(QObject, "fixedDay").setProperty("value", 5)
+    dlg.findChild(QObject, "fixedStart").setProperty("text", this_month)
+    QMetaObject.invokeMethod(dlg, "save")
+    app.processEvents()
+
+    assert backend.fixedCount == 1
+    row = backend.fixedRows[0]
+    assert (row["name"], row["amount"], row["day"]) == ("월세", 600_000, 5)
+    assert dlg.property("formOpen") is False               # 저장하면 칸이 닫힌다
+    # 이번 달치가 바로 적혔고, 그 줄에 규칙 번호가 남는다
+    assert [e.ym for e in ws.ledger.entries] == [this_month]
+    assert ws.ledger.entries[0].rule == row["rid"]
+
+    # 금액이 비면 거절하고 칸은 열린 채로 둔다
+    QMetaObject.invokeMethod(dlg, "openNew")
+    app.processEvents()
+    dlg.findChild(QObject, "fixedAmount").setProperty("text", "")
+    QMetaObject.invokeMethod(dlg, "save")
+    app.processEvents()
+    assert backend.fixedCount == 1
+    assert dlg.property("formOpen") is True
