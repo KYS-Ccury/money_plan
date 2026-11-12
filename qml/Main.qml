@@ -386,7 +386,7 @@ ApplicationWindow {
                         }
                         Text {
                             visible: backend.groupByCategory
-                            text: "헤더를 누르면 접기/펼치기  ·  묶기 중엔 순서 변경 비활성"
+                            text: "헤더를 누르면 접기/펼치기  ·  ▲▼ 는 같은 분류 안에서 옮깁니다"
                             color: Theme.textDim; font.pixelSize: 11
                         }
                         Item { Layout.fillWidth: true }
@@ -532,6 +532,8 @@ ApplicationWindow {
                             required property real support
                             required property bool locked
                             required property int sourceRow
+                            required property int groupPos      // 같은 분류 안에서 몇 번째
+                            required property int groupCount    // 같은 분류가 몇 개
 
                             // 접힌 분류의 줄은 목록에서 빼지 않고 높이만 0 으로 접는다
                             // (빼 버리면 그 분류의 섹션 헤더까지 사라져 다시 펼 수가 없다)
@@ -653,8 +655,31 @@ ApplicationWindow {
                                         ToolTip.visible: hovered; ToolTip.delay: 500
                                         ToolTip.text: "이 항목을 가계부에 기록 (이름이 겹치면 넣지 않습니다)"
                                     }
-                                    ToolButton { text: "▲"; font.pixelSize: 11; implicitWidth: 32; enabled: !backend.groupByCategory && rowItem.index > 0; onClicked: backend.moveItem(backend.sourceRowAt(rowItem.index), -1) }
-                                    ToolButton { text: "▼"; font.pixelSize: 11; implicitWidth: 32; enabled: !backend.groupByCategory && rowItem.index < backend.itemCount - 1; onClicked: backend.moveItem(backend.sourceRowAt(rowItem.index), 1) }
+                                    // 묶어 보면 보이는 차례와 원본 차례가 달라서, 같은 분류 안에서만 옮긴다
+                                    ToolButton {
+                                        text: "▲"; font.pixelSize: 11; implicitWidth: 32
+                                        enabled: backend.groupByCategory ? rowItem.groupPos > 0
+                                                                         : rowItem.index > 0
+                                        ToolTip.visible: hovered; ToolTip.delay: 700
+                                        ToolTip.text: backend.groupByCategory ? "같은 분류 안에서 위로" : "위로"
+                                        onClicked: {
+                                            var r = backend.sourceRowAt(rowItem.index)
+                                            if (backend.groupByCategory) backend.moveInGroup(r, -1)
+                                            else backend.moveItem(r, -1)
+                                        }
+                                    }
+                                    ToolButton {
+                                        text: "▼"; font.pixelSize: 11; implicitWidth: 32
+                                        enabled: backend.groupByCategory ? rowItem.groupPos < rowItem.groupCount - 1
+                                                                         : rowItem.index < backend.itemCount - 1
+                                        ToolTip.visible: hovered; ToolTip.delay: 700
+                                        ToolTip.text: backend.groupByCategory ? "같은 분류 안에서 아래로" : "아래로"
+                                        onClicked: {
+                                            var r = backend.sourceRowAt(rowItem.index)
+                                            if (backend.groupByCategory) backend.moveInGroup(r, 1)
+                                            else backend.moveItem(r, 1)
+                                        }
+                                    }
                                     ToolButton {
                                         text: "✕"; font.pixelSize: 12; implicitWidth: 32
                                         Material.foreground: Theme.red

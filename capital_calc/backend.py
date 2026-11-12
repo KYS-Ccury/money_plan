@@ -59,6 +59,8 @@ class ItemListModel(QAbstractListModel):
     GrowthRole = Qt.ItemDataRole.UserRole + 21      # 연 상승률 %
     SupportRole = Qt.ItemDataRole.UserRole + 22     # 적금 월 지원금
     LockedRole = Qt.ItemDataRole.UserRole + 23      # 만기 전까지 묶인 돈인가
+    GroupPosRole = Qt.ItemDataRole.UserRole + 24    # 같은 분류 안에서 몇 번째인가 (묶어 보기 ▲▼ 용)
+    GroupCountRole = Qt.ItemDataRole.UserRole + 25  # 같은 분류 항목이 몇 개인가
 
     _ROLES = {
         NameRole: b"name",
@@ -84,6 +86,8 @@ class ItemListModel(QAbstractListModel):
         GrowthRole: b"growth",
         SupportRole: b"support",
         LockedRole: b"locked",
+        GroupPosRole: b"groupPos",
+        GroupCountRole: b"groupCount",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -127,6 +131,11 @@ class ItemListModel(QAbstractListModel):
             return [dict(r) for r in it.repayments]
         if role == self.MonthlyRepayRateRole:
             return it.monthly_repay_rate
+        if role in (self.GroupPosRole, self.GroupCountRole):
+            same = [k for k, x in enumerate(self._plan.items) if x.category == it.category]
+            if role == self.GroupCountRole:
+                return len(same)
+            return same.index(index.row())
         if role == self.SourceRowRole:
             return index.row()
         if role == self.RepayMethodRole:
@@ -234,8 +243,10 @@ class ItemListModel(QAbstractListModel):
         알리지 않으면 QML 델리게이트가 예전 번호를 들고 있다가 엉뚱한 항목을 지운다.
         """
         n = len(self._plan.items)
-        if 0 <= start < n:
-            self.dataChanged.emit(self.index(start), self.index(n - 1), [self.SourceRowRole])
+        if n:
+            # 묶음 안 위치·개수는 start 앞쪽 항목도 달라질 수 있으므로 전부 알린다
+            self.dataChanged.emit(self.index(0), self.index(n - 1),
+                                  [self.SourceRowRole, self.GroupPosRole, self.GroupCountRole])
 
     def refresh_all(self) -> None:
         """기준일이 바뀌면 표시 문자열이 전부 달라지므로 전체 갱신."""
@@ -281,6 +292,28 @@ class ItemListModel(QAbstractListModel):
         self._plan.move(row, delta)
         self.endMoveRows()
         self._renumbered_from(min(row, dst))
+        return True
+
+    def swap(self, a: int, b: int) -> bool:
+        """떨어져 있는 두 줄의 자리를 맞바꾼다 (묶어 보기에서 같은 분류끼리 옮길 때).
+
+        move() 는 이웃끼리만 바꾸므로, 사이에 다른 분류가 끼어 있으면 쓸 수 없다.
+        beginMoveRows 를 두 번 써서 다른 줄은 그대로 두고 둘만 바꾼다.
+        """
+        n = len(self._plan.items)
+        if a == b or not (0 <= a < n and 0 <= b < n):
+            return False
+        lo, hi = (a, b) if a < b else (b, a)
+        items = self._plan.items
+        if not self.beginMoveRows(QModelIndex(), hi, hi, QModelIndex(), lo):
+            return False
+        items.insert(lo, items.pop(hi))
+        self.endMoveRows()
+        # 방금 밀려난 '원래 lo' 가 지금 lo+1 에 있다. 그걸 hi 자리로 보낸다.
+        if self.beginMoveRows(QModelIndex(), lo + 1, lo + 1, QModelIndex(), hi + 1):
+            items.insert(hi, items.pop(lo + 1))
+            self.endMoveRows()
+        self._renumbered_from(lo)
         return True
 
     def clear(self) -> None:
@@ -1249,6 +1282,23 @@ class Backend(QObject):
     @Slot(int, int)
     def moveItem(self, row: int, delta: int) -> None:
         self._items.move(row, delta)
+
+    @Slot(int, int, result=bool)
+    def moveInGroup(self, row: int, delta: int) -> bool:
+        """묶어 보기에서 ▲▼. 같은 분류 안의 위/아래 항목과 자리를 바꾼다.
+
+        묶어 보면 보이는 차례와 원본 차례가 달라서, 이웃끼리 바꾸면 엉뚱한 데로 간다.
+        같은 분류 항목만 찾아 그것과 맞바꾼다.
+        """
+        items = self._plan.items
+        if not (0 <= row < len(items)):
+            return False
+        same = [k for k, x in enumerate(items) if x.category == items[row].category]
+        at = same.index(row)
+        to = at + (1 if delta > 0 else -1)
+        if not (0 <= to < len(same)):
+            return False
+        return self._items.swap(row, same[to])
 
     @Slot()
     def clearItems(self) -> None:

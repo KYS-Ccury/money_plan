@@ -683,21 +683,29 @@ def test_source_row_renumbering_is_announced():
     hits = []
     m.dataChanged.connect(lambda tl, br, roles: hits.append((tl.row(), br.row(), [int(r) for r in roles])))
 
-    n = m.rowCount()
+    # 번호(sourceRow)와 묶음 안 위치(groupPos/groupCount)가 함께 달라진다.
+    # 묶음 안 위치는 지운 자리보다 앞쪽 항목도 달라질 수 있어 전체를 알린다.
+    want = [int(m.SourceRowRole), int(m.GroupPosRole), int(m.GroupCountRole)]
     m.remove(2)
-    assert hits == [(2, n - 2, [int(m.SourceRowRole)])]      # 2번부터 끝까지 번호가 밀렸다
+    assert hits == [(0, m.rowCount() - 1, want)]
 
     hits.clear()
     m.move(1, 1)
-    assert hits == [(1, m.rowCount() - 1, [int(m.SourceRowRole)])]
+    assert hits == [(0, m.rowCount() - 1, want)]
 
-    # 마지막 줄을 지우면 밀릴 행이 없다
     hits.clear()
     m.remove(m.rowCount() - 1)
-    assert hits == []
+    assert hits == [(0, m.rowCount() - 1, want)]
 
     # 어떤 경우에도 번호는 자기 자리와 같다
     assert [m.data(m.index(r, 0), m.SourceRowRole) for r in range(m.rowCount())] == list(range(m.rowCount()))
+
+    # 다 지우면 알릴 줄이 없다
+    while m.rowCount():
+        m.remove(m.rowCount() - 1)
+    hits.clear()
+    m.remove(0)
+    assert hits == []
 
 
 def test_source_row_at_maps_visible_to_real():
@@ -1122,3 +1130,44 @@ def test_capital_at_end_makes_the_summary_add_up():
     p2.add(Item("현금", Category.CASH, 1_000_000))
     assert Backend(p2).capitalGrowth == 0
 
+
+
+def test_move_in_group_reorders_within_category_only():
+    """묶어 보기에서 ▲▼. 보이는 차례와 원본 차례가 다르므로 같은 분류끼리만 맞바꾼다."""
+    p = Plan(months=12)
+    p.add(Item("현금A", Category.CASH, 1))
+    p.add(Item("월세", Category.RENT, 2))
+    p.add(Item("현금B", Category.CASH, 3))
+    p.add(Item("현금C", Category.CASH, 4))
+    b = Backend(p)
+
+    names = lambda: [x.name for x in p.items]
+    assert names() == ["현금A", "월세", "현금B", "현금C"]
+
+    # 현금B(2번)를 위로 → 사이에 '월세' 가 끼어 있어도 현금A 와 자리를 바꾼다
+    assert b.moveInGroup(2, -1) is True
+    assert names() == ["현금B", "월세", "현금A", "현금C"], "월세가 끌려 다니면 안 된다"
+
+    # 현금B 를 또 위로 → 그 분류의 맨 위라 더 못 간다
+    assert b.moveInGroup(0, -1) is False
+    assert names() == ["현금B", "월세", "현금A", "현금C"]
+
+    # 아래로
+    assert b.moveInGroup(0, 1) is True
+    assert names() == ["현금A", "월세", "현금B", "현금C"]
+
+    # 혼자뿐인 분류는 어느 쪽으로도 못 간다
+    assert b.moveInGroup(1, -1) is False and b.moveInGroup(1, 1) is False
+
+    # 맨 아래 현금C 는 더 못 내려간다
+    assert b.moveInGroup(3, 1) is False
+
+    # 묶음 안 위치·개수가 자리와 맞는다
+    m = b.items
+    pos = [m.data(m.index(r, 0), m.GroupPosRole) for r in range(m.rowCount())]
+    cnt = [m.data(m.index(r, 0), m.GroupCountRole) for r in range(m.rowCount())]
+    assert pos == [0, 0, 1, 2]
+    assert cnt == [3, 1, 3, 3]
+
+    # 번호는 언제나 자기 자리와 같다
+    assert [m.data(m.index(r, 0), m.SourceRowRole) for r in range(m.rowCount())] == [0, 1, 2, 3]
