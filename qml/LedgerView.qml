@@ -40,8 +40,18 @@ RowLayout {
             anchors.fill: parent
             spacing: 10
 
-            // 연도 + 월 고르기
+            // 연도 + 월 고르기.
+            // 한 줄에 다 넣으면 창이 좁을 때 카드가 오른쪽 집계 밑으로 밀려 들어가
+            // 내역의 금액이 가려졌다. 좁으면 단추 묶음을 아랫줄로 내린다.
+            GridLayout {
+                id: headerGrid
+                Layout.fillWidth: true
+                columnSpacing: 8
+                rowSpacing: 8
+                columns: width < periodRow.implicitWidth + actionRow.implicitWidth + columnSpacing ? 1 : 2
+
             RowLayout {
+                id: periodRow
                 Layout.fillWidth: true
                 spacing: 8
 
@@ -61,6 +71,9 @@ RowLayout {
                     }
                 }
 
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 8
                 Repeater {
                     model: 13                                   // 0 = 그 해 전체, 1~12 = 월
                     delegate: Rectangle {
@@ -89,7 +102,13 @@ RowLayout {
                     }
                 }
 
-                Item { Layout.fillWidth: true }
+                }
+            }
+
+            RowLayout {
+                id: actionRow
+                Layout.alignment: Qt.AlignRight
+                spacing: 8
                 Button {
                     text: "예산"; flat: true; leftPadding: 10; rightPadding: 10
                     Material.foreground: backend.hasBudgets ? Theme.accent : Theme.textDim
@@ -119,6 +138,7 @@ RowLayout {
                     enabled: backend.ledgerYears.length > 0
                     onClicked: clearLedgerDialog.open()
                 }
+            }
             }
 
             // 검색 · 수입/지출 · 분류 거르기

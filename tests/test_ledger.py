@@ -203,3 +203,37 @@ def test_has_name():
     assert not lg.has_name("2026-02", "월세")        # 다른 달이면 겹치는 게 아니다
     assert not lg.has_name("2026-01", "관리비")
     assert not lg.has_name("2026-02", "")            # 이름 없는 것끼리는 안 따진다
+
+
+def test_aggregates_add_up_across_views():
+    """같은 돈을 여러 화면에서 보여 주므로, 어느 쪽으로 더해도 같아야 한다."""
+    from datetime import date
+    from capital_calc.ledger import sample_ledger, INCOME, COST
+
+    lg = sample_ledger(date(2026, 11, 11))
+    for period in ("", "2026", "2026-11", "2026-10"):
+        s = lg.summary(period)
+        # 분류별 카드의 합 = 집계 카드의 합
+        assert abs(sum(v for _, v in lg.by_category(period, COST)) - s["cost"]) < 0.5
+        assert abs(sum(v for _, v in lg.by_category(period, INCOME)) - s["income"]) < 0.5
+        assert abs(s["net"] - (s["income"] - s["cost"])) < 0.5
+
+    # 월별 표 12줄의 합 = 그 해 집계
+    ym = lg.year_months("2026")
+    assert len(ym) == 12
+    assert abs(sum(r["income"] for r in ym) - lg.summary("2026")["income"]) < 0.5
+    assert abs(sum(r["cost"] for r in ym) - lg.summary("2026")["cost"]) < 0.5
+
+    # 연도별 카드의 합 = 전체
+    assert abs(sum(r["net"] for r in lg.totals_by_year()) - lg.summary("")["net"]) < 0.5
+
+    # 예산: 합계 줄 = 한도를 정한 분류만 더한 값, 연 단위는 그 12배
+    rows = lg.budget_rows("2026-11")
+    tot = lg.budget_totals("2026-11")
+    assert abs(tot["limit"] - sum(v for v in lg.budgets.values() if v > 0)) < 0.5
+    assert abs(tot["spent"] - sum(r["spent"] for r in rows if r["limit"] > 0)) < 0.5
+    for r in rows:
+        assert abs(r["left"] - (r["limit"] - r["spent"])) < 0.5
+        assert r["over"] == (r["limit"] > 0 and r["spent"] > r["limit"])
+    assert abs(lg.budget_totals("2026")["limit"] - tot["limit"] * 12) < 0.5
+
