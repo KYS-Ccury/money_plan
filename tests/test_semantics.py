@@ -153,3 +153,79 @@ def test_trend_series_matches_point_values():
     series = p.net_series(36)
     for m in range(37):
         assert near(series[m], p.net_at(m)), f"{m}개월"
+
+
+# ───────────────────────── 금융 공식과 맞는가
+
+LOAN_A, LOAN_RATE, LOAN_N = 120_000_000, 4.8, 24
+LOAN_I = LOAN_RATE / 100 / 12
+
+
+def loan(method: str):
+    p = Plan(months=40, start_date=BASIS)
+    it = p.add(Item("대출", Category.LOAN, LOAN_A, rate=LOAN_RATE, include_principal=True,
+                    repay_method=method, start_date=BASIS, end_date="2028-11-02"))
+    return p, it
+
+
+def test_equal_payment_matches_annuity_formula():
+    """원리금 균등: 매달 같은 돈을 내고, 잔액은 연금 공식대로 줄어야 한다."""
+    p, it = loan("equal_payment")
+    f = (1 + LOAN_I) ** LOAN_N
+    pay = LOAN_A * LOAN_I * f / (f - 1)
+    assert abs(it.level_payment(p.basis) - pay) < 0.01
+
+    bal = LOAN_A
+    for k in range(LOAN_N):
+        assert near(it.remaining_at(k, p.basis), bal), f"{k}개월 잔액"
+        interest = bal * LOAN_I
+        assert near(it.interest_at(k, p.basis), interest)
+        assert near(it.regular_repay_at(k, p.basis), pay - interest)
+        assert near(it.payment_at(k, p.basis), pay)        # 매달 같은 금액
+        bal -= pay - interest
+    assert near(it.remaining_at(LOAN_N, p.basis), 0.0)
+    assert near(it.total_interest(p.basis), pay * LOAN_N - LOAN_A)
+
+
+def test_equal_principal_matches_schedule():
+    """원금 균등: 원금은 매달 똑같이, 이자는 줄어드는 잔액에 붙는다."""
+    p, it = loan("equal_principal")
+    per = LOAN_A / LOAN_N
+    bal = LOAN_A
+    for k in range(LOAN_N):
+        assert near(it.remaining_at(k, p.basis), bal), f"{k}개월 잔액"
+        assert near(it.regular_repay_at(k, p.basis), per)
+        assert near(it.interest_at(k, p.basis), bal * LOAN_I)
+        assert near(it.payment_at(k, p.basis), per + bal * LOAN_I)
+        bal -= per
+    assert near(it.remaining_at(LOAN_N, p.basis), 0.0)
+    # 총 이자 = A·i·(N+1)/2
+    assert near(it.total_interest(p.basis), LOAN_A * LOAN_I * (LOAN_N + 1) / 2)
+
+
+def test_bullet_loan_keeps_principal_until_maturity():
+    p, it = loan("bullet")
+    for k in range(LOAN_N):
+        assert near(it.remaining_at(k, p.basis), LOAN_A)
+        assert near(it.interest_at(k, p.basis), LOAN_A * LOAN_I)
+    assert near(it.total_interest(p.basis), LOAN_A * LOAN_I * LOAN_N)
+
+
+def test_saving_interest_is_simple_interest_per_deposit():
+    """적금 이자는 납입분마다 묶여 있던 개월 수에 붙는 단리다 (은행 적금과 같은 방식).
+
+    세금(이자소득세)은 떼지 않는다 — 세후로 보려면 연이율을 낮춰 넣어야 한다.
+    """
+    S, rate, n = 500_000, 6.0, 24
+    i = rate / 100 / 12
+    p = Plan(months=40, start_date=BASIS)
+    sv = p.add(Item("적금", Category.SAVING, S, rate=rate,
+                    start_date=BASIS, end_date="2028-11-02"))
+    for m in range(n + 1):
+        want = S * m + sum(S * i * (m - j) for j in range(m))
+        assert near(sv.saving_balance_at(m, p.basis), want), f"{m}개월"
+    # 만기 이자 = S·i·n(n+1)/2
+    assert near(sv.saving_balance_at(n, p.basis) - S * n, S * i * n * (n + 1) / 2)
+    # 만기 뒤엔 납입도 이자도 멈춘다
+    assert near(sv.saving_balance_at(n + 5, p.basis), sv.saving_balance_at(n, p.basis))
+
