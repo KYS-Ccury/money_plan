@@ -294,3 +294,24 @@ def test_overview_page_loads_with_every_chart():
     backend.setProperty("months", backend.months + 6)
     app.processEvents()
     assert len(trend.property("values")) == len(before) + 6
+
+
+def test_undo_button_follows_the_stack():
+    """되돌리기 단추는 되돌릴 게 있을 때만 켜지고, 다시 실행 단추는 그때만 보인다."""
+    app, engine, backend, win = _load()
+    undo = win.findChild(QObject, "undoButton")
+    redo = win.findChild(QObject, "redoButton")
+    assert undo is not None and redo is not None
+    app.processEvents()
+    assert undo.property("enabled") is False
+    assert redo.property("visible") is False
+
+    backend.addEntry("2026-11-11", "식비", 12_000, "점심", "")
+    app.processEvents()
+    assert undo.property("enabled") is True
+    assert backend.undoLabel == "가계부 내역 추가"
+
+    backend.undo()
+    app.processEvents()
+    assert undo.property("enabled") is False
+    assert redo.property("visible") is True

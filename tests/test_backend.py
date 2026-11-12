@@ -1282,3 +1282,96 @@ def test_overview_is_empty_but_well_formed_without_a_ledger():
     assert len(b.overviewMonths) == 12 and all(m["count"] == 0 for m in b.overviewMonths)
     assert b.overviewByCategory("cost") == [] and b.overviewBudgets == []
     assert b.overviewThisMonth["vsPlan"]["has"] is False
+
+
+# ───────────────────────── 되돌리기
+
+def _fresh_backend():
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Category, Item, Workspace
+
+    plan = Plan(months=12, target=10_000_000)
+    plan.add(Item("현금", Category.CASH, 5_000_000))
+    ws = Workspace(plans=[plan])
+    ws.ledger = Ledger()
+    return Backend(ws)
+
+
+def test_undo_and_redo_restore_items():
+    b = _fresh_backend()
+    assert b.canUndo is False and b.undoLabel == ""
+
+    b.addItem("급여", 4, 2_000_000, 0, True)           # 4 = 월 수입
+    assert b.itemCount == 2 and b.canUndo and b.undoLabel == "항목 추가"
+
+    b.removeItem(1)
+    assert b.itemCount == 1 and b.undoLabel == "항목 삭제"
+
+    assert b.undo() is True
+    assert b.itemCount == 2 and b.canRedo and b.redoLabel == "항목 삭제"
+    assert b.undo() is True
+    assert b.itemCount == 1 and b.canUndo is False       # 처음 상태로
+
+    assert b.undo() is False                              # 더 되돌릴 것이 없다
+    assert b.redo() is True and b.itemCount == 2
+    assert b.redo() is True and b.itemCount == 1
+
+
+def test_undo_covers_the_ledger_too():
+    b = _fresh_backend()
+    b.addEntry("2026-11-11", "식비", 12_000, "점심", "")
+    b.addEntry("2026-11-12", "식비", 9_000, "커피", "")
+    assert len(b._ws.ledger.entries) == 2
+
+    b.removeEntry(0)
+    assert len(b._ws.ledger.entries) == 1
+    assert b.undo() and len(b._ws.ledger.entries) == 2
+    assert b._ws.ledger.entries[0].name == "점심"         # 지웠던 그 줄이 그대로
+
+    b.clearLedger()
+    assert b._ws.ledger.entries == []
+    assert b.undo() and len(b._ws.ledger.entries) == 2
+
+
+def test_undo_ignores_actions_that_changed_nothing():
+    """거절당한 동작으로 더미가 더러워지면 Ctrl+Z 가 헛돈다."""
+    b = _fresh_backend()
+    b.addEntry("2026-11-11", "식비", 12_000, "점심", "")
+    assert b.undoLabel == "가계부 내역 추가"
+
+    assert b.toLedger(0) is False                         # 현금은 기록할 수 없다
+    assert b.addFixed("", "", 0, 1) != ""                 # 분류·금액이 없다
+    assert b.removeScenario(0) is None and b.scenarioCount == 1   # 마지막 하나는 못 지운다
+    assert b.undoLabel == "가계부 내역 추가"               # 그대로다
+
+    assert b.undo() and b._ws.ledger.entries == []
+
+
+def test_undo_forgets_redo_after_a_new_action():
+    b = _fresh_backend()
+    b.addEntry("2026-11-11", "식비", 12_000, "점심", "")
+    b.undo()
+    assert b.canRedo is True
+    b.addEntry("2026-11-12", "교통", 1_500, "버스", "")
+    assert b.canRedo is False                             # 갈래가 생기지 않게
+
+
+def test_undo_keeps_only_the_recent_steps():
+    b = _fresh_backend()
+    for i in range(Backend.UNDO_LIMIT + 5):
+        b.addEntry("2026-11-11", "식비", 1_000 + i, f"{i}", "")
+    assert len(b._undo) == Backend.UNDO_LIMIT
+    for _ in range(Backend.UNDO_LIMIT):
+        b.undo()
+    assert b.canUndo is False
+    assert len(b._ws.ledger.entries) == 5                 # 더미에서 밀려난 다섯 건은 남는다
+
+
+def test_undo_restores_fixed_rules_without_rewriting_them():
+    """고정 항목 추가를 되돌리면 규칙도 그것이 적은 내역도 함께 사라진다."""
+    b = _fresh_backend()
+    b.addFixed("월세", "주거/관리비", 600_000, 5, "", "2026-09", "")
+    assert b.fixedCount == 1 and b._ws.ledger.entries
+
+    assert b.undo() and b.fixedCount == 0
+    assert b._ws.ledger.entries == []                     # 되돌린 자리에 다시 적지 않는다

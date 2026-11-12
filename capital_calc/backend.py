@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import functools
 import json
 from datetime import date
 from pathlib import Path
@@ -485,6 +486,26 @@ class LedgerModel(QAbstractListModel):
             self.endResetModel()
 
 
+def undoable(label: str):
+    """이 슬롯이 무언가를 바꿨으면, 바꾸기 전 상태를 되돌리기 더미에 올린다.
+
+    하기 전/후를 견줘서 **정말 바뀐 경우에만** 쌓는다. 이름이 겹쳐 거절된
+    '계획에서 가져오기' 처럼 아무 일도 안 일어난 동작으로 더미가 더러워지면,
+    Ctrl+Z 를 눌러도 아무 일도 안 일어나는 것처럼 보이기 때문이다.
+    """
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            before = self._ws.to_dict()
+            path = self._data_path
+            out = fn(self, *args, **kwargs)
+            if self._ws.to_dict() != before:
+                self._push_undo(label, before, path)
+            return out
+        return wrapper
+    return deco
+
+
 class Backend(QObject):
     """QML 에서 `backend` 이름으로 접근하는 객체."""
 
@@ -500,6 +521,7 @@ class Backend(QObject):
     ledgerChanged = Signal()        # 가계부 내역·기간 변경
     budgetsChanged = Signal()       # 예산만 변경 (가계부 집계는 그대로)
     fixedChanged = Signal()         # 고정 지출·수입 규칙 변경
+    undoChanged = Signal()          # 되돌리기 더미 변경
     saved = Signal(str)        # 저장 완료 (경로)
     exported = Signal(str)     # 엑셀 내보내기 완료 (경로)
     loaded = Signal(str)       # 불러오기 완료 (경로)
@@ -529,6 +551,9 @@ class Backend(QObject):
         # 계획이 바뀔 때까지는 같은 결과를 돌려준다.
         self._cache: dict = {}
         self._end_text = ""            # 사용자가 직접 친 종료일 (개월 수와 맞는 동안 그대로 보여 준다)
+        # 되돌리기: (무엇을 했는지, 그 전 상태, 그때의 파일 경로)
+        self._undo: list[tuple[str, dict, Path]] = []
+        self._redo: list[tuple[str, dict, Path]] = []
         self.summaryChanged.connect(self._clear_cache)
         self._data_path = Path(DATA_FILE)
         # 모델이 바뀌면 요약도 다시 계산되도록 연결
@@ -651,6 +676,7 @@ class Backend(QObject):
 
     @Slot()
     @Slot(str)
+    @undoable("시나리오 추가")
     def addScenario(self, name: str = "") -> None:
         """빈 시나리오를 추가하고 활성화. 기간·목표·기준일은 현재 것을 이어받는다."""
         p = self._ws.add(name)
@@ -658,6 +684,7 @@ class Backend(QObject):
         self._set_status(f"시나리오 추가: {p.name}")
 
     @Slot()
+    @undoable("시나리오 복제")
     def duplicateScenario(self) -> None:
         """현재 시나리오를 복제하고 복제본을 활성화."""
         p = self._ws.duplicate()
@@ -665,6 +692,7 @@ class Backend(QObject):
         self._set_status(f"시나리오 복제: {p.name}")
 
     @Slot(int)
+    @undoable("시나리오 삭제")
     def removeScenario(self, index: int) -> None:
         name = self._ws.plans[index].name if 0 <= index < len(self._ws.plans) else ""
         if not self._ws.remove(index):
@@ -674,6 +702,7 @@ class Backend(QObject):
         self._set_status(f"시나리오 삭제: {name}")
 
     @Slot(int, str)
+    @undoable("시나리오 이름 바꾸기")
     def renameScenario(self, index: int, name: str) -> None:
         if self._ws.rename(index, name):
             self.scenariosChanged.emit()
@@ -1249,6 +1278,7 @@ class Backend(QObject):
     @Slot(str, int, float, float, bool, str, str, str, float)
     @Slot(str, int, float, float, bool, str, str, str)
     @Slot(str, int, float, float, bool)
+    @undoable("항목 추가")
     def addItem(self, name: str, cat_index: int, amount: float, rate: float, include_principal: bool,
                 start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                 monthly_repay_rate: float = 0.0, repay_method: str = "",
@@ -1268,6 +1298,7 @@ class Backend(QObject):
     @Slot(int, str, int, float, float, bool, str, str, str, float)
     @Slot(int, str, int, float, float, bool, str, str, str)
     @Slot(int, str, int, float, float, bool)
+    @undoable("항목 수정")
     def updateItem(self, row: int, name: str, cat_index: int, amount: float, rate: float, include_principal: bool,
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
@@ -1280,16 +1311,19 @@ class Backend(QObject):
         self._set_status(f"수정: {item.name}")
 
     @Slot(int)
+    @undoable("항목 삭제")
     def removeItem(self, row: int) -> None:
         removed = self._items.remove(row)
         if removed:
             self._set_status(f"삭제: {removed.name}")
 
     @Slot(int, int)
+    @undoable("항목 순서 바꾸기")
     def moveItem(self, row: int, delta: int) -> None:
         self._items.move(row, delta)
 
     @Slot(int, int, result=bool)
+    @undoable("항목 순서 바꾸기")
     def moveInGroup(self, row: int, delta: int) -> bool:
         """묶어 보기에서 ▲▼. 같은 분류 안의 위/아래 항목과 자리를 바꾼다.
 
@@ -1307,6 +1341,7 @@ class Backend(QObject):
         return self._items.swap(row, same[to])
 
     @Slot()
+    @undoable("항목 전체 삭제")
     def clearItems(self) -> None:
         self._items.clear()
         self._set_status("모든 항목을 삭제했습니다.")
@@ -1339,6 +1374,7 @@ class Backend(QObject):
         self.loadFrom(str(self._data_path))
 
     @Slot(str)
+    @undoable("파일 불러오기")
     def loadFrom(self, url_or_path: str) -> None:
         path = self._to_path(url_or_path)
         try:
@@ -1372,6 +1408,77 @@ class Backend(QObject):
         """엑셀 저장 대화상자의 기본 파일 (file:// URL)."""
         return QUrl.fromLocalFile(str(self._data_path.with_suffix(".xlsx"))).toString()
 
+    # ---- 되돌리기 ----
+    UNDO_LIMIT = 30                # 이만큼만 기억한다 (메모리에만 있다)
+
+    def _push_undo(self, label: str, data: dict, path: Path) -> None:
+        self._undo.append((label, data, path))
+        if len(self._undo) > self.UNDO_LIMIT:
+            self._undo.pop(0)
+        self._redo.clear()         # 되돌린 뒤 새로 뭔가 했으면 '다시 실행' 은 버린다
+        self.undoChanged.emit()
+
+    def _restore(self, data: dict, path: Path) -> None:
+        """찍어 둔 상태로 통째로 돌아간다. 보고 있던 달은 가능하면 그대로 둔다."""
+        year, month = self._ledger_year, self._ledger_month
+        self._ws = Workspace.from_dict(data)
+        self._replace_plan(self._ws.plan)
+        self._ledger_model.set_ledger(self._ws.ledger)
+        months = self._ws.ledger.months()
+        if year and year in self._ws.ledger.years():
+            self._ledger_year, self._ledger_month = year, month
+        elif months:
+            self._ledger_year, self._ledger_month = months[0][:4], int(months[0][5:7])
+        else:
+            self._ledger_year, self._ledger_month = "", 0
+        # 여기서 고정 항목을 다시 적지는 않는다. 어느 달을 적었는지도 함께 되돌아가므로
+        # 되돌린 직후에 밀린 달이 다시 생겨나면 되돌린 보람이 없다.
+        self._apply_period()
+        self.budgetsChanged.emit()
+        self.fixedChanged.emit()
+        self._set_data_path(path)
+
+    @Property(bool, notify=undoChanged)
+    def canUndo(self) -> bool:
+        return bool(self._undo)
+
+    @Property(bool, notify=undoChanged)
+    def canRedo(self) -> bool:
+        return bool(self._redo)
+
+    @Property(str, notify=undoChanged)
+    def undoLabel(self) -> str:
+        """되돌리면 무엇이 취소되는지 (단추 설명용)."""
+        return self._undo[-1][0] if self._undo else ""
+
+    @Property(str, notify=undoChanged)
+    def redoLabel(self) -> str:
+        return self._redo[-1][0] if self._redo else ""
+
+    @Slot(result=bool)
+    def undo(self) -> bool:
+        if not self._undo:
+            self._set_status("되돌릴 것이 없습니다.")
+            return False
+        label, data, path = self._undo.pop()
+        self._redo.append((label, self._ws.to_dict(), self._data_path))
+        self._restore(data, path)
+        self.undoChanged.emit()
+        self._set_status(f"되돌렸습니다: {label}")
+        return True
+
+    @Slot(result=bool)
+    def redo(self) -> bool:
+        if not self._redo:
+            self._set_status("다시 실행할 것이 없습니다.")
+            return False
+        label, data, path = self._redo.pop()
+        self._undo.append((label, self._ws.to_dict(), self._data_path))
+        self._restore(data, path)
+        self.undoChanged.emit()
+        self._set_status(f"다시 실행: {label}")
+        return True
+
     # ---- 비중 ----
     @Slot(str, result="QVariantList")
     def compositionOf(self, group: str) -> list[dict]:
@@ -1391,6 +1498,7 @@ class Backend(QObject):
             self.dataPathChanged.emit()
 
     @Slot()
+    @undoable("예시 데이터 불러오기")
     def loadSample(self) -> None:
         """현재 시나리오를 예시 데이터로 바꾼다 (다른 시나리오는 그대로). 가계부도 예시로 채운다."""
         p = sample_plan()
@@ -1541,6 +1649,7 @@ class Backend(QObject):
 
     # ---- 반복 / 복사 ----
     @Slot(str, str, float, str, str, int)
+    @undoable("가계부 내역 반복 추가")
     def addEntryRepeat(self, date_str: str, category: str, amount: float,
                        name: str, note: str, months: int) -> None:
         """같은 내역을 months 달 동안 (이번 달 포함) 넣는다."""
@@ -1557,6 +1666,7 @@ class Backend(QObject):
                          + (f" · {len(made) + 1}개월 반복" if made else ""))
 
     @Slot()
+    @undoable("지난달 복사")
     def copyPreviousMonth(self) -> None:
         """지난달 내역을 이번 달로 복사한다 (월을 고른 상태에서만)."""
         if self._ledger_month <= 0:
@@ -1603,6 +1713,7 @@ class Backend(QObject):
         return 0.0
 
     @Slot(int, result=bool)
+    @undoable("계획에서 가져오기")
     def toLedger(self, source_row: int) -> bool:
         """계획 항목 하나를 가계부에 기록한다. 같은 이름이 이미 있으면 넣지 않는다."""
         if not (0 <= source_row < len(self._plan.items)):
@@ -1632,6 +1743,7 @@ class Backend(QObject):
         return True
 
     @Slot(result=int)
+    @undoable("계획에서 가져오기")
     def importPlanToLedger(self) -> int:
         """계획 항목을 한꺼번에 가계부에 기록한다. 이름이 겹치는 것은 건너뛴다."""
         day = self._ledger_date()
@@ -1693,12 +1805,14 @@ class Backend(QObject):
         self.budgetsChanged.emit()
 
     @Slot()
+    @undoable("예산 지우기")
     def clearBudgets(self) -> None:
         self._ws.ledger.budgets.clear()
         self.budgetsChanged.emit()
         self._set_status("예산을 모두 지웠습니다.")
 
     @Slot()
+    @undoable("실적으로 예산 채우기")
     def fillBudgetsFromPeriod(self) -> None:
         """지금 보고 있는 기간에 실제로 쓴 금액(월평균)을 예산으로 채운다."""
         n = self._ws.ledger.budget_from_period(self.ledgerPeriod)
@@ -1749,6 +1863,7 @@ class Backend(QObject):
     @Slot(str, str, float, int, str, str, result=str)
     @Slot(str, str, float, int, str, result=str)
     @Slot(str, str, float, int, result=str)
+    @undoable("고정 항목 추가")
     def addFixed(self, name: str, category: str, amount: float, day: int,
                  note: str = "", start: str = "", end: str = "") -> str:
         """고정 지출·수입을 하나 만든다. 만들었으면 빈 문자열, 아니면 까닭을 돌려준다."""
@@ -1766,6 +1881,7 @@ class Backend(QObject):
     @Slot(str, str, str, float, int, str, str, result=str)
     @Slot(str, str, str, float, int, str, result=str)
     @Slot(str, str, str, float, int, result=str)
+    @undoable("고정 항목 수정")
     def updateFixed(self, rid: str, name: str, category: str, amount: float, day: int,
                     note: str = "", start: str = "", end: str = "") -> str:
         """규칙 내용을 바꾼다 (이미 적어 둔 내역은 그대로 둔다)."""
@@ -1796,6 +1912,7 @@ class Backend(QObject):
         return ""
 
     @Slot(str, result=bool)
+    @undoable("고정 항목 쉬기/돌리기")
     def toggleFixed(self, rid: str) -> bool:
         """쉬게 하거나 다시 돌린다. 다시 돌리면 밀린 달도 그때 적는다."""
         f = self._ws.ledger.fixed_of(rid)
@@ -1807,6 +1924,7 @@ class Backend(QObject):
 
     @Slot(str, bool, result=int)
     @Slot(str, result=int)
+    @undoable("고정 항목 삭제")
     def removeFixed(self, rid: str, purge: bool = False) -> int:
         """규칙을 지운다. purge 면 그 규칙이 적어 둔 내역까지 지운다. 지운 내역 수."""
         f = self._ws.ledger.fixed_of(rid)
@@ -1824,6 +1942,7 @@ class Backend(QObject):
         return len(self._ws.ledger.fixed_entries(rid))
 
     @Slot(int, result=str)
+    @undoable("고정 항목 등록")
     def fixedFromEntry(self, row: int) -> str:
         """적어 둔 내역 하나를 고정 항목으로 올린다 (그 달은 이미 적혀 있으니 다음 달부터)."""
         if not (0 <= row < len(self._ws.ledger.entries)):
@@ -1840,6 +1959,7 @@ class Backend(QObject):
         return ""
 
     @Slot(result=int)
+    @undoable("고정 항목 적용")
     def applyFixedNow(self) -> int:
         """밀린 고정 항목을 지금 적는다 (보통은 앱을 열 때 저절로 적힌다)."""
         n = self._apply_fixed()
@@ -2005,6 +2125,7 @@ class Backend(QObject):
                    for c in lg.cost_categories()])
 
     @Slot(str, str, result=str)
+    @undoable("분류 추가")
     def addLedgerCategory(self, name: str, kind: str) -> str:
         """분류를 직접 만든다. 만들었으면 빈 문자열, 못 만들었으면 까닭을 돌려준다."""
         why = self._ws.ledger.add_category(name, kind)
@@ -2016,6 +2137,7 @@ class Backend(QObject):
         return why
 
     @Slot(str, result=str)
+    @undoable("분류 삭제")
     def removeLedgerCategory(self, name: str) -> str:
         """직접 만든 분류를 지운다 (그 분류로 적어 둔 내역이 있으면 거절)."""
         why = self._ws.ledger.remove_category(name)
@@ -2114,6 +2236,7 @@ class Backend(QObject):
     @Slot(str, str, float, str, str)
     @Slot(str, str, float, str)
     @Slot(str, str, float)
+    @undoable("가계부 내역 추가")
     def addEntry(self, date_str: str, category: str, amount: float, name: str = "", note: str = "") -> None:
         e = Entry(date_str, category, amount, name.strip(),
                   kind=self._ws.ledger.kind_of(category), note=note.strip())
@@ -2127,6 +2250,7 @@ class Backend(QObject):
     @Slot(int, str, str, float, str, str)
     @Slot(int, str, str, float, str)
     @Slot(int, str, str, float)
+    @undoable("가계부 내역 수정")
     def updateEntry(self, row: int, date_str: str, category: str, amount: float,
                     name: str = "", note: str = "") -> None:
         old = self._ws.ledger.entries[row] if 0 <= row < len(self._ws.ledger.entries) else None
@@ -2138,6 +2262,7 @@ class Backend(QObject):
             self._set_status("가계부 수정")
 
     @Slot(int)
+    @undoable("가계부 내역 삭제")
     def removeEntry(self, row: int) -> None:
         e = self._ws.ledger.remove(row)
         if e:
@@ -2145,6 +2270,7 @@ class Backend(QObject):
             self._set_status(f"가계부 삭제: {e.category} {won(e.amount)}")
 
     @Slot()
+    @undoable("가계부 비우기")
     def clearLedger(self) -> None:
         self._ws.ledger.clear()
         self._reset_ledger()

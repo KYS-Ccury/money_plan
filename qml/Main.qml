@@ -47,6 +47,10 @@ ApplicationWindow {
 
     ItemDialog { id: itemDialog }
 
+    // 되돌리기 / 다시 실행 (창 어디서나)
+    Shortcut { sequences: ["Ctrl+Z"]; onActivated: backend.undo() }
+    Shortcut { sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]; onActivated: backend.redo() }
+
     Toast { id: toast }
 
     // 저장/불러오기 결과를 토스트로 알림
@@ -188,6 +192,26 @@ ApplicationWindow {
                         text: "＋ 항목 추가"; highlighted: true
                         visible: win.mode === "plan"
                         onClicked: itemDialog.openForAdd()
+                    }
+                    Button {
+                        objectName: "undoButton"
+                        text: "되돌리기"; flat: true; leftPadding: 10; rightPadding: 10
+                        enabled: backend.canUndo
+                        onClicked: backend.undo()
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: backend.canUndo
+                                      ? "되돌리기 (Ctrl+Z)
+방금 한 일: " + backend.undoLabel
+                                      : "되돌릴 것이 없습니다"
+                    }
+                    Button {
+                        objectName: "redoButton"
+                        text: "다시"; flat: true; leftPadding: 10; rightPadding: 10
+                        visible: backend.canRedo
+                        onClicked: backend.redo()
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: "다시 실행 (Ctrl+Shift+Z)
+" + backend.redoLabel
                     }
                     Button {
                         text: "저장"; flat: true; leftPadding: 10; rightPadding: 10
