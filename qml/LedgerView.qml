@@ -20,6 +20,25 @@ RowLayout {
     EntryDialog { id: entryDialog }
     BudgetDialog { id: budgetDialog }
 
+    // 계획 화면의 항목 삭제와 같게. 되돌릴 수 없으므로 한 번 묻는다.
+    ConfirmDialog {
+        id: removeEntryDialog
+        objectName: "removeEntryDialog"
+        property int row: -1
+        title: "내역 삭제"
+        okText: "삭제"
+        onAccepted: backend.removeEntry(row)
+    }
+
+    // ✕ 를 눌렀을 때. delegate 안에 두면 테스트에서 부를 수 없어 밖으로 꺼냈다.
+    function confirmRemove(row, dateText, name, category, amountText) {
+        removeEntryDialog.row = row
+        removeEntryDialog.message = dateText + "  "
+            + (name !== "" ? "'" + name + "'" : category)
+            + "  " + amountText + " 내역을 삭제할까요?"
+        removeEntryDialog.open()
+    }
+
     ConfirmDialog {
         id: clearLedgerDialog
         title: "가계부 비우기"
@@ -341,7 +360,11 @@ RowLayout {
                         ToolButton {
                             text: "✕"; implicitWidth: 28; implicitHeight: 28
                             Material.foreground: Theme.red
-                            onClicked: backend.removeEntry(entryRow.sourceRow)
+                            ToolTip.visible: hovered; ToolTip.delay: 700
+                            ToolTip.text: "이 내역을 삭제합니다"
+                            onClicked: view.confirmRemove(entryRow.sourceRow, entryRow.dateText,
+                                                         entryRow.name, entryRow.category,
+                                                         entryRow.amountText)
                         }
                     }
                 }

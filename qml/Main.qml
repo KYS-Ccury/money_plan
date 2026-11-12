@@ -1239,6 +1239,7 @@ ApplicationWindow {
 
         // ───────────── 본문 (가계부)
         LedgerView {
+            objectName: "ledgerView"
             id: ledgerView
             Layout.fillWidth: true
             Layout.fillHeight: true

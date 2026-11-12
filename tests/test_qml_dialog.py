@@ -118,3 +118,46 @@ def test_edit_dialog_repay_method_requires_end_date():
     assert m.data(idx, m.RepayMethodRole) == "equal_payment"
     assert m.data(idx, m.MonthlyRepayRateRole) == 0.0       # rate 방식이 아니면 상환율은 버린다
     engine.deleteLater()
+
+
+def test_ledger_delete_asks_first():
+    """가계부의 ✕ 는 바로 지우지 않고 확인 팝업을 띄운다 (되돌릴 수 없으므로)."""
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Workspace
+
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger([
+        Entry("2026-11-05", "식비", 30_000, "점심"),
+        Entry("2026-11-06", "교통", 1_500, "버스"),
+    ])
+    backend = Backend(ws)
+    engine = QQmlApplicationEngine()
+    engine.addImportPath(str(ROOT))
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+    assert engine.rootObjects(), "QML 로드 실패"
+    win = engine.rootObjects()[0]
+    win.setProperty("mode", "ledger")
+    app.processEvents()
+
+    view = win.findChild(QObject, "ledgerView")
+    dlg = view.findChild(QObject, "removeEntryDialog")
+    assert view is not None and dlg is not None
+    assert not dlg.property("visible")
+
+    before = len(ws.ledger.entries)
+    QMetaObject.invokeMethod(view, "confirmRemove",
+                             Q_ARG("QVariant", 0), Q_ARG("QVariant", "11월 5일"),
+                             Q_ARG("QVariant", "점심"), Q_ARG("QVariant", "식비"),
+                             Q_ARG("QVariant", "-30,000원"))
+    app.processEvents()
+    assert dlg.property("visible"), "확인 팝업이 안 떴다"
+    assert "점심" in dlg.property("message")
+    assert len(ws.ledger.entries) == before, "묻기도 전에 지워졌다"
+
+    # 확인을 눌러야 지워진다
+    QMetaObject.invokeMethod(dlg, "accepted")
+    app.processEvents()
+    assert len(ws.ledger.entries) == before - 1
