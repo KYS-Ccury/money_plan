@@ -806,9 +806,12 @@ ApplicationWindow {
                                     elide: Text.ElideLeft          // 금액은 뒷자리가 중요하다
                                 }
                                 Text {
+                                    // 좁으면 접는다. 이율은 이름 아래 작은 글씨에도 나오므로
+                                    // 금액·월 환산을 자르는 것보다 이쪽을 접는 게 낫다.
+                                    visible: rowItem.width > 600
                                     text: rowItem.rateText; color: Theme.textDim; font.pixelSize: 13
-                                    Layout.preferredWidth: 60
-                                    Layout.minimumWidth: 34
+                                    Layout.preferredWidth: visible ? 60 : 0
+                                    Layout.minimumWidth: visible ? 34 : 0
                                     horizontalAlignment: Text.AlignRight
                                     elide: Text.ElideRight
                                 }
@@ -824,11 +827,13 @@ ApplicationWindow {
                                          : rowItem.monthlyKind === "once" ? Theme.yellow : Theme.textDim
                                 }
                                 RowLayout {
+                                    id: rowButtons
+                                    readonly property int btn: rowItem.width > 640 ? 32 : 26
                                     spacing: 0
-                                    Layout.preferredWidth: 168
+                                    Layout.preferredWidth: btn * 5
                                     ToolButton {
                                         text: rowItem.active ? "⏸" : "▶"
-                                        font.pixelSize: 11; implicitWidth: 32
+                                        font.pixelSize: 11; implicitWidth: rowButtons.btn
                                         Material.foreground: rowItem.active ? Theme.textDim : Theme.yellow
                                         onClicked: backend.toggleItemActive(backend.sourceRowAt(rowItem.index))
                                         ToolTip.visible: hovered; ToolTip.delay: 500
@@ -837,7 +842,7 @@ ApplicationWindow {
                                                       : "다시 켭니다"
                                     }
                                     ToolButton {
-                                        text: "▤"; font.pixelSize: 12; implicitWidth: 32
+                                        text: "▤"; font.pixelSize: 12; implicitWidth: rowButtons.btn
                                         Material.foreground: Theme.accent
                                         onClicked: backend.toLedger(backend.sourceRowAt(rowItem.index))
                                         ToolTip.visible: hovered; ToolTip.delay: 500
@@ -845,7 +850,7 @@ ApplicationWindow {
                                     }
                                     // 묶어 보면 보이는 차례와 원본 차례가 달라서, 같은 분류 안에서만 옮긴다
                                     ToolButton {
-                                        text: "▲"; font.pixelSize: 11; implicitWidth: 32
+                                        text: "▲"; font.pixelSize: 11; implicitWidth: rowButtons.btn
                                         enabled: backend.groupByCategory ? rowItem.groupPos > 0
                                                                          : rowItem.index > 0
                                         ToolTip.visible: hovered; ToolTip.delay: 700
@@ -857,7 +862,7 @@ ApplicationWindow {
                                         }
                                     }
                                     ToolButton {
-                                        text: "▼"; font.pixelSize: 11; implicitWidth: 32
+                                        text: "▼"; font.pixelSize: 11; implicitWidth: rowButtons.btn
                                         enabled: backend.groupByCategory ? rowItem.groupPos < rowItem.groupCount - 1
                                                                          : rowItem.index < backend.itemCount - 1
                                         ToolTip.visible: hovered; ToolTip.delay: 700
@@ -869,7 +874,7 @@ ApplicationWindow {
                                         }
                                     }
                                     ToolButton {
-                                        text: "✕"; font.pixelSize: 12; implicitWidth: 32
+                                        text: "✕"; font.pixelSize: 12; implicitWidth: rowButtons.btn
                                         Material.foreground: Theme.red
                                         onClicked: {
                                             // 저장해 둔 번호는 그 사이 삭제가 있었으면 밀려 있다. 누르는 순간 다시 확인한다
@@ -902,8 +907,10 @@ ApplicationWindow {
                 id: rightFlick
                 Layout.fillHeight: true
                 Layout.fillWidth: false
-                Layout.preferredWidth: 430
-                Layout.minimumWidth: 400
+                // 창이 좁으면 요약 칸도 같이 좁아진다. 고정 폭으로 두면 좁은 창에서
+                // 왼쪽 목록이 먼저 잘려 금액이 안 보인다.
+                Layout.preferredWidth: Math.max(340, Math.min(430, win.width * 0.33))
+                Layout.minimumWidth: 340
                 Layout.maximumWidth: 480
                 clip: true
                 contentWidth: width
