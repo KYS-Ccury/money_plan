@@ -11,6 +11,7 @@ RowLayout {
     function openAdd() { entryDialog.openForAdd(view.defaultDate()) }
     function openBudget() { budgetDialog.open() }
     function openFixed() { fixedDialog.open() }
+    function openImport() { importDialog.start() }
 
     function defaultDate() {
         if (backend.ledgerMonth > 0)
@@ -21,6 +22,7 @@ RowLayout {
     EntryDialog { id: entryDialog }
     BudgetDialog { id: budgetDialog }
     FixedDialog { id: fixedDialog }
+    ImportDialog { id: importDialog }
 
     // 계획 화면의 항목 삭제와 같게. 되돌릴 수 없으므로 한 번 묻는다.
     ConfirmDialog {
@@ -173,6 +175,14 @@ RowLayout {
                     onClicked: budgetDialog.open()
                     ToolTip.visible: hovered; ToolTip.delay: 500
                     ToolTip.text: "분류마다 한 달에 얼마까지 쓸지 정합니다"
+                }
+                Button {
+                    objectName: "importButton"
+                    text: "파일에서"; flat: true; leftPadding: 10; rightPadding: 10
+                    Material.foreground: Theme.accent
+                    onClicked: importDialog.start()
+                    ToolTip.visible: hovered; ToolTip.delay: 500
+                    ToolTip.text: "CSV · 엑셀 · 메모장에 있는 내역을 읽어 옵니다"
                 }
                 Button {
                     text: "계획에서 가져오기"; flat: true; leftPadding: 10; rightPadding: 10

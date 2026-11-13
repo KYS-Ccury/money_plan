@@ -433,3 +433,45 @@ def test_entry_dialog_keeps_the_pay_method():
                              Q_ARG("QVariant", "신한카드"))
     app.processEvents()
     assert pay.property("editText") == "신한카드"
+
+
+def test_import_dialog_reads_pasted_text_and_puts_it_in():
+    """가져오기 팝업: 붙여넣고 읽기 → 미리보기 → 가져오기."""
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Workspace
+
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    backend = Backend(ws)
+    engine = QQmlApplicationEngine()
+    engine.addImportPath(str(ROOT))
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+    assert engine.rootObjects(), "QML 로드 실패"
+    win = engine.rootObjects()[0]
+    win.setProperty("mode", "ledger")
+    app.processEvents()
+
+    view = win.findChild(QObject, "ledgerView")
+    QMetaObject.invokeMethod(view, "openImport")
+    app.processEvents()
+    dlg = win.findChild(QObject, "importDialog")
+    assert dlg is not None and dlg.property("visible") is True
+
+    area = dlg.findChild(QObject, "importPasteArea")
+    area.setProperty("text", "2026-11-03 점심 12,000 카드\n2026-11-04 커피 4500")
+    QMetaObject.invokeMethod(dlg, "readPasted")
+    app.processEvents()
+
+    assert backend.importInfo["count"] == 2
+    assert len(backend.importRows) == 2
+    assert ws.ledger.entries == []                    # 아직 넣지 않았다
+
+    QMetaObject.invokeMethod(dlg, "apply")
+    app.processEvents()
+    assert [(e.date, e.amount, e.pay) for e in ws.ledger.entries] == [
+        ("2026-11-03", 12_000, "카드"), ("2026-11-04", 4_500, "")]
+    # 넣고 나면 미리보기를 치우고 팝업을 닫는다 (닫히는 애니메이션이 있어 visible 은 조금 남는다)
+    assert backend.importInfo == {}

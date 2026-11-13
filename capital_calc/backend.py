@@ -25,6 +25,7 @@ from PySide6.QtCore import (
 )
 
 from .export_excel import composition, export_plan
+from .import_ledger import parse_file, parse_text
 from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Fixed,
                      Ledger, kind_of, month_key, prev_period, same_day_in, sample_ledger,
                      shift_month)
@@ -566,6 +567,7 @@ class Backend(QObject):
     fixedChanged = Signal()         # 고정 지출·수입 규칙 변경
     undoChanged = Signal()          # 되돌리기 더미 변경
     selectionChanged = Signal()     # 가계부에서 고른 줄 변경
+    importChanged = Signal()        # 가져오기 미리보기 변경
     saved = Signal(str)        # 저장 완료 (경로)
     exported = Signal(str)     # 엑셀 내보내기 완료 (경로)
     loaded = Signal(str)       # 불러오기 완료 (경로)
@@ -583,6 +585,8 @@ class Backend(QObject):
         self._items = ItemListModel(self._plan, self)
         self._ledger_model = LedgerModel(self._ws.ledger, self)
         self._selected: set[int] = set()        # 가계부에서 고른 줄 (entries 번호)
+        self._import: list[dict] = []           # 가져오기 미리보기 (아직 넣지 않은 내역)
+        self._import_info: dict = {}
         self._ledger_model.set_selection(self._selected)
         self._ledger_year = ""
         self._ledger_month = 0          # 0 = 그 해 전체
@@ -1999,6 +2003,124 @@ class Backend(QObject):
         self._ledger_touched()
         self._set_status(f"{changed}건의 결제수단을 '{want or '지정 안 함'}' 으로 바꿨습니다.")
         return changed
+
+    # ---- 가져오기 (CSV · 엑셀 · 메모장 · 붙여넣기) ----
+    IMPORT_PREVIEW = 200                 # 미리보기에 보여 줄 최대 줄 수
+
+    def _dupe_keys(self) -> set:
+        return {(e.date, round(e.amount), e.name.strip(), e.kind) for e in self._ws.ledger.entries}
+
+    def _mark_import(self, rows: list[dict], problems: list[str], how: str, source: str) -> dict:
+        """읽어 온 줄에 '이미 있는 내역인가' 를 표시하고 미리보기를 만든다."""
+        seen = self._dupe_keys()
+        self._import = []
+        for r in rows:
+            key = (r["date"], round(r["amount"]), (r.get("name") or "").strip(), r["kind"])
+            r = dict(r)
+            r["dupe"] = key in seen
+            seen.add(key)                 # 파일 안에서 같은 줄이 두 번 나오는 것도 중복으로 본다
+            self._import.append(r)
+        dupes = sum(1 for r in self._import if r["dupe"])
+        income = sum(r["amount"] for r in self._import if r["kind"] == "income")
+        cost = sum(r["amount"] for r in self._import if r["kind"] != "income")
+        self._import_info = {
+            "ok": bool(self._import),
+            "source": source, "how": how,
+            "count": len(self._import), "dupes": dupes, "fresh": len(self._import) - dupes,
+            "income": income, "cost": cost,
+            "problems": problems[:30], "problemCount": len(problems),
+            "from": min((r["date"] for r in self._import), default=""),
+            "to": max((r["date"] for r in self._import), default=""),
+        }
+        self.importChanged.emit()
+        return self._import_info
+
+    @Slot(str, result="QVariantMap")
+    def previewImportFile(self, url_or_path: str) -> dict:
+        """파일을 읽어 미리보기를 만든다 (아직 가계부에 넣지 않는다)."""
+        path = self._to_path(url_or_path)
+        try:
+            rows, problems, how = parse_file(path)
+        except Exception as e:                      # 파일이 깨졌거나 열 수 없을 때
+            self._import, self._import_info = [], {
+                "ok": False, "source": path.name, "how": "",
+                "count": 0, "dupes": 0, "fresh": 0, "income": 0.0, "cost": 0.0,
+                "problems": [f"읽지 못했습니다: {e}"], "problemCount": 1, "from": "", "to": "",
+            }
+            self.importChanged.emit()
+            self.failed.emit(f"가져오기 실패: {path.name} — {e}")
+            return self._import_info
+        return self._mark_import(rows, problems, how, path.name)
+
+    @Slot(str, result="QVariantMap")
+    def previewImportText(self, text: str) -> dict:
+        """붙여넣은 글로 미리보기를 만든다."""
+        rows, problems, how = parse_text(text or "")
+        return self._mark_import(rows, problems, how, "붙여넣은 글")
+
+    @Property("QVariantMap", notify=importChanged)
+    def importInfo(self) -> dict:
+        return dict(self._import_info)
+
+    @Property("QVariantList", notify=importChanged)
+    def importRows(self) -> list[dict]:
+        """미리보기 줄 [{date, amount, amountText, kind, name, category, pay, note, dupe}]"""
+        out = []
+        for r in self._import[:self.IMPORT_PREVIEW]:
+            out.append({**r, "amountText": ("+" if r["kind"] == "income" else "-") + won(r["amount"])})
+        return out
+
+    @Slot()
+    def cancelImport(self) -> None:
+        if self._import or self._import_info:
+            self._import, self._import_info = [], {}
+            self.importChanged.emit()
+
+    def _import_category(self, name: str, kind: str) -> tuple[str, str]:
+        """파일에 적힌 분류를 쓸 수 있는 분류로. (분류, 메모에 덧붙일 말)"""
+        lg = self._ws.ledger
+        name = (name or "").strip()
+        fallback = "기타 수입" if kind == "income" else "기타 지출"
+        if not name:
+            return fallback, ""
+        if name in lg.categories():
+            return name, ""
+        if lg.add_category(name, kind) == "":       # 없는 분류는 만들어 준다
+            return name, ""
+        return fallback, f"원래 분류: {name}"
+
+    @Slot(bool, str, result=int)
+    @Slot(bool, result=int)
+    @Slot(result=int)
+    @undoable("가계부 가져오기")
+    def applyImport(self, skip_dupes: bool = True, default_pay: str = "") -> int:
+        """미리보기의 줄을 가계부에 넣는다. 넣은 건수를 돌려준다."""
+        if not self._import:
+            return 0
+        added = 0
+        for r in self._import:
+            if skip_dupes and r.get("dupe"):
+                continue
+            cat, extra = self._import_category(r.get("category", ""), r["kind"])
+            note = (r.get("note") or "").strip()
+            if extra:
+                note = f"{note} ({extra})".strip() if note else extra
+            self._ws.ledger.add(Entry(r["date"], cat, r["amount"], (r.get("name") or "").strip(),
+                                      kind=r["kind"], note=note,
+                                      pay=(r.get("pay") or default_pay).strip()))
+            added += 1
+        if not added:
+            self._set_status("넣을 내역이 없습니다 (모두 이미 있는 내역).")
+            return 0
+        self._import, self._import_info = [], {}
+        self.importChanged.emit()
+        if not self._ledger_year:
+            m = self._ws.ledger.months()[0]
+            self._ledger_year, self._ledger_month = m[:4], int(m[5:7])
+            self._ledger_model.set_period(self.ledgerPeriod)
+        self._ledger_touched()
+        self._set_status(f"가계부로 {added}건을 가져왔습니다.")
+        return added
 
     # ---- 분류별 예산 ----
     @Property(bool, notify=budgetsChanged)

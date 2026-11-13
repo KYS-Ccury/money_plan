@@ -1599,3 +1599,85 @@ def test_set_selected_pay_changes_many_at_once():
     b.undo()
     # 되돌리기는 가계부를 통째로 새로 만든다 — 그래서 b 쪽에서 다시 꺼내 본다
     assert [e.pay for e in b._ws.ledger.entries] == ["현금", "카드", "현금"]
+
+
+# ───────────────────────── 가져오기
+
+IMPORT_CSV = """날짜,내용,금액,분류,결제수단,구분
+2026-11-03,점심,12000,식비,신한카드,지출
+2026-11-04,버스,1450,교통,,지출
+2026-11-25,회사,2000000,급여,,수입
+"""
+
+
+def _import_backend():
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    return Backend(ws)
+
+
+def test_import_preview_then_apply(tmp_path):
+    p = tmp_path / "a.csv"
+    p.write_text(IMPORT_CSV, encoding="utf-8")
+    b = _import_backend()
+
+    info = b.previewImportFile(str(p))
+    assert info["ok"] is True
+    assert (info["count"], info["fresh"], info["dupes"]) == (3, 3, 0)
+    assert (info["from"], info["to"]) == ("2026-11-03", "2026-11-25")
+    assert info["income"] == 2_000_000 and info["cost"] == 13_450
+    assert b._ws.ledger.entries == []                 # 미리보기는 아직 넣지 않는다
+
+    rows = b.importRows
+    assert rows[0]["amountText"].startswith("-") and rows[2]["amountText"].startswith("+")
+
+    assert b.applyImport(True, "") == 3
+    got = [(e.date, e.category, e.amount, e.kind, e.pay) for e in b._ws.ledger.entries]
+    assert got == [("2026-11-03", "식비", 12_000, "cost", "신한카드"),
+                   ("2026-11-04", "교통", 1_450, "cost", ""),
+                   ("2026-11-25", "급여", 2_000_000, "income", "")]
+    assert b.importInfo == {}                          # 넣고 나면 미리보기는 치운다
+
+    b.undo()
+    assert b._ws.ledger.entries == [] and b.undoLabel == ""
+
+
+def test_import_marks_what_is_already_there(tmp_path):
+    p = tmp_path / "a.csv"
+    p.write_text(IMPORT_CSV, encoding="utf-8")
+    b = _import_backend()
+    b.previewImportFile(str(p))
+    b.applyImport(True, "")
+
+    info = b.previewImportFile(str(p))                 # 같은 파일을 또 읽으면
+    assert (info["count"], info["fresh"], info["dupes"]) == (3, 0, 3)
+    assert all(r["dupe"] for r in b.importRows)
+    assert b.applyImport(True, "") == 0                # 건너뛰면 아무것도 안 들어간다
+    assert len(b._ws.ledger.entries) == 3
+
+    b.previewImportFile(str(p))
+    assert b.applyImport(False, "") == 3               # 건너뛰기를 끄면 그대로 또 넣는다
+    assert len(b._ws.ledger.entries) == 6
+
+
+def test_import_makes_unknown_categories_and_fills_the_pay():
+    b = _import_backend()
+    b.previewImportText("날짜,내용,금액,분류\n2026-11-03,사료,30000,반려동물\n"
+                        "2026-11-04,뭔가,1000,아주아주긴분류이름입니다그래서못만듭니다\n")
+    assert b.applyImport(True, "현금") == 2
+
+    e1, e2 = b._ws.ledger.entries
+    assert e1.category == "반려동물" and "반려동물" in b._ws.ledger.custom
+    assert e1.pay == "현금"                            # 비어 있던 결제수단을 채워 준다
+    assert e2.category == "기타 지출"                   # 만들 수 없는 이름은 기타로
+    assert "원래 분류" in e2.note                       # 무엇이었는지는 메모에 남긴다
+
+
+def test_import_of_a_broken_file_says_why(tmp_path):
+    b = _import_backend()
+    info = b.previewImportFile(str(tmp_path / "없는파일.csv"))
+    assert info["ok"] is False and info["problems"]
+    assert b.applyImport(True, "") == 0
