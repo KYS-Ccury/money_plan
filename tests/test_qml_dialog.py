@@ -652,3 +652,29 @@ def test_shortcuts_are_wired():
             seqs |= {str(x) for x in (v if isinstance(v, list) else [v])}
     for key in ("Ctrl+Z", "Ctrl+S", "Ctrl+N", "Ctrl+F", "Ctrl+1", "Ctrl+2", "Ctrl+3"):
         assert key in seqs, f"{key} 가 없습니다: {sorted(seqs)}"
+
+
+def test_goals_dialog_adds_and_removes():
+    """중간 목표 팝업에서 넣고 지우면 목표 사다리가 따라온다."""
+    app, engine, backend, win = _load()
+    backend.target = 30_000_000
+    app.processEvents()
+
+    btn = win.findChild(QObject, "goalsButton")
+    dlg = win.findChild(QObject, "goalsDialog")
+    assert btn is not None and dlg is not None
+    assert btn.property("text") == "중간 목표"
+
+    dlg.findChild(QObject, "newGoalName").setProperty("text", "1차 전세금")
+    dlg.findChild(QObject, "newGoalAmount").setProperty("text", "20,000,000")
+    QMetaObject.invokeMethod(dlg, "addGoal")
+    app.processEvents()
+
+    assert backend.goalCount == 1
+    assert [g["name"] for g in backend.goalRows] == ["1차 전세금", "최종 목표"]
+    assert btn.property("text") == "중간 목표 1"
+    assert dlg.findChild(QObject, "newGoalAmount").property("text") == ""   # 칸을 비워 준다
+
+    backend.removeGoal(0)
+    app.processEvents()
+    assert backend.goalCount == 0 and btn.property("text") == "중간 목표"

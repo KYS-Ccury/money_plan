@@ -75,6 +75,7 @@ ApplicationWindow {
     }
 
     ItemDialog { id: itemDialog }
+    GoalsDialog { id: goalsDialog }
 
     // 단축키 (창 어디서나)
     Shortcut { sequences: ["Ctrl+Z"]; onActivated: backend.undo() }
@@ -1066,7 +1067,19 @@ ApplicationWindow {
                         anchors.fill: parent
                         spacing: 8
 
-                        StatRow { label: "목표 자본금"; value: backend.target }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            StatRow { label: "목표 자본금"; value: backend.target; Layout.fillWidth: true }
+                            Button {
+                                objectName: "goalsButton"
+                                text: backend.goalCount > 0 ? "중간 목표 " + backend.goalCount : "중간 목표"
+                                flat: true; leftPadding: 8; rightPadding: 8
+                                Material.foreground: backend.goalCount > 0 ? Theme.accent : Theme.textDim
+                                onClicked: goalsDialog.open()
+                                ToolTip.visible: hovered; ToolTip.delay: 500
+                                ToolTip.text: "'1차 전세금' 처럼 거쳐 갈 지점을 적어 둡니다"
+                            }
+                        }
 
                         // 진행 바
                         Rectangle {
@@ -1195,6 +1208,74 @@ ApplicationWindow {
                             prefix: backend.gap >= 0 ? "+" : "-"
                             valueColor: backend.gap >= 0 ? Theme.green : Theme.red
                         }
+                        // ── 목표 사다리 (중간 목표가 있을 때만) ──
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 4
+                            visible: backend.goalCount > 0
+                            spacing: 5
+
+                            Repeater {
+                                model: backend.goalRows
+                                delegate: ColumnLayout {
+                                    id: ladderRow
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 1
+
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 6
+                                        Rectangle {
+                                            width: 7; height: 7; radius: 4
+                                            color: ladderRow.modelData.reached ? Theme.green
+                                                 : (ladderRow.modelData.inPeriod ? Theme.accent : Theme.textDim)
+                                        }
+                                        Text {
+                                            text: ladderRow.modelData.name
+                                            color: ladderRow.modelData.final ? Theme.text : Theme.textDim
+                                            font.pixelSize: 12
+                                            font.bold: ladderRow.modelData.final
+                                            Layout.preferredWidth: 96; elide: Text.ElideRight
+                                        }
+                                        Text {
+                                            text: backend.won(ladderRow.modelData.amount)
+                                            color: Theme.textDim; font.pixelSize: 11
+                                            Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                                        }
+                                        Text {
+                                            text: ladderRow.modelData.month < 0 ? "못 닿음"
+                                                : ladderRow.modelData.reached ? "이미 달성"
+                                                : ladderRow.modelData.dateText
+                                                  + " (" + ladderRow.modelData.month + "개월)"
+                                            color: ladderRow.modelData.month < 0 ? Theme.red
+                                                 : (ladderRow.modelData.inPeriod ? Theme.green : Theme.yellow)
+                                            font.pixelSize: 11
+                                            Layout.preferredWidth: 150
+                                            horizontalAlignment: Text.AlignRight
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+                                    Rectangle {
+                                        Layout.fillWidth: true
+                                        height: 4; radius: 2; color: Theme.row
+                                        Rectangle {
+                                            width: parent.width * Math.max(0, Math.min(1, ladderRow.modelData.progress))
+                                            height: parent.height; radius: 2
+                                            color: ladderRow.modelData.reached ? Theme.green : Theme.accent
+                                            Behavior on width { NumberAnimation { duration: Theme.normal } }
+                                        }
+                                    }
+                                }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "노랑은 기간(" + backend.months + "개월) 뒤에 닿는 목표입니다."
+                                color: Theme.textDim; font.pixelSize: 10
+                                visible: backend.goalRows.some(function (g) { return !g.inPeriod && g.month >= 0 })
+                            }
+                        }
+
                         // ── 달성 예측 ──
                         Rectangle {
                             visible: backend.target > 0
@@ -1375,6 +1456,7 @@ ApplicationWindow {
                             target: backend.target
                             goalMonth: backend.goalMonth
                             shortfallMonth: backend.shortfall.has ? backend.shortfall.month : -1
+                            goals: (backend.net, backend.goalAmounts)
                             markers: [6, 12, 24, 36].filter(function(m) { return m <= chartCard.horizon })
                         }
 

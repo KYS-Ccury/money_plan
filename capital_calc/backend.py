@@ -1066,6 +1066,77 @@ class Backend(QObject):
 
     inflation = Property(float, _get_inflation, _set_inflation, notify=summaryChanged)
 
+    # ---- 목표 (중간 목표 + 최종) ----
+    @Property("QVariantList", notify=summaryChanged)
+    def goalRows(self) -> list[dict]:
+        """목표 사다리. [{name, amount, final, reached, progress, gap, month, dateText}]
+
+        month 는 그 금액에 처음 닿는 개월 (못 닿으면 -1). 기간 안이면 그대로,
+        기간을 넘겨서 닿으면 '기간 뒤' 라는 뜻으로 함께 보여 준다.
+        """
+        net_now = self._s().net_at(0)
+        rows = []
+        for g in self._plan.goal_list():
+            amount = g["amount"]
+            m = self._plan.first_month_reaching(amount)
+            rows.append({
+                "name": g["name"], "amount": amount, "final": g["final"],
+                "progress": (net_now / amount) if amount > 0 else 1.0,
+                "gap": net_now - amount,
+                "reached": m is not None and m <= 0,
+                "month": -1 if m is None else m,
+                "dateText": "" if m is None else self._month_text(m),
+                "inPeriod": m is not None and m <= self._plan.months,
+            })
+        return rows
+
+    @Property("QVariantList", notify=summaryChanged)
+    def goalAmounts(self) -> list[float]:
+        """그래프에 선으로 그릴 중간 목표 금액 (최종 목표는 따로 그린다)."""
+        return [g["amount"] for g in self._plan.goal_list() if not g["final"]]
+
+    @Property(int, notify=summaryChanged)
+    def goalCount(self) -> int:
+        return len(self._plan.goals)
+
+    @Slot(str, float)
+    @undoable("중간 목표 추가")
+    def addGoal(self, name: str, amount: float) -> None:
+        amount = max(0.0, float(amount or 0))
+        if amount <= 0:
+            self.failed.emit("목표 금액을 넣어 주세요.")
+            return
+        self._plan.goals.append({"name": (name or "").strip() or "중간 목표", "amount": amount})
+        self._summary_changed()
+        self._set_status(f"중간 목표 추가: {won(amount)}")
+
+    @Slot(int, str, float)
+    @undoable("중간 목표 수정")
+    def updateGoal(self, index: int, name: str, amount: float) -> None:
+        if not (0 <= index < len(self._plan.goals)):
+            return
+        amount = max(0.0, float(amount or 0))
+        if amount <= 0:
+            self.failed.emit("목표 금액을 넣어 주세요.")
+            return
+        self._plan.goals[index] = {"name": (name or "").strip() or "중간 목표", "amount": amount}
+        self._summary_changed()
+
+    @Slot(int)
+    @undoable("중간 목표 삭제")
+    def removeGoal(self, index: int) -> None:
+        if 0 <= index < len(self._plan.goals):
+            gone = self._plan.goals.pop(index)
+            self._summary_changed()
+            self._set_status(f"중간 목표 삭제: {gone.get('name', '')}")
+
+    @Property("QVariantList", notify=summaryChanged)
+    def goalEditRows(self) -> list[dict]:
+        """목표 관리 팝업용 — 중간 목표만, 적어 둔 차례 그대로."""
+        return [{"index": i, "name": str(g.get("name") or ""),
+                 "amount": float(g.get("amount", 0) or 0)}
+                for i, g in enumerate(self._plan.goals)]
+
     @Property(float, notify=summaryChanged)
     def netReal(self) -> float:
         """기간 끝의 순 자본을 **지금 돈** 으로 환산한 값 (물가 0 이면 그대로)."""

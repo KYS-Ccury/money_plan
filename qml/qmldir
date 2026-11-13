@@ -16,3 +16,4 @@ FixedDialog 1.0 FixedDialog.qml
 BarChart 1.0 BarChart.qml
 OverviewView 1.0 OverviewView.qml
 ImportDialog 1.0 ImportDialog.qml
+GoalsDialog 1.0 GoalsDialog.qml

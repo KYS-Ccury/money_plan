@@ -14,6 +14,7 @@ Item {
     id: chart
     property var values: []
     property real target: 0
+    property var goals: []                   // 중간 목표 금액들 (옅은 선으로 함께 그린다)
     property color lineColor: Theme.accent   // 주 선 색
     property var series: []                  // 비교용 다른 시나리오: [{name, values, color, active}] (active 는 그리지 않음)
     property var markers: [6, 12]
@@ -52,6 +53,8 @@ Item {
     }
     readonly property real hiV: {
         var v = chart.values || [], h = Math.max(1, chart.target)
+        var gs = chart.goals || []
+        for (var gi = 0; gi < gs.length; gi++) h = Math.max(h, gs[gi])
         for (var i = 0; i < v.length; i++) h = Math.max(h, v[i])
         var ss = chart.series || []
         for (var k = 0; k < ss.length; k++) {
@@ -134,6 +137,23 @@ Item {
                 strokeStyle: ShapePath.DashLine; dashPattern: [4, 4]
                 startX: 0; startY: chart.yOf(chart.target)
                 PathLine { x: plot.width; y: chart.yOf(chart.target) }
+            }
+        }
+
+        // ---- 중간 목표선 (더 옅게) ----
+        Repeater {
+            model: chart.goals || []
+            delegate: Shape {
+                required property real modelData
+                anchors.fill: parent
+                visible: chart.ready && modelData > 0
+                preferredRendererType: Shape.CurveRenderer
+                ShapePath {
+                    strokeColor: Theme.accent; strokeWidth: 1; fillColor: "transparent"
+                    strokeStyle: ShapePath.DashLine; dashPattern: [2, 5]
+                    startX: 0; startY: chart.yOf(modelData)
+                    PathLine { x: plot.width; y: chart.yOf(modelData) }
+                }
             }
         }
 

@@ -857,6 +857,8 @@ class Plan:
     months: int = 12
     target: float = 0.0
     inflation: float = 0.0          # 연 물가 상승률 % (0 이면 '지금 돈' 환산을 안 쓴다)
+    # 중간 목표 [{name, amount}]. 최종 목표(target) 로 가는 길에 거쳐 가는 지점들이다
+    goals: list[dict] = field(default_factory=list)
     start_date: str = field(default_factory=lambda: date.today().isoformat())  # 기준일 (0개월)
     name: str = ""                                                              # 시나리오 이름
 
@@ -933,6 +935,24 @@ class Plan:
         return self.capital_at(m) - self.once_cost_at(m) + self.once_income_at(m) + flow
 
     # ---- 그 달에 실제로 오고 가는 돈 (가계부와 비교하려고 쓴다) ----
+    def goal_list(self) -> list[dict]:
+        """중간 목표 + 최종 목표를 **금액 순**으로. [{name, amount, final}]
+
+        거쳐 가는 차례대로 읽히도록 금액이 작은 것부터 놓는다. 중간 목표를
+        최종보다 크게 적어 두었다면 그 사다리의 맨 위에 서게 된다.
+        """
+        out = []
+        for g in self.goals:
+            amount = max(0.0, float(g.get("amount", 0) or 0))
+            if amount <= 0:
+                continue
+            out.append({"name": str(g.get("name") or "중간 목표"),
+                        "amount": amount, "final": False})
+        if self.target > 0:
+            out.append({"name": "최종 목표", "amount": float(self.target), "final": True})
+        out.sort(key=lambda g: g["amount"])
+        return out
+
     def real_value(self, amount: float, m: int | None = None) -> float:
         """m개월 뒤의 돈을 **지금 돈** 으로 환산한다 (물가 상승률만큼 깎는다).
 
@@ -1067,6 +1087,8 @@ class Plan:
             "months": self.months,
             "target": self.target,
             "inflation": self.inflation,
+            "goals": [{"name": str(g.get("name") or ""),
+                       "amount": float(g.get("amount", 0) or 0)} for g in self.goals],
             "start_date": self.start_date,
             "items": [i.to_dict() for i in self.items],
         }
@@ -1078,6 +1100,8 @@ class Plan:
             months=int(d.get("months", 12)),
             target=float(d.get("target", 0.0)),
             inflation=float(d.get("inflation", 0.0) or 0.0),
+            goals=[{"name": str(g.get("name") or ""), "amount": float(g.get("amount", 0) or 0)}
+                   for g in (d.get("goals") or []) if isinstance(g, dict)],
             start_date=str(d.get("start_date") or date.today().isoformat()),
             name=str(d.get("name") or ""),
         )

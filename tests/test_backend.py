@@ -2015,3 +2015,65 @@ def test_window_state_round_trip():
 
     b.saveWindowState(0, 0, 1200, 800, False, "엉뚱한화면")
     assert b.windowState()["mode"] == "plan"               # 모르는 화면 이름은 계획으로
+
+
+# ───────────────────────── 중간 목표
+
+def test_goal_ladder_sorts_and_tells_when_each_is_reached():
+    from capital_calc.model import Category, Item
+
+    b = _fresh_backend()
+    b.months = 36
+    b.basisDate = "2026-11-02"
+    b.addItem("현금", 0, 10_000_000, 0, True)              # 5백만 + 1천만
+    b.addItem("급여", 4, 1_000_000, 0, True)
+    b.target = 30_000_000
+
+    b.addGoal("2차 매수", 25_000_000)
+    b.addGoal("1차 전세금", 20_000_000)
+    assert b.goalCount == 2
+
+    names = [g["name"] for g in b.goalRows]
+    assert names == ["1차 전세금", "2차 매수", "최종 목표"]   # 금액 순 사다리
+    assert [g["final"] for g in b.goalRows] == [False, False, True]
+    assert b.goalAmounts == [20_000_000, 25_000_000]        # 그래프에는 중간 것만
+
+    first = b.goalRows[0]
+    assert first["month"] == 5 and first["inPeriod"] is True   # 1,500만 + 월 100만
+    assert first["dateText"].startswith("2027")
+    assert b.goalRows[-1]["month"] == 15
+
+    # 이미 넘은 목표
+    b.addGoal("이미 넘은 것", 1_000_000)
+    assert b.goalRows[0]["reached"] is True and b.goalRows[0]["month"] == 0
+
+
+def test_goal_edit_and_remove_with_undo():
+    b = _fresh_backend()
+    b.addGoal("1차", 10_000_000)
+    assert b.goalEditRows == [{"index": 0, "name": "1차", "amount": 10_000_000}]
+
+    b.updateGoal(0, "1차 전세금", 12_000_000)
+    assert b.goalEditRows[0]["name"] == "1차 전세금"
+    assert b.goalEditRows[0]["amount"] == 12_000_000
+
+    b.removeGoal(0)
+    assert b.goalCount == 0
+    b.undo()
+    assert b.goalCount == 1 and b._ws.plan.goals[0]["name"] == "1차 전세금"
+
+
+def test_goal_rejects_zero_and_survives_save():
+    from capital_calc.model import Plan as P
+
+    b = _fresh_backend()
+    b.addGoal("빈 목표", 0)
+    assert b.goalCount == 0                                 # 금액이 없으면 안 받는다
+
+    b.addGoal("", 5_000_000)
+    assert b._ws.plan.goals[0]["name"] == "중간 목표"        # 이름을 비우면 기본 이름
+
+    b.target = 0
+    p2 = P.from_dict(b._ws.plan.to_dict())
+    assert p2.goals == [{"name": "중간 목표", "amount": 5_000_000}]
+    assert [g["name"] for g in p2.goal_list()] == ["중간 목표"]   # 목표 자본금이 0 이면 중간 것만

@@ -142,6 +142,7 @@ Flickable {
                     target: backend.target
                     goalMonth: backend.goalMonth
                     shortfallMonth: view.plan.shortfallMonth
+                    goals: (backend.net, backend.goalAmounts)
                     markers: [6, 12, 24, 36].filter(function(m) { return m <= view.horizon })
                 }
             }
