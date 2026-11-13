@@ -511,3 +511,33 @@ def test_item_dialog_can_set_a_repeat():
     cat.setProperty("currentIndex", 6)              # 월세
     app.processEvents()
     assert dlg.property("canRepeat") is False
+
+
+def test_item_dialog_pins_a_ledger_category():
+    """항목 팝업의 '가계부 분류' 가 저장되고 다시 열면 그대로 올라온다."""
+    app, engine, backend, win = _load()
+    app.processEvents()
+
+    dlg = win.findChild(QObject, "itemDialog")
+    QMetaObject.invokeMethod(win, "openAddDialog")
+    app.processEvents()
+
+    box = dlg.findChild(QObject, "itemLedgerCategory")
+    assert box is not None
+    assert dlg.property("ledgerCategory") == ""        # 기본은 자동
+
+    cat = dlg.findChild(QObject, "itemCategory")
+    cat.setProperty("currentIndex", 8)                 # 고정 지출
+    app.processEvents()
+    dlg.setProperty("amount", 800_000)
+    QMetaObject.invokeMethod(dlg, "setLedgerCategory", Q_ARG("QVariant", "식비"))
+    app.processEvents()
+    assert dlg.property("ledgerCategory") == "식비"
+    QMetaObject.invokeMethod(dlg, "submit")
+    app.processEvents()
+
+    assert backend._ws.plan.items[-1].ledger_category == "식비"
+
+    QMetaObject.invokeMethod(win, "openEditDialog", Q_ARG("QVariant", backend.itemCount - 1))
+    app.processEvents()
+    assert dlg.property("ledgerCategory") == "식비"

@@ -854,7 +854,10 @@ RowLayout {
         Card {
             id: pvaCard
             // 계획(요약)이나 가계부가 바뀌면 다시 계산되도록 둘 다 참조한다
+            property string by: "total"          // "total" 총액 | "cat" 분류별
             readonly property var pva: (backend.net, backend.ledgerSummary, backend.planVsActual())
+            readonly property var byCat: (backend.net, backend.ledgerSummary,
+                                          backend.planVsActualByCategory())
             Layout.fillWidth: true
             Layout.preferredHeight: pva.has ? pvaCol.implicitHeight + Theme.pad * 2 + 30 : 0
             visible: pva.has
@@ -865,18 +868,111 @@ RowLayout {
                 anchors.fill: parent
                 spacing: 4
 
+                // 총액으로 볼지, 분류별로 볼지
                 RowLayout {
                     Layout.fillWidth: true
+                    spacing: 6
+                    Repeater {
+                        model: [{ k: "total", t: "총액" }, { k: "cat", t: "분류별" }]
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property bool on: pvaCard.by === modelData.k
+                            objectName: "pvaBy_" + modelData.k
+                            width: 56; height: 24; radius: 12
+                            color: on ? Theme.accentSoft : "transparent"
+                            border.color: on ? Theme.accent : Theme.cardBorder
+                            TapHandler { onTapped: pvaCard.by = modelData.k }
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.t
+                                color: parent.on ? Theme.text : Theme.textDim
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+
+                // ── 분류별 ──
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: pvaCard.by === "cat"
+                    spacing: 3
+
+                    Repeater {
+                        model: pvaCard.byCat.slice(0, 7)
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Rectangle {
+                                width: 6; height: 6; radius: 3
+                                color: modelData.kind === "income" ? Theme.green : Theme.red
+                                opacity: modelData.inPlan ? 1 : 0.4
+                            }
+                            Text {
+                                text: modelData.category
+                                color: modelData.inPlan ? Theme.text : Theme.textDim
+                                font.pixelSize: 12
+                                Layout.preferredWidth: 78; elide: Text.ElideRight
+                            }
+                            Text {
+                                text: modelData.inPlan ? backend.won(modelData.plan) : "계획 없음"
+                                color: Theme.textDim; font.pixelSize: 11
+                                Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                            }
+                            Text {
+                                text: backend.won(modelData.actual)
+                                color: Theme.text; font.pixelSize: 11
+                                Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                            }
+                            Text {
+                                // 지출은 적을수록, 수입은 많을수록 초록
+                                text: (modelData.diff >= 0 ? "+" : "-") + backend.won(Math.abs(modelData.diff))
+                                color: (modelData.kind === "income" ? modelData.diff >= 0 : modelData.diff <= 0)
+                                       ? Theme.green : Theme.red
+                                font.pixelSize: 11
+                                Layout.fillWidth: true; horizontalAlignment: Text.AlignRight
+                            }
+                        }
+                    }
+                    Text {
+                        visible: pvaCard.byCat.length === 0
+                        Layout.fillWidth: true
+                        text: "견줄 분류가 없습니다."
+                        color: Theme.textDim; font.pixelSize: 11
+                    }
+                    Text {
+                        visible: pvaCard.byCat.length > 7
+                        text: "그 밖에 " + (pvaCard.byCat.length - 7) + "개 분류가 더 있습니다"
+                        color: Theme.textDim; font.pixelSize: 10
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 2
+                        text: "계획 항목은 '가계부 분류' 로 묶습니다. 항목 팝업에서 바꿀 수 있고, "
+                              + "흐린 줄은 계획에 없던 분류입니다."
+                        color: Theme.textDim; font.pixelSize: 10; wrapMode: Text.Wrap
+                    }
+                }
+
+                // ── 총액 ──
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: pvaCard.by === "total"
                     spacing: 6
                     Text { text: ""; Layout.preferredWidth: 52 }
                     Text { text: "계획"; color: Theme.textDim; font.pixelSize: 11; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
                     Text { text: "실제"; color: Theme.textDim; font.pixelSize: 11; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
                     Text { text: "차이"; color: Theme.textDim; font.pixelSize: 11; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
                 }
-                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
+                Rectangle {
+                    Layout.fillWidth: true; height: 1; color: Theme.cardBorder
+                    visible: pvaCard.by === "total"
+                }
 
                 Repeater {
-                    model: [
+                    model: pvaCard.by !== "total" ? [] : [
                         { label: "수입", plan: pvaCard.pva.planIn,  act: pvaCard.pva.actIn,  diff: pvaCard.pva.inDiff,  good: 1 },
                         { label: "지출", plan: pvaCard.pva.planOut, act: pvaCard.pva.actOut, diff: pvaCard.pva.outDiff, good: -1 },
                         { label: "남은 돈", plan: pvaCard.pva.planNet, act: pvaCard.pva.actNet, diff: pvaCard.pva.netDiff, good: 1 }
@@ -925,7 +1021,8 @@ RowLayout {
                     Layout.topMargin: 2
                 }
                 Text {
-                    text: "분류 체계가 서로 달라 총액만 비교합니다."
+                    visible: pvaCard.by === "total"
+                    text: "분류별로 보려면 위의 '분류별' 을 누르세요."
                          + (pvaCard.pva.months > 1 ? "  기준일 이후 " + pvaCard.pva.months + "개월분입니다." : "")
                     color: Theme.textDim; font.pixelSize: 10
                     wrapMode: Text.Wrap

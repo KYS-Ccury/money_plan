@@ -1760,3 +1760,74 @@ def test_sort_and_amount_range_in_the_ledger_view():
     b.clearLedgerFilters()
     assert (b.ledgerMinAmount, b.ledgerMaxAmount) == (0, 0) and len(names()) == 3
     assert b.ledgerSort == "date"                       # 정렬은 거르기 해제로 건드리지 않는다
+
+
+# ───────────────────────── 분류별 계획 대비 실적
+
+def test_plan_vs_actual_by_category():
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Category, Item, Workspace
+
+    plan = Plan(months=12, start_date="2026-11-02")
+    plan.add(Item("현금", Category.CASH, 10_000_000))
+    plan.add(Item("월세", Category.RENT, 600_000, start_date="2026-11-02"))
+    plan.add(Item("생활비", Category.FIXED, 800_000, start_date="2026-11-02"))
+    plan.add(Item("급여", Category.INCOME, 2_000_000, start_date="2026-11-02"))
+    ws = Workspace(plans=[plan])
+    ws.ledger = Ledger()
+    for d, c, a in (("2026-11-05", "주거/관리비", 650_000), ("2026-11-07", "식비", 420_000),
+                    ("2026-11-25", "급여", 2_000_000)):
+        ws.ledger.add(Entry(d, c, a))
+    b = Backend(ws)
+    b.ledgerYear, b.ledgerMonth = "2026", 11
+
+    rows = {r["category"]: r for r in b.planVsActualByCategory()}
+    assert rows["주거/관리비"]["plan"] == 600_000
+    assert rows["주거/관리비"]["actual"] == 650_000
+    assert rows["주거/관리비"]["diff"] == 50_000 and rows["주거/관리비"]["inPlan"] is True
+    assert rows["기타 지출"]["plan"] == 800_000 and rows["기타 지출"]["actual"] == 0
+    assert rows["식비"]["plan"] == 0 and rows["식비"]["inPlan"] is False   # 계획에 없던 지출
+    assert rows["급여"]["kind"] == "income" and rows["급여"]["diff"] == 0
+
+    # 합계는 총액 비교와 맞아야 한다
+    total = b.planVsActual()
+    assert sum(r["plan"] for r in b.planVsActualByCategory() if r["kind"] == "cost") == total["planOut"]
+    assert sum(r["actual"] for r in b.planVsActualByCategory() if r["kind"] == "cost") == total["actOut"]
+
+
+def test_item_can_be_pinned_to_a_ledger_category():
+    """항목의 '가계부 분류' 를 정해 두면 비교도 가져오기도 그것을 따른다."""
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Category, Item, Workspace
+
+    plan = Plan(months=12, start_date="2026-11-02")
+    plan.add(Item("생활비", Category.FIXED, 800_000, start_date="2026-11-02"))
+    ws = Workspace(plans=[plan])
+    ws.ledger = Ledger()
+    ws.ledger.add(Entry("2026-11-07", "식비", 420_000))
+    b = Backend(ws)
+    b.ledgerYear, b.ledgerMonth = "2026", 11
+
+    rows = {r["category"]: r for r in b.planVsActualByCategory()}
+    assert rows["기타 지출"]["plan"] == 800_000          # 분류표대로 (자동)
+
+    b.updateItem(0, "생활비", 8, 800_000, 0, True, "2026-11-02", "", "[]",
+                 0, "", "", 0, 0, 0, False, 0, "식비")
+    assert b._ws.plan.items[0].ledger_category == "식비"
+    rows = {r["category"]: r for r in b.planVsActualByCategory()}
+    assert rows["식비"]["plan"] == 800_000 and rows["식비"]["actual"] == 420_000
+    assert "기타 지출" not in rows
+
+    # 가계부로 가져올 때도 그 분류로
+    assert b.toLedger(0) is True
+    assert b._ws.ledger.entries[-1].category == "식비"
+
+
+def test_by_category_is_empty_without_a_period():
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    b = Backend(ws)
+    assert b.planVsActualByCategory() == []           # 기록이 없으면 기간도 없다

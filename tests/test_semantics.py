@@ -329,3 +329,21 @@ def test_every_survives_save():
     p = mk(12, Item("자동차세", Category.EXPENSE, 500_000, start_date="2026-12-02", every=12))
     p2 = Plan.from_dict(p.to_dict())
     assert p2.items[0].every == 12 and p2.items[0].repeats
+
+
+def test_item_planned_amounts_add_up_to_the_plan():
+    """항목별 '그 달에 오가는 돈' 을 모으면 계획 전체와 같아야 한다 (한 곳에서만 계산)."""
+    p = mk(24, Item("현금", Category.CASH, 20_000_000),
+               Item("급여", Category.INCOME, 2_500_000, growth=3.0),
+               Item("월세", Category.RENT, 700_000),
+               Item("자동차세", Category.EXPENSE, 500_000, start_date="2026-12-02", every=12),
+               Item("전셋집", Category.DEPOSIT, 30_000_000, housing_type="jeonse",
+                    start_date=BASIS, end_date="2028-11-02"),
+               Item("대출", Category.LOAN, 50_000_000, rate=4.0, include_principal=True,
+                    repay_method="equal_principal", start_date=BASIS, end_date="2028-11-02"),
+               Item("적금", Category.SAVING, 300_000, rate=3.0, locked=True,
+                    start_date=BASIS, end_date="2027-11-02"))
+    b = p.basis
+    for m in range(25):
+        assert near(sum(i.planned_out_at(m, b) for i in p.live), p.planned_out_at(m)), f"{m}개월 지출"
+        assert near(sum(i.planned_in_at(m, b) for i in p.live), p.planned_in_at(m)), f"{m}개월 수입"

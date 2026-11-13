@@ -197,6 +197,7 @@ class Item:
     locked: bool = False             # 만기 전까지 못 쓰는 돈으로 볼지 (적금). 만기가 있어야 적용된다
     active: bool = True              # 끄면 계산에서 빠진다 (지우지 않고 잠시 빼 볼 때)
     every: int = 0                   # 일시 지출·수입이 몇 개월마다 되풀이되는지 (0 = 한 번만)
+    ledger_category: str = ""        # 가계부에서는 어느 분류로 볼지 (비우면 분류표대로 자동)
 
     def __post_init__(self) -> None:
         if self.repay_method not in REPAY_METHODS:
@@ -650,6 +651,35 @@ class Item:
     def monthly_net(self, basis: date | None = None) -> float:
         return self.monthly_net_at(0, basis or date.today())
 
+    def planned_out_at(self, m: int, basis: date) -> float:
+        """이 항목이 m개월에 내보내는 돈 (가계부와 견주려고 쓴다).
+
+        월 지출 + 그 달에 걸린 일시 지출 + 대출 원금 상환. 원금을 자본에 넣은
+        대출은 월 지출에 상환액이 안 잡히므로 여기서 따로 더한다.
+        """
+        out = self.monthly_cost_at(m, basis)
+        if self.date_mode == "once" and self.once_cost() > 0 and self.occurs_at(m, basis):
+            out += self.once_cost()
+        if self.category == Category.LOAN and self.include_principal:
+            out += self.regular_repay_at(m, basis)
+            if self.is_active(m, basis):
+                out += self.repayment_at(m, basis)
+            _start_m, end_m = self.active_range(basis)
+            if end_m is not None and m == end_m:
+                out += self.remaining_at(m, basis)
+        return out
+
+    def planned_in_at(self, m: int, basis: date) -> float:
+        """이 항목이 m개월에 들여오는 돈. 월 수입 + 그 달의 일시 수입 + 보증금 반환 + 적금 만기."""
+        inc = self.monthly_income_at(m, basis)
+        if self.once_income() > 0 and self.occurs_at(m, basis):
+            inc += self.once_income()
+        if self.return_month(basis) == m:
+            inc += self.once_cost()
+        if self.is_locked(basis) and self.maturity_month(basis) == m:
+            inc += self.saving_balance_at(m, basis)
+        return inc
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["category"] = self.category.value
@@ -679,6 +709,7 @@ class Item:
             locked=bool(d.get("locked", False)),
             active=bool(d.get("active", True)),
             every=int(d.get("every", 0) or 0),
+            ledger_category=str(d.get("ledger_category") or ""),
         )
 
 
@@ -858,34 +889,14 @@ class Plan:
 
     # ---- 그 달에 실제로 오고 가는 돈 (가계부와 비교하려고 쓴다) ----
     def planned_out_at(self, m: int) -> float:
-        """m개월에 나갈 것으로 계획된 돈 = 월 지출 + 그 달에 걸린 일시 지출 + 대출 원금 상환."""
+        """m개월에 나갈 것으로 계획된 돈 (항목별 계산을 모은 것)."""
         b = self.basis
-        out = self.monthly_cost_at(m)
-        for i in self.live:
-            if i.date_mode == "once" and i.once_cost() > 0 and i.occurs_at(m, b):
-                out += i.once_cost()
-            if i.category == Category.LOAN and i.include_principal:
-                # 원금을 자본에 넣은 대출은 월 지출에 상환액이 안 잡히므로 여기서 더한다
-                out += i.regular_repay_at(m, b)
-                if i.is_active(m, b):
-                    out += i.repayment_at(m, b)
-                _start_m, end_m = i.active_range(b)
-                if end_m is not None and m == end_m:
-                    out += i.remaining_at(m, b)
-        return out
+        return sum(i.planned_out_at(m, b) for i in self.live)
 
     def planned_in_at(self, m: int) -> float:
-        """m개월에 들어올 것으로 계획된 돈 = 월 수입 + 그 달의 일시 수입 + 보증금 반환."""
+        """m개월에 들어올 것으로 계획된 돈 (항목별 계산을 모은 것)."""
         b = self.basis
-        inc = self.monthly_income_at(m)
-        for i in self.live:
-            if i.once_income() > 0 and i.occurs_at(m, b):
-                inc += i.once_income()
-            if i.return_month(b) == m:
-                inc += i.once_cost()
-            if i.is_locked(b) and i.maturity_month(b) == m:
-                inc += i.saving_balance_at(m, b)
-        return inc
+        return sum(i.planned_in_at(m, b) for i in self.live)
 
     def pending_inflows(self) -> list[dict]:
         """기간이 끝난 뒤에 들어올 돈. 지금 순 자본에는 안 잡히지만 목표에 보탬이 된다.

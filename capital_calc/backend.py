@@ -67,6 +67,7 @@ class ItemListModel(QAbstractListModel):
     GroupCountRole = Qt.ItemDataRole.UserRole + 25  # 같은 분류 항목이 몇 개인가
     ActiveRole = Qt.ItemDataRole.UserRole + 26      # 켜져 있는가 (꺼 두면 계산에서 빠진다)
     EveryRole = Qt.ItemDataRole.UserRole + 27       # 몇 개월마다 되풀이되는지 (0 = 한 번만)
+    LedgerCategoryRole = Qt.ItemDataRole.UserRole + 28   # 가계부에서 볼 분류 ("" = 자동)
 
     _ROLES = {
         NameRole: b"name",
@@ -96,6 +97,7 @@ class ItemListModel(QAbstractListModel):
         GroupCountRole: b"groupCount",
         ActiveRole: b"active",
         EveryRole: b"every",
+        LedgerCategoryRole: b"ledgerCategory",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -143,6 +145,8 @@ class ItemListModel(QAbstractListModel):
             return it.active
         if role == self.EveryRole:
             return it.every
+        if role == self.LedgerCategoryRole:
+            return it.ledger_category
         if role in (self.GroupPosRole, self.GroupCountRole):
             same = [k for k, x in enumerate(self._plan.items) if x.category == it.category]
             if role == self.GroupCountRole:
@@ -1356,7 +1360,8 @@ class Backend(QObject):
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
-                   support: float = 0.0, locked: bool = False, every: int = 0) -> Item:
+                   support: float = 0.0, locked: bool = False, every: int = 0,
+                   ledger_category: str = "") -> Item:
         cat = CATEGORY_LIST[max(0, min(cat_index, len(CATEGORY_LIST) - 1))]
         mode = CATEGORY_INFO[cat]["date_mode"]
         sd = parse_date(start_date) if mode in ("range", "once") else None   # once 면 지출일·수입일
@@ -1376,8 +1381,10 @@ class Backend(QObject):
             locked=bool(locked),
             # 되풀이는 일시 지출·수입에서만 (다른 분류는 이미 매달 오간다)
             every=max(0, int(every)) if cat in (Category.EXPENSE, Category.INCOME_ONCE) else 0,
+            ledger_category=(ledger_category or "").strip(),
         )
 
+    @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float)
@@ -1392,13 +1399,15 @@ class Backend(QObject):
                 start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                 monthly_repay_rate: float = 0.0, repay_method: str = "",
                 housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
-                support: float = 0.0, locked: bool = False, every: int = 0) -> None:
+                support: float = 0.0, locked: bool = False, every: int = 0,
+                ledger_category: str = "") -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
-                               growth, support, locked, every)
+                               growth, support, locked, every, ledger_category)
         self._items.add(item)
         self._set_status(f"추가: {item.name}")
 
+    @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float)
@@ -1413,10 +1422,11 @@ class Backend(QObject):
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
-                   support: float = 0.0, locked: bool = False, every: int = 0) -> None:
+                   support: float = 0.0, locked: bool = False, every: int = 0,
+                   ledger_category: str = "") -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
-                               growth, support, locked, every)
+                               growth, support, locked, every, ledger_category)
         old = self._plan.items[row] if 0 <= row < len(self._plan.items) else None
         item.active = old.active if old else True      # 꺼 둔 항목은 고쳐도 꺼진 채로
         self._items.update(row, item)
@@ -1914,6 +1924,24 @@ class Backend(QObject):
         Category.SAVING: "저축/투자",
     }
 
+    def _ledger_cat(self, it: Item) -> str:
+        """이 항목을 가계부의 어느 분류로 볼지. 직접 정해 두었으면 그것이 먼저다."""
+        want = (it.ledger_category or "").strip()
+        if want and want in self._ws.ledger.categories():
+            return want
+        return self.PLAN_TO_LEDGER.get(it.category, "")
+
+    @Slot(int, result="QVariantList")
+    @Slot(result="QVariantList")
+    def ledgerCategoryChoices(self, cat_index: int = -1) -> list[dict]:
+        """항목 팝업의 '가계부 분류' 목록 — 맨 앞은 자동(분류표대로)."""
+        auto = ""
+        if 0 <= cat_index < len(CATEGORY_LIST):
+            auto = self.PLAN_TO_LEDGER.get(CATEGORY_LIST[cat_index], "")
+        head = f"자동 ({auto})" if auto else "자동 (기록 안 함)"
+        return [{"value": "", "label": head}] + [
+            {"value": c, "label": c} for c in self._ws.ledger.categories()]
+
     def _ledger_date(self) -> str:
         """가계부에 넣을 날짜. 달을 골라 놨으면 그 달의 오늘 날짜, 아니면 오늘."""
         today = date.today()
@@ -1938,7 +1966,7 @@ class Backend(QObject):
         if not (0 <= source_row < len(self._plan.items)):
             return False
         it = self._plan.items[source_row]
-        cat = self.PLAN_TO_LEDGER.get(it.category)
+        cat = self._ledger_cat(it)
         if not cat:
             self.failed.emit(f"'{it.category.value}' 분류는 가계부에 기록할 수 없습니다.")
             return False
@@ -1969,7 +1997,7 @@ class Backend(QObject):
         period = day[:7]
         added = skipped = 0
         for it in list(self._plan.items):
-            cat = self.PLAN_TO_LEDGER.get(it.category)
+            cat = self._ledger_cat(it)
             if not cat or self._ledger_amount(it) <= 0:
                 continue
             if self._ws.ledger.has_name(period, it.name):
@@ -2546,6 +2574,51 @@ class Backend(QObject):
         s = self._ws.ledger.summary(ym)
         return {"ym": ym, "label": f"{int(ym[:4])}년 {int(ym[5:7])}월", **s,
                 "vsPlan": self._plan_vs_actual(ym)}
+
+    @Slot(result="QVariantList")
+    def planVsActualByCategory(self) -> list[dict]:
+        """지금 보고 있는 기간의 **분류별** 계획 대비 실적.
+
+        계획 항목은 '가계부에서 볼 분류' 로 묶는다 (팝업에서 정해 두지 않았으면
+        분류표대로). 계획에 없던 분류는 계획 0 으로 함께 보여 준다 — 그게 바로
+        '계획에 없던 지출' 이기 때문이다.
+        [{category, kind, plan, actual, diff, pct, inPlan}] — 계획이 큰 것부터
+        """
+        period = self.ledgerPeriod
+        if not period:
+            return []
+        basis = self._plan.basis
+        months = [m for m in (month_offset(basis, date(int(ym[:4]), int(ym[5:7]), 1))
+                              for ym in self._period_months(period)) if m >= 0]
+        if not months:
+            return []
+
+        plan_out: dict[str, float] = {}
+        plan_in: dict[str, float] = {}
+        for it in self._plan.live:
+            cat = self._ledger_cat(it)
+            if not cat:
+                continue                       # 현금·예금은 오가는 돈이 아니다
+            out = sum(it.planned_out_at(m, basis) for m in months)
+            inc = sum(it.planned_in_at(m, basis) for m in months)
+            if out > 0:
+                plan_out[cat] = plan_out.get(cat, 0.0) + out
+            if inc > 0:
+                plan_in[cat] = plan_in.get(cat, 0.0) + inc
+
+        rows = []
+        for kind, planned in (("cost", plan_out), ("income", plan_in)):
+            actual = dict(self._ws.ledger.by_category(period, kind))
+            for cat in set(planned) | set(actual):
+                p, a = planned.get(cat, 0.0), actual.get(cat, 0.0)
+                rows.append({
+                    "category": cat, "kind": kind,
+                    "plan": p, "actual": a, "diff": a - p,
+                    "pct": ((a - p) / p * 100.0) if p > 0 else 0.0,
+                    "inPlan": p > 0,
+                })
+        rows.sort(key=lambda r: (r["kind"] != "cost", -max(r["plan"], r["actual"])))
+        return rows
 
     @Property(bool, notify=ledgerChanged)
     def canCopyPreviousMonth(self) -> bool:

@@ -30,7 +30,8 @@ ApplicationWindow {
                                m.data(idx, Qt.UserRole + 16), m.data(idx, Qt.UserRole + 18),
                                m.data(idx, Qt.UserRole + 19), m.data(idx, Qt.UserRole + 20),
                                m.data(idx, Qt.UserRole + 21), m.data(idx, Qt.UserRole + 22),
-                               m.data(idx, Qt.UserRole + 23), m.data(idx, Qt.UserRole + 27))
+                               m.data(idx, Qt.UserRole + 23), m.data(idx, Qt.UserRole + 27),
+                               m.data(idx, Qt.UserRole + 28))
     }
 
     function openEntryDialog() {                            // 테스트/외부 호출용
@@ -565,6 +566,7 @@ ApplicationWindow {
                             required property int groupCount    // 같은 분류가 몇 개
                             required property bool active       // 꺼 두면 계산에서 빠진다
                             required property int every        // 몇 달마다 되풀이 (0 = 한 번만)
+                            required property string ledgerCategory   // 가계부에서 볼 분류
 
                             // 접힌 분류의 줄은 목록에서 빼지 않고 높이만 0 으로 접는다
                             // (빼 버리면 그 분류의 섹션 헤더까지 사라져 다시 펼 수가 없다)
@@ -605,7 +607,8 @@ ApplicationWindow {
                                                                        rowItem.monthlyRepayRate, rowItem.repayMethod,
                                                                        rowItem.housingType, rowItem.monthly,
                                                                        rowItem.growth, rowItem.support,
-                                                                       rowItem.locked, rowItem.every)
+                                                                       rowItem.locked, rowItem.every,
+                                                                       rowItem.ledgerCategory)
                             }
 
                             // 이름 아래 작은 글씨 — 줄 전체 폭을 쓴다

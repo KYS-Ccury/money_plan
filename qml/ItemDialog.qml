@@ -13,6 +13,7 @@ Popup {
     property string startDate: ""
     property string onceDate: ""        // 일시 지출·일시 수입의 지출일/수입일
     property int every: 0               // 일시 지출·수입이 몇 개월마다 되풀이되는지 (0 = 한 번만)
+    property string ledgerCategory: ""  // 가계부에서 볼 분류 ("" = 분류표대로 자동)
     // 되풀이를 정할 수 있는가 — 일시 지출·일시 수입만 (보증금은 돌려받는 돈이라 뺀다)
     readonly property bool canRepeat: dlg.info.dateMode === "once" && !dlg.info.isHousing
                                       && !dlg.info.returnable
@@ -79,6 +80,7 @@ Popup {
         endDate = ""
         onceDate = ""
         every = 0
+        setLedgerCategory("")
         principalCheck.checked = true
         monthlyRepayRate = 0
         setRepayMethod("bullet")
@@ -99,7 +101,8 @@ Popup {
         methodBox.currentIndex = Math.max(0, methodBox.indexOfValue(dlg.repayMethod))
     }
     function openForEdit(row, name, catIndex, amount, rate, includePrincipal, startDate, endDate, repayments,
-                         monthlyRepayRate, repayMethod, housingType, monthly, growth, support, locked, every) {
+                         monthlyRepayRate, repayMethod, housingType, monthly, growth, support, locked, every,
+                         ledgerCategory) {
         editRow = row
         nameField.text = name
         catBox.currentIndex = catIndex
@@ -117,9 +120,17 @@ Popup {
         dlg.support = support || 0
         dlg.locked = locked === true
         dlg.every = every || 0
+        setLedgerCategory(ledgerCategory || "")
         loadRepayments(repayments)
         open(); nameField.forceActiveFocus()
     }
+    // 가계부 분류는 '자동' 을 포함한 목록에서 고른다
+    function setLedgerCategory(c) {
+        dlg.ledgerCategory = c || ""
+        var i = ledgerCatBox.indexOfValue(dlg.ledgerCategory)
+        ledgerCatBox.currentIndex = i >= 0 ? i : 0
+    }
+
     function datesValid() {
         if (dlg.info.dateMode === "range" && !(startField.valid && endField.valid)) return false
         if (dlg.info.dateMode === "once" && !onceField.valid) return false
@@ -141,9 +152,9 @@ Popup {
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
         if (editRow < 0)
-            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0)
+            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory)
         else
-            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0)
+            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory)
         close()
     }
 
@@ -184,6 +195,27 @@ Popup {
                 color: Theme.textDim; font.pixelSize: 12
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
+            }
+
+            // ── 가계부에서는 어느 분류로 볼지 ──
+            // 계획의 분류(11가지)와 가계부의 분류는 체계가 달라서, 그 짝을 여기서 정한다.
+            // '계획에서 가져오기' 와 '분류별 계획 대비 실적' 이 이 값을 쓴다.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                visible: ledgerCatBox.model.length > 1
+                Text { text: "가계부 분류"; color: Theme.textDim; font.pixelSize: 12 }
+                ComboBox {
+                    id: ledgerCatBox
+                    objectName: "itemLedgerCategory"
+                    Layout.fillWidth: true
+                    model: (backend.itemCount, backend.ledgerCategoryChoices(catBox.currentIndex))
+                    textRole: "label"
+                    valueRole: "value"
+                    onActivated: dlg.ledgerCategory = String(currentValue)
+                    ToolTip.visible: hovered; ToolTip.delay: 600
+                    ToolTip.text: "가계부에 기록하거나 '분류별 계획 대비' 로 견줄 때 쓰는 분류입니다"
+                }
             }
 
             // ── 주거 형태 (전세 / 반전세 / 월세 / 매매) ──
