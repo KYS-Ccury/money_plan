@@ -19,7 +19,8 @@ Item {
     readonly property real ringOuter: Math.min(pieArea.width, pieArea.height) / 2 - 6
     readonly property real ringInner: ringOuter * 0.6
 
-    readonly property var palette: [Theme.accent, Theme.green, Theme.yellow, Theme.red, "#b57bee", "#4fc3dc", "#ff9f5a", "#8a90a3"]
+    // Item 에 이미 palette 가 있어 이름을 피한다 (겹치면 경고가 난다)
+    readonly property var sliceColors: [Theme.accent, Theme.green, Theme.yellow, Theme.red, "#b57bee", "#4fc3dc", "#ff9f5a", "#8a90a3"]
 
     // 조각마다 시작 각도와 크기를 미리 계산한다 (도 단위, 12시 = -90°, 시계 방향)
     readonly property var wedges: {
@@ -48,7 +49,7 @@ Item {
     }
     NumberAnimation { id: revealAnim; target: chart; property: "reveal"; from: 0; to: 1; duration: 800; easing.type: Easing.OutCubic }
 
-    function colorOf(i) { return (slices[i] && slices[i].color) ? slices[i].color : palette[i % palette.length] }
+    function colorOf(i) { return (slices[i] && slices[i].color) ? slices[i].color : sliceColors[i % sliceColors.length] }
 
     // 도넛 가운데에서 (dx, dy) 만큼 떨어진 곳이 몇 번째 조각인가. 링 밖이면 -1.
     // (마우스 판정에 쓰고, 따로 떼어 두어 검사하기 쉽게 한다)

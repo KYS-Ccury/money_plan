@@ -164,7 +164,10 @@ Popup {
         Text {
             Layout.fillWidth: true
             visible: dlg.info.ok === false && dlg.info.problemCount > 0
-            text: "읽지 못했습니다. " + (dlg.info.problems.length > 0 ? dlg.info.problems[0] : "")
+            // 바인딩은 visible 과 상관없이 계산된다. 아직 아무것도 안 읽었으면
+            // info 가 {} 라서 problems 가 없다 — 그래서 늘 있는지 보고 꺼낸다
+            text: "읽지 못했습니다. "
+                  + (dlg.info.problems && dlg.info.problems.length > 0 ? dlg.info.problems[0] : "")
             color: Theme.red; font.pixelSize: 12; wrapMode: Text.Wrap
         }
 
