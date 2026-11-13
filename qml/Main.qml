@@ -31,7 +31,8 @@ ApplicationWindow {
                                m.data(idx, Qt.UserRole + 19), m.data(idx, Qt.UserRole + 20),
                                m.data(idx, Qt.UserRole + 21), m.data(idx, Qt.UserRole + 22),
                                m.data(idx, Qt.UserRole + 23), m.data(idx, Qt.UserRole + 27),
-                               m.data(idx, Qt.UserRole + 28))
+                               m.data(idx, Qt.UserRole + 28), m.data(idx, Qt.UserRole + 29),
+                               m.data(idx, Qt.UserRole + 30))
     }
 
     function openEntryDialog() {                            // 테스트/외부 호출용
@@ -647,6 +648,8 @@ ApplicationWindow {
                             required property bool active       // 꺼 두면 계산에서 빠진다
                             required property int every        // 몇 달마다 되풀이 (0 = 한 번만)
                             required property string ledgerCategory   // 가계부에서 볼 분류
+                            required property bool afterTax    // 이자에서 세금을 떼는가
+                            required property bool compound    // 복리인가
 
                             // 접힌 분류의 줄은 목록에서 빼지 않고 높이만 0 으로 접는다
                             // (빼 버리면 그 분류의 섹션 헤더까지 사라져 다시 펼 수가 없다)
@@ -688,7 +691,8 @@ ApplicationWindow {
                                                                        rowItem.housingType, rowItem.monthly,
                                                                        rowItem.growth, rowItem.support,
                                                                        rowItem.locked, rowItem.every,
-                                                                       rowItem.ledgerCategory)
+                                                                       rowItem.ledgerCategory,
+                                                                       rowItem.afterTax, rowItem.compound)
                             }
 
                             // 이름 아래 작은 글씨 — 줄 전체 폭을 쓴다
@@ -919,6 +923,49 @@ ApplicationWindow {
                         StatRow { label: backend.months + "개월 수입"; value: backend.periodIncome; prefix: "+"; valueColor: Theme.green }
                         Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder; Layout.topMargin: 4; Layout.bottomMargin: 4 }
                         StatRow { label: backend.months + "개월 후 순 자본"; value: backend.net; emphasis: true; valueColor: backend.net >= 0 ? Theme.green : Theme.red }
+
+                        // ── 물가: 그 돈이 지금 돈으로 얼마인지 ──
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 4
+                            spacing: 6
+                            Text { text: "물가"; color: Theme.textDim; font.pixelSize: 12 }
+                            TextField {
+                                id: inflationField
+                                objectName: "inflationField"
+                                Layout.preferredWidth: 64
+                                horizontalAlignment: Text.AlignRight
+                                placeholderText: "0.0"
+                                text: backend.inflation > 0 ? String(backend.inflation) : ""
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                Timer {
+                                    id: inflationTimer
+                                    interval: 300
+                                    onTriggered: backend.inflation = parseFloat(inflationField.text) || 0
+                                }
+                                onTextEdited: inflationTimer.restart()
+                                onEditingFinished: {
+                                    inflationTimer.stop()
+                                    backend.inflation = parseFloat(text) || 0
+                                }
+                                ToolTip.visible: hovered; ToolTip.delay: 600
+                                ToolTip.text: "연 물가 상승률. 넣으면 기간 끝의 돈이 지금 돈으로 얼마인지 보여 줍니다"
+                            }
+                            Text { text: "%"; color: Theme.textDim; font.pixelSize: 12 }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                visible: backend.inflation > 0
+                                text: "지금 돈으로 " + backend.won(backend.netReal)
+                                color: Theme.textDim; font.pixelSize: 12
+                            }
+                        }
+                        Text {
+                            visible: backend.inflation > 0 && backend.target > 0
+                            Layout.fillWidth: true
+                            text: "목표 " + backend.won(backend.target) + " 는 "
+                                  + backend.months + "개월 뒤 지금 돈 " + backend.won(backend.targetReal) + " 만큼입니다."
+                            color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap
+                        }
                     }
                 }
 

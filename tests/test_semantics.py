@@ -347,3 +347,80 @@ def test_item_planned_amounts_add_up_to_the_plan():
     for m in range(25):
         assert near(sum(i.planned_out_at(m, b) for i in p.live), p.planned_out_at(m)), f"{m}개월 지출"
         assert near(sum(i.planned_in_at(m, b) for i in p.live), p.planned_in_at(m)), f"{m}개월 수입"
+
+
+# ───────────────────────── 이자소득세 · 복리 · 물가
+
+def test_interest_tax_takes_15_4_percent_of_the_interest_only():
+    """세금은 이자에만 붙는다. 원금은 그대로다."""
+    from capital_calc.model import INTEREST_TAX
+
+    keep = 1 - INTEREST_TAX / 100
+
+    # 예금: 이자가 매달 수입으로 들어온다
+    gross = mk(12, Item("예금", Category.BANK, 10_000_000, rate=4.0))
+    net = mk(12, Item("예금", Category.BANK, 10_000_000, rate=4.0, after_tax=True))
+    assert near(gross.net_at(12), 10_000_000 + 400_000)
+    assert near(net.net_at(12), 10_000_000 + 400_000 * keep)
+
+    # 적금: 만기 잔액의 이자분만 깎인다
+    g = mk(12, Item("적금", Category.SAVING, 500_000, rate=4.0,
+                    start_date=BASIS, end_date="2027-11-02"))
+    n = mk(12, Item("적금", Category.SAVING, 500_000, rate=4.0, after_tax=True,
+                    start_date=BASIS, end_date="2027-11-02"))
+    gi = g.items[0].saving_balance_at(12, g.basis) - 6_000_000
+    ni = n.items[0].saving_balance_at(12, n.basis) - 6_000_000
+    assert near(ni, gi * keep) and gi > 0
+
+
+def test_tax_only_applies_where_interest_is_earned():
+    """대출 이자에는 세금이 없다 (내는 돈이다)."""
+    loan = Item("대출", Category.LOAN, 10_000_000, rate=6.0, after_tax=True,
+                include_principal=False, repay_method="bullet", start_date=BASIS)
+    assert loan.taxes_interest is False
+    p = mk(12, Item("현금", Category.CASH, 10_000_000), loan)
+    assert near(p.net_at(6), 10_000_000 - 50_000 * 6)      # 월 이자 5만 그대로
+
+
+def test_compound_grows_faster_than_simple():
+    """복리 예금은 이자를 빼지 않고 안에서 굴린다 (월 수입이 아니라 잔액이 는다)."""
+    simple = mk(24, Item("예금", Category.BANK, 10_000_000, rate=6.0))
+    comp = mk(24, Item("예금", Category.BANK, 10_000_000, rate=6.0, compound=True))
+
+    i = 0.06 / 12
+    assert near(comp.items[0].bank_balance_at(24), 10_000_000 * (1 + i) ** 24)
+    assert near(comp.capital_at(24), 10_000_000 * (1 + i) ** 24)
+    assert near(comp.monthly_income_at(0), 0)              # 이자가 밖으로 나오지 않는다
+    assert near(simple.monthly_income_at(0), 50_000)
+    assert comp.net_at(24) > simple.net_at(24)
+    assert near(comp.net_at(0), simple.net_at(0))          # 시작은 같다
+
+
+def test_compound_saving_matches_the_formula():
+    """월복리 적금: 납입분마다 (1+i)^묶인개월."""
+    S, rate, n = 500_000, 6.0, 12
+    i = rate / 100 / 12
+    p = mk(24, Item("적금", Category.SAVING, S, rate=rate, compound=True,
+                    start_date=BASIS, end_date="2027-11-02"))
+    sv = p.items[0]
+    want = sum(S * (1 + i) ** (n - j) for j in range(n))
+    assert near(sv.saving_balance_at(n, p.basis), want)
+
+
+def test_inflation_converts_to_todays_money():
+    p = mk(24, Item("현금", Category.CASH, 10_000_000))
+    assert near(p.real_value(10_000_000), 10_000_000)       # 물가 0 이면 그대로
+
+    p.inflation = 3.0
+    assert near(p.real_value(10_000_000), 10_000_000 / 1.03 ** 2)
+    assert near(p.real_value(10_000_000, 12), 10_000_000 / 1.03)
+    assert near(p.real_value(10_000_000, 0), 10_000_000)
+    assert near(p.net_at(24), 10_000_000)                   # 계산 자체는 건드리지 않는다
+
+
+def test_tax_and_compound_survive_save():
+    p = mk(12, Item("예금", Category.BANK, 10_000_000, rate=4.0, after_tax=True, compound=True))
+    p.inflation = 2.5
+    p2 = Plan.from_dict(p.to_dict())
+    assert p2.items[0].after_tax and p2.items[0].compound
+    assert p2.inflation == 2.5

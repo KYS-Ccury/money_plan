@@ -32,6 +32,7 @@ from .ledger import sort_key
 from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Fixed,
                      Ledger, kind_of, month_key, prev_period, same_day_in, sample_ledger,
                      shift_month)
+from .model import INTEREST_CATEGORIES, INTEREST_TAX
 from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
                      REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS, month_offset,
                      Category, Item, Plan, Workspace, add_months, parse_date, sample_plan, won)
@@ -73,6 +74,8 @@ class ItemListModel(QAbstractListModel):
     ActiveRole = Qt.ItemDataRole.UserRole + 26      # 켜져 있는가 (꺼 두면 계산에서 빠진다)
     EveryRole = Qt.ItemDataRole.UserRole + 27       # 몇 개월마다 되풀이되는지 (0 = 한 번만)
     LedgerCategoryRole = Qt.ItemDataRole.UserRole + 28   # 가계부에서 볼 분류 ("" = 자동)
+    AfterTaxRole = Qt.ItemDataRole.UserRole + 29    # 이자에서 세금을 떼는가
+    CompoundRole = Qt.ItemDataRole.UserRole + 30    # 복리인가
 
     _ROLES = {
         NameRole: b"name",
@@ -103,6 +106,8 @@ class ItemListModel(QAbstractListModel):
         ActiveRole: b"active",
         EveryRole: b"every",
         LedgerCategoryRole: b"ledgerCategory",
+        AfterTaxRole: b"afterTax",
+        CompoundRole: b"compound",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -152,6 +157,10 @@ class ItemListModel(QAbstractListModel):
             return it.every
         if role == self.LedgerCategoryRole:
             return it.ledger_category
+        if role == self.AfterTaxRole:
+            return it.after_tax
+        if role == self.CompoundRole:
+            return it.compound
         if role in (self.GroupPosRole, self.GroupCountRole):
             same = [k for k, x in enumerate(self._plan.items) if x.category == it.category]
             if role == self.GroupCountRole:
@@ -195,11 +204,18 @@ class ItemListModel(QAbstractListModel):
                 if rm is not None:
                     parts.append(f"{it.end_date[:7]} 반환" + (f" ({rm}개월 뒤)" if rm > 0 else ""))
                 return "  ·  ".join(parts)
+            # 이자가 붙는 분류는 단리/복리·세후/세전을 늘 밝힌다 (숫자의 전제이므로)
+            interest_note = ""
+            if it.category in INTEREST_CATEGORIES and it.rate > 0:
+                interest_note = (("복리" if it.compound else "단리")
+                                 + (f" · 세후 (이자 {INTEREST_TAX}%)" if it.after_tax else " · 세전"))
             if not it.uses_dates:
-                return ""
+                return interest_note          # 예금처럼 기간이 없는 항목
             start = (it.start_date or self._plan.start_date)[:7]
             end = it.end_date[:7] if it.end_date else "계속"
             parts = [f"{start} ~ {end}"]
+            if interest_note:
+                parts.append(interest_note)
             if it.category == Category.SAVING:
                 basis = self._plan.basis
                 n = self._plan.months
@@ -1031,6 +1047,28 @@ class Backend(QObject):
     def capital(self) -> float:
         return self._s().capital
 
+    def _get_inflation(self) -> float:
+        return self._plan.inflation
+
+    def _set_inflation(self, v: float) -> None:
+        v = max(0.0, min(30.0, float(v or 0)))
+        if v != self._plan.inflation:
+            self._plan.inflation = v
+            self._mark_dirty()
+            self._summary_changed()
+
+    inflation = Property(float, _get_inflation, _set_inflation, notify=summaryChanged)
+
+    @Property(float, notify=summaryChanged)
+    def netReal(self) -> float:
+        """기간 끝의 순 자본을 **지금 돈** 으로 환산한 값 (물가 0 이면 그대로)."""
+        return self._plan.real_value(self._s().net)
+
+    @Property(float, notify=summaryChanged)
+    def targetReal(self) -> float:
+        """목표 금액도 지금 돈으로 (그 돈이 그때 얼마만큼인지)."""
+        return self._plan.real_value(self._plan.target)
+
     @Property(float, notify=summaryChanged)
     def capitalAtEnd(self) -> float:
         """기간이 끝나는 시점의 보유 자금. 적금이 쌓이고 예금 이자가 붙어 지금과 다르다."""
@@ -1251,6 +1289,8 @@ class Backend(QObject):
             "usesGrowth": bool(info.get("uses_growth")),
             "usesSupport": bool(info.get("uses_support")),
             "canLock": cat == Category.SAVING,
+            "hasInterest": cat in INTEREST_CATEGORIES,
+            "taxRate": INTEREST_TAX,
             "flow": info["flow"],
             "onceWord": "수입" if info["flow"] == "income" else "지출",
         }
@@ -1387,7 +1427,8 @@ class Backend(QObject):
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
                    support: float = 0.0, locked: bool = False, every: int = 0,
-                   ledger_category: str = "") -> Item:
+                   ledger_category: str = "", after_tax: bool = False,
+                   compound: bool = False) -> Item:
         cat = CATEGORY_LIST[max(0, min(cat_index, len(CATEGORY_LIST) - 1))]
         mode = CATEGORY_INFO[cat]["date_mode"]
         sd = parse_date(start_date) if mode in ("range", "once") else None   # once 면 지출일·수입일
@@ -1408,8 +1449,12 @@ class Backend(QObject):
             # 되풀이는 일시 지출·수입에서만 (다른 분류는 이미 매달 오간다)
             every=max(0, int(every)) if cat in (Category.EXPENSE, Category.INCOME_ONCE) else 0,
             ledger_category=(ledger_category or "").strip(),
+            # 세금·복리는 이자가 붙는 분류에서만 뜻이 있다
+            after_tax=bool(after_tax) and cat in INTEREST_CATEGORIES,
+            compound=bool(compound) and cat in INTEREST_CATEGORIES,
         )
 
+    @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool)
@@ -1426,13 +1471,15 @@ class Backend(QObject):
                 monthly_repay_rate: float = 0.0, repay_method: str = "",
                 housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
                 support: float = 0.0, locked: bool = False, every: int = 0,
-                ledger_category: str = "") -> None:
+                ledger_category: str = "", after_tax: bool = False,
+                compound: bool = False) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
-                               growth, support, locked, every, ledger_category)
+                               growth, support, locked, every, ledger_category, after_tax, compound)
         self._items.add(item)
         self._set_status(f"추가: {item.name}")
 
+    @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool)
@@ -1449,10 +1496,11 @@ class Backend(QObject):
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
                    support: float = 0.0, locked: bool = False, every: int = 0,
-                   ledger_category: str = "") -> None:
+                   ledger_category: str = "", after_tax: bool = False,
+                   compound: bool = False) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
-                               growth, support, locked, every, ledger_category)
+                               growth, support, locked, every, ledger_category, after_tax, compound)
         old = self._plan.items[row] if 0 <= row < len(self._plan.items) else None
         item.active = old.active if old else True      # 꺼 둔 항목은 고쳐도 꺼진 채로
         self._items.update(row, item)

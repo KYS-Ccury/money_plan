@@ -14,6 +14,8 @@ Popup {
     property string onceDate: ""        // 일시 지출·일시 수입의 지출일/수입일
     property int every: 0               // 일시 지출·수입이 몇 개월마다 되풀이되는지 (0 = 한 번만)
     property string ledgerCategory: ""  // 가계부에서 볼 분류 ("" = 분류표대로 자동)
+    property bool afterTax: false       // 이자에서 이자소득세를 뗄지
+    property bool compound: false       // 이자를 복리로 굴릴지
     // 되풀이를 정할 수 있는가 — 일시 지출·일시 수입만 (보증금은 돌려받는 돈이라 뺀다)
     readonly property bool canRepeat: dlg.info.dateMode === "once" && !dlg.info.isHousing
                                       && !dlg.info.returnable
@@ -81,6 +83,8 @@ Popup {
         onceDate = ""
         every = 0
         setLedgerCategory("")
+        afterTax = dlg.info.hasInterest === true   // 분류를 바꾸면 그때 다시 잡는다
+        compound = false
         principalCheck.checked = true
         monthlyRepayRate = 0
         setRepayMethod("bullet")
@@ -102,7 +106,7 @@ Popup {
     }
     function openForEdit(row, name, catIndex, amount, rate, includePrincipal, startDate, endDate, repayments,
                          monthlyRepayRate, repayMethod, housingType, monthly, growth, support, locked, every,
-                         ledgerCategory) {
+                         ledgerCategory, afterTax, compound) {
         editRow = row
         nameField.text = name
         catBox.currentIndex = catIndex
@@ -121,6 +125,8 @@ Popup {
         dlg.locked = locked === true
         dlg.every = every || 0
         setLedgerCategory(ledgerCategory || "")
+        dlg.afterTax = afterTax === true
+        dlg.compound = compound === true
         loadRepayments(repayments)
         open(); nameField.forceActiveFocus()
     }
@@ -152,9 +158,9 @@ Popup {
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
         if (editRow < 0)
-            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory)
+            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound)
         else
-            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory)
+            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound)
         close()
     }
 
@@ -188,7 +194,13 @@ Popup {
                 objectName: "itemCategory"
                 Layout.fillWidth: true
                 model: backend.categories
-                onCurrentIndexChanged: dlg.info = backend.categoryInfo(currentIndex)
+                onCurrentIndexChanged: {
+                    dlg.info = backend.categoryInfo(currentIndex)
+                    // 새로 넣는 예금·적금은 세후가 기본 (대부분 세금을 뗀다).
+                    // 고치는 중일 때는 사람이 정해 둔 값을 건드리지 않는다.
+                    if (dlg.editRow < 0)
+                        dlg.afterTax = dlg.info.hasInterest === true
+                }
             }
             Text {
                 text: dlg.info.hint
@@ -215,6 +227,39 @@ Popup {
                     onActivated: dlg.ledgerCategory = String(currentValue)
                     ToolTip.visible: hovered; ToolTip.delay: 600
                     ToolTip.text: "가계부에 기록하거나 '분류별 계획 대비' 로 견줄 때 쓰는 분류입니다"
+                }
+            }
+
+            // ── 이자 (예금 · 적금) ──
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: dlg.info.hasInterest === true && dlg.rate > 0
+                spacing: 2
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    CheckBox {
+                        objectName: "itemAfterTax"
+                        text: "이자소득세 " + (dlg.info.taxRate || 15.4) + "% 떼기"
+                        checked: dlg.afterTax
+                        onToggled: dlg.afterTax = checked
+                    }
+                    CheckBox {
+                        objectName: "itemCompound"
+                        text: "복리로 굴리기"
+                        checked: dlg.compound
+                        onToggled: dlg.compound = checked
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: (dlg.afterTax ? "이자에서 세금을 뗍니다. 청년도약계좌·ISA 같은 비과세 상품이면 끄세요."
+                                        : "세금을 떼지 않습니다 (비과세 상품).")
+                          + "  " + (dlg.compound ? "이자가 이자를 낳습니다 (월복리)."
+                                                 : "이자는 원금에만 붙습니다 (단리). 은행 적금은 보통 단리입니다.")
+                    color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap
                 }
             }
 
@@ -491,7 +536,11 @@ Popup {
                     // 적금은 매달 쌓이는 돈에 붙으므로 '잔액 × 이율' 이 아니다
                     text: dlg.info.usesSupport
                           ? "이자는 넣은 달수만큼 붙습니다 (첫 회차가 가장 오래, 마지막 회차는 한 달)"
-                          : "월 이자: " + backend.won(backend.monthlyInterest(dlg.amount, dlg.rate))
+                            + (dlg.compound ? " · 월복리" : "") + (dlg.afterTax ? " · 세후" : "")
+                          : "월 이자: " + backend.won(backend.monthlyInterest(dlg.amount, dlg.rate)
+                                                     * (dlg.afterTax ? 1 - (dlg.info.taxRate || 15.4) / 100 : 1))
+                            + (dlg.afterTax ? " (세후)" : "")
+                            + (dlg.compound ? "  ·  복리라 이자를 빼지 않고 예금에 쌓습니다" : "")
                     color: Theme.textDim; font.pixelSize: 12
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true; Layout.preferredWidth: 1

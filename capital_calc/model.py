@@ -131,6 +131,9 @@ TERM_METHODS = ("equal_principal", "equal_payment")   # 만기(종료일)가 있
 # 매달 같은 금액이 나가는 분류 (적용 기간 동안)
 MONTHLY_COST_CATEGORIES = (Category.RENT, Category.MAINT, Category.FIXED)
 # 한 번만 나가는 분류
+INTEREST_TAX = 15.4          # 이자소득세 (소득세 14% + 지방소득세 1.4%)
+INTEREST_CATEGORIES = (Category.BANK, Category.SAVING)   # 이자가 붙는 분류
+
 ONCE_COST_CATEGORIES = (Category.DEPOSIT, Category.EXPENSE)
 # 매달 들어오는 분류 (적용 기간 동안)
 MONTHLY_INCOME_CATEGORIES = (Category.INCOME,)
@@ -200,6 +203,8 @@ class Item:
     active: bool = True              # 끄면 계산에서 빠진다 (지우지 않고 잠시 빼 볼 때)
     every: int = 0                   # 일시 지출·수입이 몇 개월마다 되풀이되는지 (0 = 한 번만)
     ledger_category: str = ""        # 가계부에서는 어느 분류로 볼지 (비우면 분류표대로 자동)
+    after_tax: bool = False          # 이자에서 이자소득세 15.4% 를 뗄지 (비과세 상품이면 끈다)
+    compound: bool = False           # 이자를 복리로 굴릴지 (끄면 단리)
 
     def __post_init__(self) -> None:
         if self.repay_method not in REPAY_METHODS:
@@ -261,8 +266,10 @@ class Item:
         return self.amount + max(0.0, self.support)
 
     def saving_balance_at(self, m: int, basis: date) -> float:
-        """m개월 시점의 적금 잔액 = (납입액 + 지원금) 누계 + 단리 이자.
+        """m개월 시점의 적금 잔액 = (납입액 + 지원금) 누계 + 이자.
 
+        이자는 납입분마다 묶여 있던 개월 수에 붙는다 (은행 적금과 같은 방식).
+        복리를 켜면 월복리로, 세후를 켜면 이자에서 15.4% 를 뗀다.
         만기 뒤에는 납입도 이자도 멈춘다.
         """
         k = self.saving_months(m, basis)
@@ -275,8 +282,17 @@ class Item:
             return principal
         start_m, end_m = self.active_range(basis)
         mm = m if end_m is None else min(m, end_m)
-        months_held = k * (mm - start_m) - k * (k - 1) / 2   # 각 납입분이 묶여 있던 개월 수의 합
-        return principal + per * mr * max(0.0, months_held)
+        if self.compound:
+            # 납입분마다 (1+i)^묶인개월 로 불어난다
+            interest = 0.0
+            for j in range(k):
+                held = mm - (start_m + j)
+                if held > 0:
+                    interest += per * ((1.0 + mr) ** held - 1.0)
+        else:
+            months_held = k * (mm - start_m) - k * (k - 1) / 2   # 묶여 있던 개월 수의 합
+            interest = per * mr * max(0.0, months_held)
+        return principal + self.net_interest(interest)
 
     def support_total_at(self, m: int, basis: date) -> float:
         """m개월 시점까지 받은 지원금 누계."""
@@ -444,6 +460,17 @@ class Item:
         """월 이율 (연이율 ÷ 12)."""
         return self.rate / 100.0 / 12.0
 
+    @property
+    def taxes_interest(self) -> bool:
+        """이 항목의 이자에서 세금을 떼는가 (이자가 붙는 분류에서만 뜻이 있다)."""
+        return self.after_tax and self.category in INTEREST_CATEGORIES
+
+    def net_interest(self, interest: float) -> float:
+        """세금을 뗀 이자. 끄면 그대로."""
+        if interest <= 0 or not self.taxes_interest:
+            return interest
+        return interest * (1.0 - INTEREST_TAX / 100.0)
+
     def monthly_repay_amount(self) -> float:
         """'매달 원금의 %' 방식의 1회 상환 원금. 다른 방식이면 0."""
         if self.category != Category.LOAN or self.repay_method != "rate":
@@ -552,10 +579,22 @@ class Item:
         return sum(max(0.0, float(r.get("amount", 0) or 0)) for r in self.repayments)
 
     # ---- 시점별 값 (m = 기준일로부터 개월) ----
+    def bank_balance_at(self, m: int) -> float:
+        """예금 잔액. 복리면 이자가 안에서 불어나고, 단리면 원금 그대로다
+        (단리 이자는 매달 '월 수입' 으로 빠져나가기 때문)."""
+        if self.category != Category.BANK or not self.compound:
+            return self.amount
+        mr = self.monthly_rate()
+        if mr <= 0 or m <= 0:
+            return self.amount
+        return self.amount + self.net_interest(self.amount * ((1.0 + mr) ** m - 1.0))
+
     def capital_at(self, m: int, basis: date) -> float:
         """m개월 시점에 보유 자금에 더해지는 금액."""
-        if self.category in (Category.CASH, Category.BANK):
+        if self.category == Category.CASH:
             return self.amount
+        if self.category == Category.BANK:
+            return self.bank_balance_at(m)
         if self.category == Category.SAVING:
             # 묶어 둔 적금은 보유 자금에 넣지 않는다.
             # 만기 수령액은 once_income_at 으로 들어가므로 요약의 '일시 수입' 에 드러난다.
@@ -634,7 +673,8 @@ class Item:
         if self.category in MONTHLY_INCOME_CATEGORIES:
             return self.amount_at(m, basis) if self.is_active(m, basis) else 0.0
         if self.category == Category.BANK:
-            return self.monthly_interest()
+            # 복리는 이자를 빼지 않고 안에서 굴리므로 월 수입으로 잡지 않는다
+            return 0.0 if self.compound else self.net_interest(self.monthly_interest())
         return 0.0
 
     def monthly_net_at(self, m: int, basis: date) -> float:
@@ -712,6 +752,8 @@ class Item:
             active=bool(d.get("active", True)),
             every=int(d.get("every", 0) or 0),
             ledger_category=str(d.get("ledger_category") or ""),
+            after_tax=bool(d.get("after_tax", False)),
+            compound=bool(d.get("compound", False)),
         )
 
 
@@ -814,6 +856,7 @@ class Plan:
     items: list[Item] = field(default_factory=list)
     months: int = 12
     target: float = 0.0
+    inflation: float = 0.0          # 연 물가 상승률 % (0 이면 '지금 돈' 환산을 안 쓴다)
     start_date: str = field(default_factory=lambda: date.today().isoformat())  # 기준일 (0개월)
     name: str = ""                                                              # 시나리오 이름
 
@@ -890,6 +933,16 @@ class Plan:
         return self.capital_at(m) - self.once_cost_at(m) + self.once_income_at(m) + flow
 
     # ---- 그 달에 실제로 오고 가는 돈 (가계부와 비교하려고 쓴다) ----
+    def real_value(self, amount: float, m: int | None = None) -> float:
+        """m개월 뒤의 돈을 **지금 돈** 으로 환산한다 (물가 상승률만큼 깎는다).
+
+        물가 상승률이 0 이면 그대로 돌려준다.
+        """
+        if self.inflation <= 0:
+            return amount
+        n = self.months if m is None else m
+        return amount / ((1.0 + self.inflation / 100.0) ** (max(0, n) / 12.0))
+
     def planned_out_at(self, m: int) -> float:
         """m개월에 나갈 것으로 계획된 돈 (항목별 계산을 모은 것)."""
         b = self.basis
@@ -1013,6 +1066,7 @@ class Plan:
             "name": self.name,
             "months": self.months,
             "target": self.target,
+            "inflation": self.inflation,
             "start_date": self.start_date,
             "items": [i.to_dict() for i in self.items],
         }
@@ -1023,6 +1077,7 @@ class Plan:
             items=[Item.from_dict(x) for x in d.get("items", [])],
             months=int(d.get("months", 12)),
             target=float(d.get("target", 0.0)),
+            inflation=float(d.get("inflation", 0.0) or 0.0),
             start_date=str(d.get("start_date") or date.today().isoformat()),
             name=str(d.get("name") or ""),
         )

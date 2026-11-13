@@ -567,3 +567,52 @@ def test_save_button_and_exit_dialog_follow_dirty(tmp_path):
     app.processEvents()
     assert backend.dirty is False
     assert win.property("forceClose") is True         # 다시 닫을 때는 막지 않는다
+
+
+def test_item_dialog_tax_and_compound_checkboxes():
+    """예금·적금에만 세후·복리 칸이 보이고, 새 항목은 세후가 기본이다."""
+    app, engine, backend, win = _load()
+    app.processEvents()
+
+    dlg = win.findChild(QObject, "itemDialog")
+    QMetaObject.invokeMethod(win, "openAddDialog")
+    app.processEvents()
+
+    cat = dlg.findChild(QObject, "itemCategory")
+    cat.setProperty("currentIndex", 1)                 # 은행 예금
+    app.processEvents()
+
+    tax = dlg.findChild(QObject, "itemAfterTax")
+    comp = dlg.findChild(QObject, "itemCompound")
+    assert tax is not None and comp is not None
+    assert dlg.property("afterTax") is True            # 새로 넣는 예금은 세후가 기본
+    assert dlg.property("compound") is False
+
+    dlg.setProperty("amount", 10_000_000)
+    dlg.setProperty("rate", 4.0)
+    dlg.setProperty("compound", True)
+    QMetaObject.invokeMethod(dlg, "submit")
+    app.processEvents()
+
+    it = backend._ws.plan.items[-1]
+    assert (it.after_tax, it.compound) == (True, True)
+
+    # 현금으로 바꾸면 칸이 사라진다
+    QMetaObject.invokeMethod(win, "openAddDialog")
+    app.processEvents()
+    cat.setProperty("currentIndex", 0)
+    app.processEvents()
+    assert dlg.property("info")["hasInterest"] is False
+
+
+def test_summary_shows_todays_money_when_inflation_is_set():
+    app, engine, backend, win = _load()
+    field = win.findChild(QObject, "inflationField")
+    assert field is not None
+    app.processEvents()
+    assert field.property("text") == ""                # 안 넣으면 비어 있다
+
+    backend.inflation = 3.0
+    app.processEvents()
+    assert field.property("text") == "3"
+    assert backend.netReal < backend.net               # 지금 돈으로는 더 적다

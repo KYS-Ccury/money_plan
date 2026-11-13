@@ -1949,3 +1949,48 @@ def test_backend_never_autosaves_to_a_file_it_did_not_open(tmp_path):
 
     b.saveTo(str(victim))                     # 사람이 저장하면 그때부터 내 파일이다
     assert b.autosaveOn is True
+
+
+# ───────────────────────── 세후 · 복리 · 물가 (백엔드)
+
+def test_tax_and_compound_go_through_the_dialog_path():
+    from PySide6.QtCore import Qt
+
+    b = _fresh_backend()
+    # 은행 예금(1) · 연 4% · 세후 · 복리
+    b.addItem("예금", 1, 10_000_000, 4.0, True, "", "", "[]", 0, "", "", 0, 0, 0, False, 0, "", True, True)
+    it = b._ws.plan.items[-1]
+    assert it.after_tax is True and it.compound is True
+
+    row = b.items.index(b.itemCount - 1)
+    assert b.items.data(row, Qt.ItemDataRole.UserRole + 29) is True
+    assert b.items.data(row, Qt.ItemDataRole.UserRole + 30) is True
+    assert "복리" in b.items.data(row, Qt.ItemDataRole.UserRole + 15)
+    assert "세후" in b.items.data(row, Qt.ItemDataRole.UserRole + 15)
+
+    info = b.categoryInfo(1)
+    assert info["hasInterest"] is True and info["taxRate"] == 15.4
+    assert b.categoryInfo(3)["hasInterest"] is False       # 대출은 아니다
+
+    # 이자가 붙지 않는 분류에는 붙지 않는다
+    b.addItem("현금", 0, 1_000_000, 0, True, "", "", "[]", 0, "", "", 0, 0, 0, False, 0, "", True, True)
+    assert b._ws.plan.items[-1].after_tax is False
+    assert b._ws.plan.items[-1].compound is False
+
+
+def test_inflation_shows_todays_money():
+    b = _fresh_backend()
+    b.months = 24
+    before = b.net
+    assert b.inflation == 0 and b.netReal == before        # 안 넣으면 그대로
+
+    b.inflation = 3.0
+    assert b.inflation == 3.0
+    assert abs(b.netReal - b.net / 1.03 ** 2) < 1
+    assert b.net == before                                 # 계산 자체는 그대로
+
+    b.target = 20_000_000
+    assert abs(b.targetReal - 20_000_000 / 1.03 ** 2) < 1
+
+    b.inflation = -5                                      # 음수는 0 으로
+    assert b.inflation == 0
