@@ -51,7 +51,7 @@ def composition(plan: Plan) -> dict[str, list[tuple[str, float]]]:
     """비중 계산 (항목 이름 기준). 0 이하 값은 제외."""
     basis = plan.basis
     out: dict[str, list[tuple[str, float]]] = {"보유 자금": [], "월 지출": [], "월 수입": []}
-    for it in plan.items:
+    for it in plan.live:                      # 꺼 둔 항목은 비중에서도 뺀다
         c = it.capital_at(0, basis)
         if c > 0:
             out["보유 자금"].append((it.name, c))
@@ -210,7 +210,7 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
     for r, it in enumerate(plan.items, start=2):
         info = CATEGORY_INFO[it.category]
         reps = ", ".join(f"{x['date']} {x['amount']:,.0f}원" for x in it.repayments)
-        ws.cell(row=r, column=1, value=it.name)
+        ws.cell(row=r, column=1, value=it.name if it.active else f"{it.name} (꺼짐)")
         ws.cell(row=r, column=2, value=f"{it.category.value} ({it.housing_label})" if it.is_housing else it.category.value)
         ws.cell(row=r, column=3, value=it.amount).number_format = WON
         ws.cell(row=r, column=4, value=it.rate if info["uses_rate"] else None)

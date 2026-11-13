@@ -195,6 +195,7 @@ class Item:
     growth: float = 0.0              # 연 상승률 % (급여 인상, 물가·월세 인상). 해마다 한 번 오른다
     support: float = 0.0             # 월 지원금 (청년도약계좌처럼 남이 보태 주는 돈). 내 돈은 안 나가고 잔액만 는다
     locked: bool = False             # 만기 전까지 못 쓰는 돈으로 볼지 (적금). 만기가 있어야 적용된다
+    active: bool = True              # 끄면 계산에서 빠진다 (지우지 않고 잠시 빼 볼 때)
 
     def __post_init__(self) -> None:
         if self.repay_method not in REPAY_METHODS:
@@ -627,6 +628,7 @@ class Item:
             growth=float(d.get("growth", 0.0) or 0.0),
             support=float(d.get("support", 0.0) or 0.0),
             locked=bool(d.get("locked", False)),
+            active=bool(d.get("active", True)),
         )
 
 
@@ -754,41 +756,54 @@ class Plan:
     def clear(self) -> None:
         self.items.clear()
 
+    @property
+    def live(self) -> list[Item]:
+        """계산에 넣을 항목 — 꺼 둔 것은 뺀다.
+
+        목록·저장에는 그대로 남아 있고 계산에서만 빠진다. '이 대출을 안 받으면
+        어떻게 되지' 를 지웠다 다시 넣지 않고 보려고 둔 장치다.
+        """
+        return [i for i in self.items if i.active]
+
+    @property
+    def off_count(self) -> int:
+        return sum(1 for i in self.items if not i.active)
+
     # ---- 시점별 계산 ----
     def capital_at(self, m: int) -> float:
         b = self.basis
-        return sum(i.capital_at(m, b) for i in self.items)
+        return sum(i.capital_at(m, b) for i in self.live)
 
     def once_cost(self) -> float:
         """일시 지출 총액 (날짜와 무관)."""
-        return sum(i.once_cost() for i in self.items)
+        return sum(i.once_cost() for i in self.live)
 
     def once_cost_at(self, m: int) -> float:
         """m개월 시점까지 나간 일시 지출 합."""
         b = self.basis
-        return sum(i.once_cost_at(m, b) for i in self.items)
+        return sum(i.once_cost_at(m, b) for i in self.live)
 
     def once_income(self) -> float:
         """일시 수입 총액 (날짜와 무관)."""
-        return sum(i.once_income() for i in self.items)
+        return sum(i.once_income() for i in self.live)
 
     def once_income_at(self, m: int) -> float:
         """m개월 시점까지 들어온 일시 수입 합."""
         b = self.basis
-        return sum(i.once_income_at(m, b) for i in self.items)
+        return sum(i.once_income_at(m, b) for i in self.live)
 
     def monthly_cost_at(self, m: int) -> float:
         b = self.basis
-        return sum(i.monthly_cost_at(m, b) for i in self.items)
+        return sum(i.monthly_cost_at(m, b) for i in self.live)
 
     def monthly_income_at(self, m: int) -> float:
         b = self.basis
-        return sum(i.monthly_income_at(m, b) for i in self.items)
+        return sum(i.monthly_income_at(m, b) for i in self.live)
 
     def net_at(self, m: int) -> float:
         """m개월 시점 순 자본 = 그 시점 보유 자금 - 일시 지출 + 일시 수입 + (0..m-1 개월의 월 수입 - 월 지출)."""
         b = self.basis
-        flow = sum(i.monthly_net_at(k, b) for i in self.items for k in range(max(0, m)))
+        flow = sum(i.monthly_net_at(k, b) for i in self.live for k in range(max(0, m)))
         return self.capital_at(m) - self.once_cost_at(m) + self.once_income_at(m) + flow
 
     # ---- 그 달에 실제로 오고 가는 돈 (가계부와 비교하려고 쓴다) ----
@@ -796,7 +811,7 @@ class Plan:
         """m개월에 나갈 것으로 계획된 돈 = 월 지출 + 그 달에 걸린 일시 지출 + 대출 원금 상환."""
         b = self.basis
         out = self.monthly_cost_at(m)
-        for i in self.items:
+        for i in self.live:
             if i.date_mode == "once" and i.once_cost() > 0 and i.once_month(b) == m:
                 out += i.once_cost()
             if i.category == Category.LOAN and i.include_principal:
@@ -813,7 +828,7 @@ class Plan:
         """m개월에 들어올 것으로 계획된 돈 = 월 수입 + 그 달의 일시 수입 + 보증금 반환."""
         b = self.basis
         inc = self.monthly_income_at(m)
-        for i in self.items:
+        for i in self.live:
             if i.once_income() > 0 and i.once_month(b) == m:
                 inc += i.once_income()
             if i.return_month(b) == m:
@@ -833,7 +848,7 @@ class Plan:
         """
         b = self.basis
         out = []
-        for i in self.items:
+        for i in self.live:
             r = i.return_month(b)
             if r is not None and r > self.months and i.once_cost() > 0:
                 out.append({"name": i.name, "amount": i.once_cost(), "month": r, "kind": "deposit"})
@@ -868,7 +883,7 @@ class Plan:
         flow = 0.0
         for m in range(max(0, n) + 1):
             out.append(self.capital_at(m) - self.once_cost_at(m) + self.once_income_at(m) + flow)
-            flow += sum(i.monthly_net_at(m, b) for i in self.items)
+            flow += sum(i.monthly_net_at(m, b) for i in self.live)
         return out
 
     def first_month_reaching(self, amount: float, after: int = 0, limit: int = 600) -> int | None:
@@ -883,7 +898,7 @@ class Plan:
             v = self.capital_at(m) - self.once_cost_at(m) + self.once_income_at(m) + flow
             if m >= after and v >= amount:
                 return m
-            flow += sum(i.monthly_net_at(m, b) for i in self.items)
+            flow += sum(i.monthly_net_at(m, b) for i in self.live)
         return None
 
     SHORTFALL_HORIZON = 36      # 부족 경고는 최소 3년까지 살펴본다

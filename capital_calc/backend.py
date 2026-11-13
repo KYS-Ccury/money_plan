@@ -63,6 +63,7 @@ class ItemListModel(QAbstractListModel):
     LockedRole = Qt.ItemDataRole.UserRole + 23      # 만기 전까지 묶인 돈인가
     GroupPosRole = Qt.ItemDataRole.UserRole + 24    # 같은 분류 안에서 몇 번째인가 (묶어 보기 ▲▼ 용)
     GroupCountRole = Qt.ItemDataRole.UserRole + 25  # 같은 분류 항목이 몇 개인가
+    ActiveRole = Qt.ItemDataRole.UserRole + 26      # 켜져 있는가 (꺼 두면 계산에서 빠진다)
 
     _ROLES = {
         NameRole: b"name",
@@ -90,6 +91,7 @@ class ItemListModel(QAbstractListModel):
         LockedRole: b"locked",
         GroupPosRole: b"groupPos",
         GroupCountRole: b"groupCount",
+        ActiveRole: b"active",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -133,6 +135,8 @@ class ItemListModel(QAbstractListModel):
             return [dict(r) for r in it.repayments]
         if role == self.MonthlyRepayRateRole:
             return it.monthly_repay_rate
+        if role == self.ActiveRole:
+            return it.active
         if role in (self.GroupPosRole, self.GroupCountRole):
             same = [k for k, x in enumerate(self._plan.items) if x.category == it.category]
             if role == self.GroupCountRole:
@@ -294,6 +298,18 @@ class ItemListModel(QAbstractListModel):
         self._plan.move(row, delta)
         self.endMoveRows()
         self._renumbered_from(min(row, dst))
+        return True
+
+    def set_active(self, row: int, on: bool) -> bool:
+        """항목을 켜거나 끈다. 목록에서 사라지지 않고 계산에서만 빠진다."""
+        if not (0 <= row < len(self._plan.items)):
+            return False
+        it = self._plan.items[row]
+        if it.active == on:
+            return False
+        it.active = on
+        idx = self.index(row)
+        self.dataChanged.emit(idx, idx)      # 역할을 가리지 않는다 (요약 글씨도 함께 흐려진다)
         return True
 
     def swap(self, a: int, b: int) -> bool:
@@ -600,7 +616,7 @@ class Backend(QObject):
         return Workspace([sample_plan()])
 
     def _emit_summary(self, *_args) -> None:
-        self.summaryChanged.emit()
+        self._summary_changed()
         self.itemsChanged.emit()
 
     def _set_status(self, text: str) -> None:
@@ -611,6 +627,11 @@ class Backend(QObject):
     @Property(QObject, constant=True)
     def items(self) -> ItemListModel:
         return self._items
+
+    @Property(int, notify=itemsChanged)
+    def offCount(self) -> int:
+        """꺼 둔 항목 수 (계산에서 빠져 있다)."""
+        return self._plan.off_count
 
     @Property(int, notify=itemsChanged)
     def itemCount(self) -> int:
@@ -663,7 +684,8 @@ class Backend(QObject):
         except ValueError:
             return {"count": 0, "total": 0.0, "monthly": 0.0, "catIndex": -1}
         basis = self._plan.basis
-        items = [i for i in self._plan.items if i.category == cat]
+        all_items = [i for i in self._plan.items if i.category == cat]
+        items = [i for i in all_items if i.active]       # 합계는 켜진 것만
         monthly = 0.0
         for it in items:
             net = it.monthly_net_at(0, basis)
@@ -671,7 +693,8 @@ class Backend(QObject):
                 net -= it.regular_repay_at(0, basis)
             monthly += net
         return {
-            "count": len(items),
+            "count": len(all_items),
+            "off": len(all_items) - len(items),
             "total": sum(i.amount for i in items),
             "monthly": monthly,
             "catIndex": CATEGORY_LIST.index(cat),
@@ -822,7 +845,7 @@ class Backend(QObject):
             self._end_text = ""            # 슬라이더로 바꿨으니 기억해 둔 종료일은 버린다
             self._items.refresh_all()      # 목록의 'N개월 후 …' 표시가 기간을 따라간다
             self.monthsChanged.emit()
-            self.summaryChanged.emit()
+            self._summary_changed()
 
     months = Property(int, _get_months, _set_months, notify=monthsChanged)
 
@@ -842,7 +865,7 @@ class Backend(QObject):
         months = max(0, month_offset(self._plan.basis, d))
         if months == self._plan.months:
             self._end_text = d.isoformat()
-            self.summaryChanged.emit()         # 개월 수는 그대로여도 보여 줄 날짜가 바뀐다
+            self._summary_changed()         # 개월 수는 그대로여도 보여 줄 날짜가 바뀐다
         else:
             self.months = months               # 여기서 _end_text 를 비우므로
             self._end_text = d.isoformat()     # 친 날짜는 그 뒤에 기억한다
@@ -863,7 +886,7 @@ class Backend(QObject):
         if v != self._plan.target:
             self._plan.target = v
             self.targetChanged.emit()
-            self.summaryChanged.emit()
+            self._summary_changed()
 
     target = Property(float, _get_target, _set_target, notify=targetChanged)
 
@@ -880,7 +903,7 @@ class Backend(QObject):
             self._plan.start_date = iso
             self.basisDateChanged.emit()
             self._items.refresh_all()
-            self.summaryChanged.emit()
+            self._summary_changed()
 
     basisDate = Property(str, _get_basis_date, _set_basis_date, notify=basisDateChanged)
 
@@ -891,6 +914,17 @@ class Backend(QObject):
     def _clear_cache(self) -> None:
         """계획이 바뀌었으니 담아 둔 계산 결과를 버린다 (summaryChanged 가 올 때마다)."""
         self._cache.clear()
+
+    def _summary_changed(self) -> None:
+        """요약이 달라졌다고 알린다. **알리기 전에** 담아 둔 계산을 버린다.
+
+        QML 바인딩은 알림을 받는 그 자리에서 값을 다시 읽는데, QML 쪽 연결이
+        파이썬 슬롯(_clear_cache)보다 먼저 불릴 수 있다. 그러면 캐시가 아직
+        남아 있어 바뀌기 전 숫자를 그대로 읽어 간다 — 항목을 껐는데 요약은
+        그대로인 것처럼 보였던 게 이것이다.
+        """
+        self._cache.clear()
+        self.summaryChanged.emit()
 
     def _cached(self, key: str, make):
         v = self._cache.get(key)
@@ -1331,6 +1365,8 @@ class Backend(QObject):
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
                                growth, support, locked)
+        old = self._plan.items[row] if 0 <= row < len(self._plan.items) else None
+        item.active = old.active if old else True      # 꺼 둔 항목은 고쳐도 꺼진 채로
         self._items.update(row, item)
         self._set_status(f"수정: {item.name}")
 
@@ -1340,6 +1376,17 @@ class Backend(QObject):
         removed = self._items.remove(row)
         if removed:
             self._set_status(f"삭제: {removed.name}")
+
+    @Slot(int, result=bool)
+    @undoable("항목 끄기/켜기")
+    def toggleItemActive(self, row: int) -> bool:
+        """항목을 잠시 끄거나 다시 켠다 (지우지 않고 빼 보는 용도)."""
+        if not (0 <= row < len(self._plan.items)):
+            return False
+        it = self._plan.items[row]
+        self._items.set_active(row, not it.active)
+        self._set_status(("다시 켰습니다: " if it.active else "껐습니다: ") + it.name)
+        return True
 
     @Slot(int, int)
     @undoable("항목 순서 바꾸기")
@@ -2404,6 +2451,6 @@ class Backend(QObject):
         self.monthsChanged.emit()
         self.targetChanged.emit()
         self.basisDateChanged.emit()
-        self.summaryChanged.emit()
+        self._summary_changed()
         self.itemsChanged.emit()
         self.scenariosChanged.emit()

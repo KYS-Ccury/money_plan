@@ -1471,3 +1471,54 @@ def test_selection_is_dropped_when_rows_shift():
 
     b.undo()
     assert b.selectedCount == 0
+
+
+# ───────────────────────── 항목 잠시 끄기
+
+def test_toggle_item_active_changes_the_summary_and_undoes():
+    b = Backend()
+    b.loadSample()
+    net_on, capital_on = b.net, b.capital
+    loan = next(i for i, it in enumerate(b._ws.plan.items) if it.category.value == "대출/이자")
+
+    assert b.toggleItemActive(loan) is True
+    assert b.offCount == 1
+    assert b.itemCount == 10 or b.itemCount == 9      # 목록에서 사라지지는 않는다
+    assert b.net != net_on and b.capital != capital_on
+    assert b._ws.plan.items[loan].active is False
+
+    g = b.groupSummary("대출/이자")
+    assert g["count"] == 1 and g["off"] == 1 and g["total"] == 0   # 합계는 켜진 것만
+
+    assert b.toggleItemActive(loan) is True            # 다시 켜면 그대로
+    assert (b.net, b.capital, b.offCount) == (net_on, capital_on, 0)
+
+    b.undo()
+    assert b.offCount == 1 and b.undoLabel == "항목 끄기/켜기"
+
+
+def test_editing_an_off_item_keeps_it_off():
+    b = Backend()
+    b.loadSample()
+    row = 0
+    b.toggleItemActive(row)
+    before = b._ws.plan.items[row]
+    b.updateItem(row, "보유 현금", 0, 9_000_000, 0, True)
+    assert b._ws.plan.items[row].amount == 9_000_000
+    assert b._ws.plan.items[row].active is False       # 고쳐도 꺼진 채로
+    assert before is not b._ws.plan.items[row]
+
+
+def test_summary_is_fresh_the_moment_it_is_announced():
+    """캐시 때문에 '알림을 받자마자 읽은 값' 이 옛날 값이면 안 된다 (QML 바인딩이 그렇게 읽는다)."""
+    b = Backend()
+    b.loadSample()
+    seen = []
+    b.summaryChanged.connect(lambda: seen.append((b.capital, b.net, b.monthlyCost)))
+
+    b.capital, b.net, b.monthlyCost          # 캐시를 채워 둔다
+    loan = next(i for i, it in enumerate(b._ws.plan.items) if it.category.value == "대출/이자")
+    b.toggleItemActive(loan)
+
+    assert seen, "요약이 바뀌었다고 알리지 않았다"
+    assert seen[-1] == (b.capital, b.net, b.monthlyCost)

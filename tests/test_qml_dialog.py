@@ -366,3 +366,26 @@ def test_selection_bar_appears_and_acts_on_every_chosen_row():
     app.processEvents()
     assert ws.ledger.entries == []
     assert bar.property("visible") is False
+
+
+def test_summary_text_follows_an_item_being_switched_off():
+    """항목을 끄면 요약 숫자도 그 자리에서 따라와야 한다 (담아 둔 계산을 읽어 가지 않게)."""
+    app, engine, backend, win = _load()
+    backend.loadSample()
+    app.processEvents()
+
+    def money():
+        # 화면에 찍히는 text 는 굴러가는 중이라 아직 옛 숫자다. 바인딩이 받은 value 를 본다
+        return [t.property("value") for t in win.findChildren(QObject)
+                if "AnimatedMoney" in t.metaObject().className()][:6]
+
+    before = money()
+    loan = next(i for i, it in enumerate(backend._ws.plan.items)
+                if it.category.value == "대출/이자")
+    backend.toggleItemActive(loan)
+    app.processEvents()
+
+    after = money()
+    assert after != before
+    assert after[0] == backend.capital                   # 보유 자금이 바로 새 값
+    assert backend.offCount == 1

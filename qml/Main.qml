@@ -396,7 +396,8 @@ ApplicationWindow {
             Card {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                title: "항목 목록  (" + backend.itemCount + "개)"
+                title: "항목 목록  (" + backend.itemCount + "개"
+                       + (backend.offCount > 0 ? ", " + backend.offCount + "개 꺼짐" : "") + ")"
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -562,6 +563,7 @@ ApplicationWindow {
                             required property int sourceRow
                             required property int groupPos      // 같은 분류 안에서 몇 번째
                             required property int groupCount    // 같은 분류가 몇 개
+                            required property bool active       // 꺼 두면 계산에서 빠진다
 
                             // 접힌 분류의 줄은 목록에서 빼지 않고 높이만 0 으로 접는다
                             // (빼 버리면 그 분류의 섹션 헤더까지 사라져 다시 펼 수가 없다)
@@ -576,7 +578,7 @@ ApplicationWindow {
 
                             width: ListView.view.width - 14
                             height: folded ? 0 : (subText !== "" ? 54 : 44)
-                            opacity: folded ? 0 : 1
+                            opacity: folded ? 0 : (rowItem.active ? 1 : 0.45)
                             enabled: !folded
                             clip: true
                             Behavior on height { NumberAnimation { duration: Theme.fast } }
@@ -630,6 +632,7 @@ ApplicationWindow {
                                     Layout.minimumWidth: 90
                                     text: rowItem.name
                                     color: Theme.text; font.pixelSize: 14
+                                    font.strikeout: !rowItem.active      // 계산에서 빠져 있다
                                     elide: Text.ElideRight
                                 }
                                 Rectangle {
@@ -675,7 +678,17 @@ ApplicationWindow {
                                 }
                                 RowLayout {
                                     spacing: 0
-                                    Layout.preferredWidth: 136
+                                    Layout.preferredWidth: 168
+                                    ToolButton {
+                                        text: rowItem.active ? "⏸" : "▶"
+                                        font.pixelSize: 11; implicitWidth: 32
+                                        Material.foreground: rowItem.active ? Theme.textDim : Theme.yellow
+                                        onClicked: backend.toggleItemActive(backend.sourceRowAt(rowItem.index))
+                                        ToolTip.visible: hovered; ToolTip.delay: 500
+                                        ToolTip.text: rowItem.active
+                                                      ? "잠시 끕니다 (지우지 않고 계산에서만 뺍니다)"
+                                                      : "다시 켭니다"
+                                    }
                                     ToolButton {
                                         text: "▤"; font.pixelSize: 12; implicitWidth: 32
                                         Material.foreground: Theme.accent
@@ -730,7 +743,10 @@ ApplicationWindow {
                             color: Theme.textDim
                         }
                     }
-                    Text { text: "행 더블클릭: 수정   ▤: 가계부에 기록   ▲▼: 순서   ✕: 삭제"; color: Theme.textDim; font.pixelSize: 11 }
+                    Text {
+                        text: "행 더블클릭: 수정   ⏸: 잠시 끄기   ▤: 가계부에 기록   ▲▼: 순서   ✕: 삭제"
+                        color: Theme.textDim; font.pixelSize: 11
+                    }
                 }
             }
 

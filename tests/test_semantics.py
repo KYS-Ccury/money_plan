@@ -229,3 +229,38 @@ def test_saving_interest_is_simple_interest_per_deposit():
     # 만기 뒤엔 납입도 이자도 멈춘다
     assert near(sv.saving_balance_at(n + 5, p.basis), sv.saving_balance_at(n, p.basis))
 
+
+
+# ───────────────────────── 잠시 꺼 둔 항목
+
+def test_inactive_items_leave_the_calculation_but_stay_in_the_list():
+    """꺼 둔 항목은 계산에서만 빠진다 (지운 것과 같은 숫자가 나와야 한다)."""
+    def plan(loan_on: bool) -> Plan:
+        p = mk(12, Item("현금", Category.CASH, 10_000_000),
+                   Item("급여", Category.INCOME, 2_000_000))
+        if loan_on:
+            p.add(Item("대출", Category.LOAN, 50_000_000, rate=6.0, include_principal=True,
+                       repay_method="bullet", start_date=BASIS))
+        return p
+
+    with_loan = plan(True)
+    without = plan(False)
+    off = plan(True)
+    off.items[2].active = False
+
+    assert len(off.items) == 3 and len(off.live) == 2 and off.off_count == 1
+    for m in range(13):
+        assert near(off.net_at(m), without.net_at(m)), f"{m}개월"
+    assert not near(with_loan.net_at(6), without.net_at(6))     # 켜면 달라진다
+
+    off.items[2].active = True                                   # 다시 켜면 그대로 돌아온다
+    assert near(off.net_at(6), with_loan.net_at(6))
+
+
+def test_active_flag_survives_save():
+    p = mk(12, Item("현금", Category.CASH, 1_000_000),
+               Item("월세", Category.RENT, 700_000))
+    p.items[1].active = False
+    p2 = Plan.from_dict(p.to_dict())
+    assert [i.active for i in p2.items] == [True, False]
+    assert near(p2.net_at(5), 1_000_000)                         # 월세가 안 나간다
