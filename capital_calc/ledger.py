@@ -458,6 +458,21 @@ class Ledger:
             return False
         return any(e.name.strip().lower() == key for e in self.entries if e.in_period(period))
 
+    def category_months(self, category: str, yms: list[str], kind: str = COST) -> list[float]:
+        """그 분류의 달별 합계. yms 와 같은 길이·차례로 돌려준다.
+
+        달마다 따로 훑지 않고 한 번만 훑는다 (12개월 × 분류마다 훑으면 금세 는다).
+        """
+        pos = {ym: i for i, ym in enumerate(yms)}
+        out = [0.0] * len(yms)
+        for e in self.entries:
+            if e.category != category or e.kind != kind:
+                continue
+            i = pos.get(e.ym)
+            if i is not None:
+                out[i] += e.amount
+        return out
+
     def month_days(self, ym: str) -> list[dict]:
         """그 달 1일부터 말일까지 하루씩 [{date, day, income, cost, net, count}].
 

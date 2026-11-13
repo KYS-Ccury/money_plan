@@ -2,6 +2,7 @@
 capital_data.json
 capital_data.json.bak
 capital_data.json.tmp
+capital_data_window.ini
 
 __pycache__/
 *.py[cod]

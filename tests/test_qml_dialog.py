@@ -18,6 +18,16 @@ from capital_calc.backend import Backend  # noqa: E402
 from capital_calc.model import Category, Item, Plan  # noqa: E402
 
 
+def _settle(app, ms: int = 400):
+    """한눈에 화면의 '잠깐 기다렸다 한 번만' 갱신을 기다린다."""
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    loop = QEventLoop()
+    QTimer.singleShot(ms, loop.quit)
+    loop.exec()
+    app.processEvents()
+
+
 def _load():
     QQuickStyle.setStyle("Material")
     app = QGuiApplication.instance() or QGuiApplication([])
@@ -289,10 +299,12 @@ def test_overview_page_loads_with_every_chart():
     slices = pie.property("slices")
     assert slices and abs(sum(s["share"] for s in slices) - 1.0) < 1e-6
 
-    # 계획을 바꾸면 그래프도 따라간다
+    # 계획을 바꾸면 그래프도 따라간다.
+    # 한눈에 화면은 슬라이더를 끄는 동안 매번 다시 그리지 않고 잠깐 기다렸다가
+    # 한 번만 새로 뜨므로, 여기서도 그만큼 기다려 준다.
     before = list(trend.property("values"))
     backend.setProperty("months", backend.months + 6)
-    app.processEvents()
+    _settle(app)
     assert len(trend.property("values")) == len(before) + 6
 
 

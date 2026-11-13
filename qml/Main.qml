@@ -9,7 +9,8 @@ ApplicationWindow {
     id: win
     visible: true
     width: 1280; height: 840
-    minimumWidth: 1100; minimumHeight: 640
+    // 상단 줄이 접히게 바뀌어 이전보다 좁혀도 깨지지 않는다.
+    minimumWidth: 1000; minimumHeight: 640
     title: "자본금 계산기"
     color: Theme.bg
 
@@ -266,21 +267,28 @@ ApplicationWindow {
                 anchors.fill: parent
                 spacing: 10
 
-                RowLayout {
+                // 창이 좁아지면 단추가 다음 줄로 접힌다.
+                // RowLayout 은 줄바꿈이 없어 폭이 모자라면 오른쪽 밖으로 밀려나 버렸다.
+                Flow {
                     Layout.fillWidth: true
                     spacing: 8
-                    Text { text: "자본금 계산기"; color: Theme.text; font.pixelSize: 20; font.bold: true }
+                    Text {
+                        text: "자본금 계산기"; color: Theme.text; font.pixelSize: 20; font.bold: true
+                        height: 40; verticalAlignment: Text.AlignVCenter
+                    }
 
                     // 계획 / 가계부 전환
                     Row {
                         spacing: 0
                         leftPadding: 12
+                        height: 40
                         Repeater {
                             model: [{ m: "plan", t: "계획" }, { m: "ledger", t: "가계부" },
                                     { m: "overview", t: "한눈에" }]
                             delegate: Rectangle {
                                 required property var modelData
                                 readonly property bool on: win.mode === modelData.m
+                                anchors.verticalCenter: parent.verticalCenter
                                 width: 72; height: 32
                                 radius: 8
                                 color: on ? Theme.accent : (tabHover.hovered ? Theme.rowHover : "transparent")
@@ -299,7 +307,6 @@ ApplicationWindow {
                         }
                     }
 
-                    Item { Layout.fillWidth: true }
                     Button {
                         text: "＋ 항목 추가"; highlighted: true
                         visible: win.mode === "plan"
@@ -333,6 +340,7 @@ ApplicationWindow {
                                                : "")
                         color: backend.dirty ? Theme.yellow : Theme.textDim
                         font.pixelSize: 11
+                        height: 40; verticalAlignment: Text.AlignVCenter
                         ToolTip.visible: saveStateHover.hovered
                         ToolTip.text: backend.autosaveOn
                                       ? "고치고 몇 초 지나면 저절로 저장합니다 (" + backend.dataPath + ")"
@@ -369,11 +377,15 @@ ApplicationWindow {
                 }
 
                 // 시나리오 탭: 클릭 = 전환, 더블클릭 = 이름 변경
-                RowLayout {
+                // 시나리오가 늘어나도 밀려나지 않게 여기도 접힌다.
+                Flow {
                     Layout.fillWidth: true
                     visible: win.mode === "plan"
                     spacing: 6
-                    Text { text: "시나리오"; color: Theme.textDim; font.pixelSize: 12; rightPadding: 4 }
+                    Text {
+                        text: "시나리오"; color: Theme.textDim; font.pixelSize: 12; rightPadding: 4
+                        height: 36; verticalAlignment: Text.AlignVCenter
+                    }
                     Repeater {
                         model: backend.scenarioNames
                         delegate: Rectangle {
@@ -422,11 +434,11 @@ ApplicationWindow {
                         enabled: backend.scenarioCount > 1
                         onClicked: removeScenarioDialog.open()
                     }
-                    Item { Layout.fillWidth: true }
                     Text {
                         visible: backend.scenarioCount > 1
                         text: "그래프에서 다른 시나리오는 점선으로 겹쳐 보입니다"
                         color: Theme.textDim; font.pixelSize: 11
+                        height: 36; verticalAlignment: Text.AlignVCenter
                     }
                 }
 
@@ -1566,12 +1578,15 @@ ApplicationWindow {
         }
 
         // ───────────── 본문 (한눈에 보기)
-        OverviewView {
-            objectName: "overviewView"
-            id: overviewView
+        // 보지 않을 때는 아예 만들지 않는다. 숨겨만 두면 그 안의 바인딩이
+        // 계획·가계부가 바뀔 때마다 모두 다시 계산되어 창 전체가 느려진다.
+        Loader {
+            id: overviewLoader
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: win.mode === "overview"
+            active: win.mode === "overview"
+            visible: active
+            sourceComponent: OverviewView { }
         }
 
         // ───────────── 본문 (가계부)

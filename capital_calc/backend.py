@@ -2872,6 +2872,53 @@ class Backend(QObject):
         return [{"label": n, "value": v, "share": (v / total) if total else 0.0}
                 for n, v in rows]
 
+    @Slot(str, result="QVariantList")
+    def trendCategories(self, kind: str) -> list[dict]:
+        """최근 12개월에 실제로 쓴 분류 [{category, total}] — 많이 쓴 것부터."""
+        rows = self._ws.ledger.range_by_category(self._recent_yms(),
+                                                 "income" if kind == "income" else "cost")
+        return [{"category": c, "total": v} for c, v in rows]
+
+    @Slot(str, str, result="QVariantMap")
+    def categoryTrend(self, category: str, kind: str) -> dict:
+        """한 분류의 최근 12개월 흐름.
+
+        {has, category, rows, total, avg, last, recent, before, changePct, up, months}
+        rows 는 막대 그래프가 그대로 먹는 모양이다 ({label, income, cost, net, isThis}).
+        '늘고 있는가' 는 **최근 3개월 평균과 그 앞 3개월 평균**을 견준다 — 한 달만
+        보면 큰 지출 한 번에 휘둘리고, 전체 평균과 견주면 흐름이 늦게 드러난다.
+        """
+        kind = "income" if kind == "income" else "cost"
+        yms = self._recent_yms()
+        empty = {"has": False, "category": category, "rows": [], "total": 0.0, "avg": 0.0,
+                 "last": 0.0, "recent": 0.0, "before": 0.0, "changePct": 0.0,
+                 "up": False, "months": 0}
+        if not category:
+            return empty
+        values = self._ws.ledger.category_months(category, yms, kind)
+        if not any(values):
+            return empty
+
+        this = month_key(date.today())
+        rows = []
+        for ym, v in zip(yms, values):
+            rows.append({"ym": ym, "label": f"{int(ym[5:7])}월",
+                         "income": v if kind == "income" else 0.0,
+                         "cost": 0.0 if kind == "income" else v,
+                         "net": v if kind == "income" else -v,
+                         "count": 0, "isThis": ym == this})
+
+        used = [v for v in values if v > 0]
+        recent = sum(values[-3:]) / 3.0
+        before = sum(values[-6:-3]) / 3.0
+        return {
+            "has": True, "category": category, "rows": rows,
+            "total": sum(values), "avg": (sum(used) / len(used)) if used else 0.0,
+            "last": values[-1], "recent": recent, "before": before,
+            "changePct": ((recent - before) / before * 100.0) if before > 0 else 0.0,
+            "up": recent > before, "months": len(used),
+        }
+
     @Property("QVariantList", notify=budgetsChanged)
     def overviewBudgets(self) -> list[dict]:
         """이번 달 예산 현황 (예산을 정한 분류만, 많이 쓴 순)."""

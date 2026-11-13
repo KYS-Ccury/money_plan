@@ -14,12 +14,56 @@ Flickable {
     boundsBehavior: Flickable.StopAtBounds
     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-    readonly property var plan: backend.overviewPlan
-    readonly property var led: backend.overviewLedger
-    readonly property var now: backend.overviewThisMonth
+    // ── 이 화면은 '보여 주기만' 한다 ──
+    // 백엔드에 바로 바인딩해 두면 슬라이더를 한 픽셀 끌 때마다 카드 열몇 개가
+    // 통째로 다시 계산·배치된다. 그래서 값을 스냅샷으로 떠서 쓰고, 그 스냅샷은
+    // 마지막 변화에서 잠깐 지난 뒤 한 번만 새로 뜬다.
+    property var plan: backend.overviewPlan
+    property var led: backend.overviewLedger
+    property var now: backend.overviewThisMonth
+    property var trendValues: []
+    property var trendSeries: []
+    property var goalAmounts: []
+    property var bars: []
+    property var budgets: []
+    property var scenarios: []
+
     // 창이 좁으면 두 칸짜리 줄을 한 칸으로 접는다
     readonly property bool wide: width > 1000
     readonly property int horizon: Math.max(12, plan.months)
+
+    function refresh() {
+        view.plan = backend.overviewPlan
+        view.led = backend.overviewLedger
+        view.now = backend.overviewThisMonth
+        view.bars = backend.overviewMonths
+        view.budgets = backend.overviewBudgets
+        view.scenarios = backend.compareRows()
+        view.goalAmounts = backend.goalAmounts
+        var h = Math.max(12, view.plan.months)
+        view.trendValues = backend.trendFor(h)
+        var ss = backend.compareTrends(h)
+        for (var i = 0; i < ss.length; i++)
+            ss[i].color = Theme.scenarioColor(ss[i].index)
+        view.trendSeries = ss
+        pieCard.reload()
+        trendCard.reload()
+    }
+
+    Timer {
+        id: refreshTimer
+        interval: 250            // 손을 떼고 나서 한 번만 (끄는 동안은 기다린다)
+        onTriggered: view.refresh()
+    }
+
+    Connections {
+        target: backend
+        function onSummaryChanged() { refreshTimer.restart() }
+        function onLedgerChanged() { refreshTimer.restart() }
+        function onBudgetsChanged() { refreshTimer.restart() }
+    }
+
+    Component.onCompleted: view.refresh()
 
     // 한 칸 (제목 · 큰 숫자 · 설명)
     component Tile: Rectangle {
@@ -131,18 +175,13 @@ Flickable {
                     objectName: "overviewTrend"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    values: (backend.net, backend.trendFor(view.horizon))
+                    values: view.trendValues
                     lineColor: Theme.scenarioColor(backend.activeScenario)
-                    series: {
-                        var dep = backend.net + backend.scenarioCount
-                        var s = backend.compareTrends(view.horizon)
-                        for (var i = 0; i < s.length; i++) s[i].color = Theme.scenarioColor(s[i].index)
-                        return s
-                    }
-                    target: backend.target
-                    goalMonth: backend.goalMonth
+                    series: view.trendSeries
+                    target: view.plan.target
+                    goalMonth: view.plan.goalMonth
                     shortfallMonth: view.plan.shortfallMonth
-                    goals: (backend.net, backend.goalAmounts)
+                    goals: view.goalAmounts
                     markers: [6, 12, 24, 36].filter(function(m) { return m <= view.horizon })
                 }
             }
@@ -190,7 +229,7 @@ Flickable {
                         objectName: "overviewBars"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        rows: backend.overviewMonths
+                        rows: view.bars
                     }
 
                     RowLayout {
@@ -219,6 +258,9 @@ Flickable {
                 ColumnLayout {
                     id: pieCard
                     property string kind: "cost"
+                    property var slices: []
+                    function reload() { pieCard.slices = backend.overviewByCategory(pieCard.kind) }
+                    onKindChanged: pieCard.reload()
                     anchors.fill: parent
                     spacing: 8
 
@@ -249,12 +291,142 @@ Flickable {
                         objectName: "overviewPie"
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        // ledgerSummary 를 함께 읽어 가계부가 바뀌면 다시 계산되게 한다
-                        // (함수 호출만으로는 QML 이 무엇에 기대는지 알 수 없다)
-                        slices: (backend.ledgerSummary, backend.overviewByCategory(pieCard.kind))
+                        slices: pieCard.slices
                         total: pieCard.kind === "cost" ? view.led.cost : view.led.income
                         centerTitle: "12개월"
                     }
+                }
+            }
+        }
+
+        // ───────────── 분류별 추이
+        Card {
+            id: trendCard
+            property string kind: "cost"
+            property string category: ""
+            property var cats: []
+            property var info: ({ "has": false, "rows": [] })
+
+            function reload() {
+                trendCard.cats = backend.trendCategories(trendCard.kind)
+                var ok = false
+                for (var i = 0; i < trendCard.cats.length; i++)
+                    if (trendCard.cats[i].category === trendCard.category) ok = true
+                if (!ok)            // 아직 안 골랐거나 없어진 분류면 가장 많이 쓴 것으로
+                    trendCard.category = trendCard.cats.length > 0 ? trendCard.cats[0].category : ""
+                trendCard.info = backend.categoryTrend(trendCard.category, trendCard.kind)
+            }
+            onKindChanged: trendCard.reload()
+            onCategoryChanged: trendCard.info = backend.categoryTrend(trendCard.category,
+                                                                      trendCard.kind)
+
+            Layout.fillWidth: true
+            Layout.preferredHeight: 300
+            visible: view.led.has
+            title: "분류별 추이  ·  최근 12개월"
+
+            ColumnLayout {
+                anchors.fill: parent
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    Repeater {
+                        model: [{ k: "cost", t: "지출" }, { k: "income", t: "수입" }]
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property bool on: trendCard.kind === modelData.k
+                            width: 50; height: 26; radius: 13
+                            color: on ? Theme.accent : "transparent"
+                            border.color: on ? Theme.accent : Theme.cardBorder
+                            TapHandler { onTapped: trendCard.kind = modelData.k }
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.t
+                                color: parent.on ? "#ffffff" : Theme.textDim
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
+
+                    Item { width: 4 }
+
+                    // 많이 쓴 분류부터 (여덟 개까지)
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Repeater {
+                            model: trendCard.cats.slice(0, 8)
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool on: trendCard.category === modelData.category
+                                objectName: "trendCat_" + modelData.category
+                                width: catLabel.implicitWidth + 18
+                                height: 26; radius: 13
+                                color: on ? Theme.accentSoft : "transparent"
+                                border.color: on ? Theme.accent : Theme.cardBorder
+                                TapHandler { onTapped: trendCard.category = modelData.category }
+                                Text {
+                                    id: catLabel
+                                    anchors.centerIn: parent
+                                    text: modelData.category
+                                    color: parent.on ? Theme.text : Theme.textDim
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 늘고 있는지 줄고 있는지
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: trendCard.info.has
+                    spacing: 10
+                    Text {
+                        text: trendCard.category
+                        color: Theme.text; font.pixelSize: 14; font.bold: true
+                    }
+                    Text {
+                        text: trendCard.info.before > 0
+                              ? (trendCard.info.up ? "늘고 있습니다  " : "줄고 있습니다  ")
+                                + (trendCard.info.changePct >= 0 ? "+" : "")
+                                + trendCard.info.changePct.toFixed(0) + "%"
+                              : "견줄 지난 석 달이 없습니다"
+                        color: trendCard.info.before <= 0 ? Theme.textDim
+                             : (trendCard.kind === "income"
+                                ? (trendCard.info.up ? Theme.green : Theme.red)
+                                : (trendCard.info.up ? Theme.red : Theme.green))
+                        font.pixelSize: 13
+                    }
+                    Text {
+                        visible: trendCard.info.before > 0
+                        text: "최근 석 달 " + backend.won(trendCard.info.recent)
+                              + " / 그 앞 석 달 " + backend.won(trendCard.info.before)
+                        color: Theme.textDim; font.pixelSize: 11
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: "달 평균 " + backend.won(trendCard.info.avg)
+                              + "  ·  12개월 합계 " + backend.won(trendCard.info.total)
+                        color: Theme.textDim; font.pixelSize: 11
+                    }
+                }
+
+                BarChart {
+                    objectName: "trendBars"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    rows: trendCard.info.rows || []
+                }
+
+                Text {
+                    visible: !trendCard.info.has
+                    Layout.fillWidth: true
+                    text: "고른 분류로 적어 둔 내역이 최근 12개월에 없습니다."
+                    color: Theme.textDim; font.pixelSize: 12
                 }
             }
         }
@@ -335,7 +507,7 @@ Flickable {
                     spacing: 6
 
                     Text {
-                        visible: backend.overviewBudgets.length === 0
+                        visible: view.budgets.length === 0
                         Layout.fillWidth: true
                         text: "정해 둔 예산이 없습니다. 가계부 화면의 '예산' 에서 분류마다 한 달 한도를 정할 수 있습니다."
                         color: Theme.textDim; font.pixelSize: 12; wrapMode: Text.Wrap
@@ -343,7 +515,7 @@ Flickable {
 
                     Repeater {
                         // 많이 쓴 순으로 네 개까지만. 전부는 가계부 화면에서 본다.
-                        model: backend.overviewBudgets.slice(0, 4)
+                        model: view.budgets.slice(0, 4)
                         delegate: ColumnLayout {
                             required property var modelData
                             Layout.fillWidth: true
@@ -414,7 +586,7 @@ Flickable {
                 spacing: 4
 
                 Repeater {
-                    model: (backend.net, backend.compareRows())
+                    model: view.scenarios
                     delegate: Rectangle {
                         required property var modelData
                         Layout.fillWidth: true
