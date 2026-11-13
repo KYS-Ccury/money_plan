@@ -640,12 +640,20 @@ ApplicationWindow {
                                     Text { id: cntText; anchors.centerIn: parent; text: secHeader.info.count + "개"; color: Theme.text; font.pixelSize: 10 }
                                 }
                                 Item { Layout.fillWidth: true }
-                                Text { text: "합계 " + backend.won(secHeader.info.total); color: Theme.text; font.pixelSize: 12 }
                                 Text {
-                                    visible: secHeader.info.monthly !== 0
+                                    text: "합계 " + backend.won(secHeader.info.total)
+                                    color: Theme.text; font.pixelSize: 12
+                                    Layout.maximumWidth: 160
+                                    elide: Text.ElideLeft          // 금액은 뒷자리가 중요하다
+                                }
+                                Text {
+                                    // 좁으면 월 환산은 접는다 (줄마다 다시 나온다)
+                                    visible: secHeader.info.monthly !== 0 && secHeader.width > 420
                                     text: "월 " + (secHeader.info.monthly > 0 ? "+" : "") + backend.won(secHeader.info.monthly)
                                     color: secHeader.info.monthly > 0 ? Theme.green : Theme.red
                                     font.pixelSize: 12
+                                    Layout.maximumWidth: 150
+                                    elide: Text.ElideLeft
                                 }
                             }
                         }
@@ -769,14 +777,14 @@ ApplicationWindow {
 
                             RowLayout {
                                 anchors.fill: parent
-                                anchors.leftMargin: 18; anchors.rightMargin: 8
+                                anchors.leftMargin: 14; anchors.rightMargin: 6
                                 anchors.bottomMargin: rowItem.subText !== "" ? 14 : 0
                                 spacing: 8
                                 Text {
                                     // 칸이 모자라면 이름이 먼저 줄어든다 (금액이 잘리면 쓸모가 없다)
                                     Layout.fillWidth: true
                                     Layout.maximumWidth: 170
-                                    Layout.minimumWidth: 90
+                                    Layout.minimumWidth: 72
                                     text: rowItem.name
                                     color: Theme.text; font.pixelSize: 14
                                     font.strikeout: !rowItem.active      // 계산에서 빠져 있다
@@ -785,7 +793,7 @@ ApplicationWindow {
                                 Rectangle {
                                     // 칩은 글자만큼만 (창이 좁아도 금액 칸을 덜 빼앗는다)
                                     Layout.preferredWidth: Math.min(104, catText.implicitWidth + 18)
-                                    Layout.minimumWidth: 48
+                                    Layout.minimumWidth: 44
                                     height: 22; radius: 11
                                     color: Theme.accentSoft
                                     clip: true
@@ -801,7 +809,7 @@ ApplicationWindow {
                                 Text {
                                     text: rowItem.amountText; color: Theme.text; font.pixelSize: 14
                                     Layout.preferredWidth: 120
-                                    Layout.minimumWidth: 104
+                                    Layout.minimumWidth: 88
                                     horizontalAlignment: Text.AlignRight
                                     elide: Text.ElideLeft          // 금액은 뒷자리가 중요하다
                                 }
@@ -818,8 +826,8 @@ ApplicationWindow {
                                 Text {
                                     text: rowItem.monthlyText
                                     font.pixelSize: 13
-                                    Layout.preferredWidth: 150
-                                    Layout.minimumWidth: 80
+                                    Layout.preferredWidth: 130
+                                    Layout.minimumWidth: 64
                                     horizontalAlignment: Text.AlignRight
                                     elide: Text.ElideLeft
                                     color: rowItem.monthlyKind === "income" ? Theme.green
@@ -829,8 +837,11 @@ ApplicationWindow {
                                 RowLayout {
                                     id: rowButtons
                                     readonly property int btn: rowItem.width > 640 ? 32 : 26
+                                    // 아주 좁으면 ▲▼ 를 접는다. 순서 바꾸기는 창을 넓혀서 하면 되지만
+                                    // 금액과 ✕ 가 잘려 나가는 건 그대로 두면 안 된다.
+                                    readonly property bool wide: rowItem.width > 520
                                     spacing: 0
-                                    Layout.preferredWidth: btn * 5
+                                    Layout.preferredWidth: btn * (wide ? 5 : 3)
                                     ToolButton {
                                         text: rowItem.active ? "⏸" : "▶"
                                         font.pixelSize: 11; implicitWidth: rowButtons.btn
@@ -851,6 +862,7 @@ ApplicationWindow {
                                     // 묶어 보면 보이는 차례와 원본 차례가 달라서, 같은 분류 안에서만 옮긴다
                                     ToolButton {
                                         text: "▲"; font.pixelSize: 11; implicitWidth: rowButtons.btn
+                                        visible: rowButtons.wide
                                         enabled: backend.groupByCategory ? rowItem.groupPos > 0
                                                                          : rowItem.index > 0
                                         ToolTip.visible: hovered; ToolTip.delay: 700
@@ -863,6 +875,7 @@ ApplicationWindow {
                                     }
                                     ToolButton {
                                         text: "▼"; font.pixelSize: 11; implicitWidth: rowButtons.btn
+                                        visible: rowButtons.wide
                                         enabled: backend.groupByCategory ? rowItem.groupPos < rowItem.groupCount - 1
                                                                          : rowItem.index < backend.itemCount - 1
                                         ToolTip.visible: hovered; ToolTip.delay: 700
