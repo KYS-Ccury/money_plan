@@ -458,6 +458,35 @@ class Ledger:
             return False
         return any(e.name.strip().lower() == key for e in self.entries if e.in_period(period))
 
+    def month_days(self, ym: str) -> list[dict]:
+        """그 달 1일부터 말일까지 하루씩 [{date, day, income, cost, net, count}].
+
+        한 번만 훑어서 날짜별로 모은다 (날마다 따로 세면 달력 한 장에 31번 훑는다).
+        """
+        if len(ym) != 7:
+            return []
+        y, m = int(ym[:4]), int(ym[5:7])
+        last = calendar.monthrange(y, m)[1]
+        out = [{"date": f"{ym}-{d:02d}", "day": d, "income": 0.0, "cost": 0.0,
+                "net": 0.0, "count": 0} for d in range(1, last + 1)]
+        for e in self.entries:
+            if not e.date.startswith(ym):
+                continue
+            try:
+                i = int(e.date[8:10]) - 1
+            except ValueError:
+                continue
+            if not (0 <= i < last):
+                continue
+            cell = out[i]
+            cell["count"] += 1
+            if e.is_income:
+                cell["income"] += e.amount
+            else:
+                cell["cost"] += e.amount
+            cell["net"] = cell["income"] - cell["cost"]
+        return out
+
     def day_total(self, day: str) -> float:
         """그 날 하루의 수지 (수입 - 지출)."""
         return sum(e.signed for e in self.entries if e.date == day)

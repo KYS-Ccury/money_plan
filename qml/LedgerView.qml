@@ -14,6 +14,16 @@ RowLayout {
     function openImport() { importDialog.start() }
     function focusSearch() { searchField.forceActiveFocus(); searchField.selectAll() }
 
+    // "list" 목록 | "calendar" 달력. 달력은 달을 고른 상태에서만 뜻이 있다
+    property string viewMode: "list"
+    readonly property bool calendarOn: viewMode === "calendar" && backend.ledgerMonth > 0
+
+    function pickDay(day) {
+        backend.showLedgerDay(day)
+        if (backend.ledgerDay !== "")
+            view.viewMode = "list"        // 고른 날의 내역을 바로 보여 준다
+    }
+
     function defaultDate() {
         if (backend.ledgerMonth > 0)
             return backend.ledgerYear + "-" + String(backend.ledgerMonth).padStart(2, "0") + "-01"
@@ -181,6 +191,38 @@ RowLayout {
                     ToolTip.visible: hovered; ToolTip.delay: 500
                     ToolTip.text: "분류마다 한 달에 얼마까지 쓸지 정합니다"
                 }
+                Repeater {
+                    model: [{ k: "list", t: "목록" }, { k: "calendar", t: "달력" }]
+                    delegate: Rectangle {
+                        required property var modelData
+                        readonly property bool on: view.viewMode === modelData.k
+                        objectName: "viewMode_" + modelData.k
+                        width: 54; height: 30; radius: 15
+                        color: on ? Theme.accentSoft : "transparent"
+                        border.color: on ? Theme.accent : Theme.cardBorder
+                        visible: backend.ledgerYears.length > 0
+                        opacity: modelData.k === "calendar" && backend.ledgerMonth <= 0 ? 0.45 : 1
+                        TapHandler {
+                            onTapped: {
+                                if (modelData.k === "calendar" && backend.ledgerMonth <= 0)
+                                    return                    // 달을 골라야 달력이 뜻이 있다
+                                view.viewMode = modelData.k
+                            }
+                        }
+                        ToolTip.visible: viewHover.hovered
+                        ToolTip.text: modelData.k === "calendar"
+                                      ? (backend.ledgerMonth > 0 ? "달력으로 보기 (하루를 누르면 그 날만)"
+                                                                 : "먼저 달을 고르세요")
+                                      : "내역 목록으로 보기"
+                        HoverHandler { id: viewHover }
+                        Text {
+                            anchors.centerIn: parent
+                            text: modelData.t
+                            color: parent.on ? Theme.text : Theme.textDim
+                            font.pixelSize: 11
+                        }
+                    }
+                }
                 Button {
                     objectName: "importButton"
                     text: "파일에서"; flat: true; leftPadding: 10; rightPadding: 10
@@ -217,7 +259,7 @@ RowLayout {
             // 검색 · 수입/지출 · 분류 거르기
             RowLayout {
                 Layout.fillWidth: true
-                visible: backend.ledgerYears.length > 0
+                visible: backend.ledgerYears.length > 0 && !view.calendarOn
                 spacing: 8
 
                 TextField {
@@ -308,7 +350,7 @@ RowLayout {
             // 정렬 · 금액 범위
             RowLayout {
                 Layout.fillWidth: true
-                visible: backend.ledgerYears.length > 0
+                visible: backend.ledgerYears.length > 0 && !view.calendarOn
                 spacing: 8
 
                 Text { text: "정렬"; color: Theme.textDim; font.pixelSize: 12 }
@@ -390,6 +432,26 @@ RowLayout {
 
             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
 
+            // 하루만 보고 있을 때
+            RowLayout {
+                Layout.fillWidth: true
+                visible: backend.ledgerDay !== "" && !view.calendarOn
+                spacing: 8
+                Text {
+                    text: backend.ledgerPeriodText + " 하루만 보는 중"
+                    color: Theme.accent; font.pixelSize: 12
+                }
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "달력으로"; flat: true; leftPadding: 10; rightPadding: 10
+                    onClicked: view.viewMode = "calendar"
+                }
+                Button {
+                    text: "그 달 전체"; flat: true; leftPadding: 10; rightPadding: 10
+                    onClicked: backend.showLedgerDay(backend.ledgerDay)   // 같은 날을 다시 = 해제
+                }
+            }
+
             // 여러 건을 골랐을 때만 나오는 띠
             Rectangle {
                 objectName: "selectionBar"
@@ -467,7 +529,7 @@ RowLayout {
             ColumnLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: backend.ledgerItems.rowCount() === 0
+                visible: !view.calendarOn && backend.ledgerItems.rowCount() === 0
                 spacing: 8
                 Item { Layout.fillHeight: true }
                 Text {
@@ -486,11 +548,113 @@ RowLayout {
                 Item { Layout.fillHeight: true }
             }
 
+            // ───────────── 달력
+            ColumnLayout {
+                objectName: "ledgerCalendar"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                visible: view.calendarOn
+                spacing: 4
+
+                // 요일
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Repeater {
+                        model: ["일", "월", "화", "수", "목", "금", "토"]
+                        delegate: Text {
+                            required property string modelData
+                            required property int index
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            text: modelData
+                            color: index === 0 ? Theme.red : (index === 6 ? Theme.accent : Theme.textDim)
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+
+                GridLayout {
+                    id: calGrid
+                    readonly property int rows7: Math.max(1, Math.ceil(backend.ledgerCalendar.length / 7))
+                    Layout.fillWidth: true
+                    // 칸이 세로로 끝없이 늘어나지 않게 줄 수로 높이를 잡는다
+                    Layout.preferredHeight: rows7 * 92 + (rows7 - 1) * 4
+                    Layout.maximumHeight: rows7 * 92 + (rows7 - 1) * 4
+                    columns: 7
+                    columnSpacing: 4
+                    rowSpacing: 4
+
+                    Repeater {
+                        model: backend.ledgerCalendar
+                        delegate: Rectangle {
+                            id: dayCell
+                            required property var modelData
+                            required property int index
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.minimumHeight: 54
+                            radius: 8
+                            color: !modelData.inMonth ? "transparent"
+                                 : modelData.isChosen ? Theme.accentSoft
+                                 : (cellHover.hovered ? Theme.rowHover : Theme.row)
+                            border.color: modelData.isToday ? Theme.accent
+                                        : (modelData.isChosen ? Theme.accent : "transparent")
+                            Behavior on color { ColorAnimation { duration: Theme.fast } }
+
+                            HoverHandler { id: cellHover; enabled: dayCell.modelData.inMonth }
+                            TapHandler {
+                                enabled: dayCell.modelData.inMonth
+                                onTapped: view.pickDay(dayCell.modelData.date)
+                                onDoubleTapped: entryDialog.openForAdd(dayCell.modelData.date)
+                            }
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 5
+                                spacing: 1
+                                Text {
+                                    text: dayCell.modelData.inMonth ? dayCell.modelData.day : ""
+                                    color: dayCell.index % 7 === 0 ? Theme.red
+                                         : (dayCell.index % 7 === 6 ? Theme.accent : Theme.text)
+                                    font.pixelSize: 11
+                                    font.bold: dayCell.modelData.isToday
+                                }
+                                Item { Layout.fillHeight: true }
+                                Text {
+                                    visible: dayCell.modelData.income > 0
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignRight
+                                    text: "+" + backend.won(dayCell.modelData.income)
+                                    color: Theme.green; font.pixelSize: 10
+                                    elide: Text.ElideRight
+                                }
+                                Text {
+                                    visible: dayCell.modelData.cost > 0
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignRight
+                                    text: "-" + backend.won(dayCell.modelData.cost)
+                                    color: Theme.red; font.pixelSize: 10
+                                    elide: Text.ElideRight
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    text: "날짜를 누르면 그 날 내역만 봅니다  ·  두 번 누르면 그 날짜로 내역을 적습니다"
+                    color: Theme.textDim; font.pixelSize: 11
+                }
+                Item { Layout.fillHeight: true }    // 남는 자리는 아래로 흘린다
+            }
+
             ListView {
                 id: entryList
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: backend.ledgerItems.rowCount() > 0
+                visible: !view.calendarOn && backend.ledgerItems.rowCount() > 0
                 clip: true
                 spacing: 4
                 model: backend.ledgerItems
@@ -656,6 +820,7 @@ RowLayout {
             }
 
             Text {
+                visible: !view.calendarOn
                 text: "행 더블클릭: 수정  ·  왼쪽 네모칸: 여러 건 고르기  ·  ⟳: 고정 항목으로  ·  ✕: 삭제"
                 color: Theme.textDim; font.pixelSize: 11
             }

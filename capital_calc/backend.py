@@ -661,6 +661,7 @@ class Backend(QObject):
         self._ledger_kind = ""          # "" | income | cost
         self._ledger_category = ""      # "" = 전체
         self._ledger_pay = ""           # "" = 전체 (결제수단 거르기)
+        self._ledger_day = ""           # 'YYYY-MM-DD' 하루만 보기 ("" = 그 달 전체)
         self._ledger_min = 0.0          # 금액 범위 (0 = 제한 없음)
         self._ledger_max = 0.0
         self._ledger_sort = "date"      # "date" | "amount"
@@ -2046,6 +2047,50 @@ class Backend(QObject):
         self._ledger_model.set_sort(self._ledger_sort, self._ledger_desc)
         self.ledgerChanged.emit()
 
+    @Property(str, notify=ledgerChanged)
+    def ledgerDay(self) -> str:
+        """하루만 보고 있으면 'YYYY-MM-DD', 아니면 빈 문자열."""
+        return self._ledger_day if len(self.ledgerPeriod) == 10 else ""
+
+    @Slot(str)
+    def showLedgerDay(self, day: str) -> None:
+        """달력에서 하루를 눌렀을 때. 같은 날을 또 누르면 그 달 전체로 돌아간다."""
+        day = (day or "")[:10]
+        if day and day == self._ledger_day:
+            day = ""
+        if day and len(day) == 10:
+            self._ledger_year, self._ledger_month = day[:4], int(day[5:7])
+        self._ledger_day = day
+        self._ledger_model.set_period(self.ledgerPeriod)
+        self._apply_filters()
+
+    @Property("QVariantList", notify=ledgerChanged)
+    def ledgerCalendar(self) -> list[dict]:
+        """달력 한 장 (앞뒤 빈칸까지 채운 7칸 × 줄).
+
+        [{date, day, inMonth, isToday, isChosen, income, cost, net, count}]
+        """
+        if not self._ledger_year or self._ledger_month <= 0:
+            return []
+        ym = f"{self._ledger_year}-{self._ledger_month:02d}"
+        days = self._ws.ledger.month_days(ym)
+        if not days:
+            return []
+        first = date(int(ym[:4]), int(ym[5:7]), 1)
+        lead = (first.weekday() + 1) % 7          # 일요일부터 시작하는 달력
+        today = date.today().isoformat()
+        cells: list[dict] = [{"date": "", "day": 0, "inMonth": False, "isToday": False,
+                              "isChosen": False, "income": 0.0, "cost": 0.0,
+                              "net": 0.0, "count": 0} for _ in range(lead)]
+        for d in days:
+            cells.append({**d, "inMonth": True, "isToday": d["date"] == today,
+                          "isChosen": d["date"] == self._ledger_day})
+        while len(cells) % 7:
+            cells.append({"date": "", "day": 0, "inMonth": False, "isToday": False,
+                          "isChosen": False, "income": 0.0, "cost": 0.0,
+                          "net": 0.0, "count": 0})
+        return cells
+
     @Property("QVariantList", notify=ledgerChanged)
     def ledgerUsedPays(self) -> list[str]:
         """그 기간에 실제로 쓴 결제수단 (거르기 목록용)."""
@@ -2071,7 +2116,8 @@ class Backend(QObject):
     @Property(bool, notify=ledgerChanged)
     def ledgerFiltered(self) -> bool:
         return bool(self._ledger_query or self._ledger_kind or self._ledger_category
-                    or self._ledger_pay or self._ledger_min or self._ledger_max)
+                    or self._ledger_pay or self._ledger_min or self._ledger_max
+                    or self.ledgerDay)
 
     @Slot()
     def clearLedgerFilters(self) -> None:
@@ -2079,6 +2125,8 @@ class Backend(QObject):
             self._ledger_query = self._ledger_kind = self._ledger_category = ""
             self._ledger_pay = ""
             self._ledger_min = self._ledger_max = 0.0
+            self._ledger_day = ""
+            self._ledger_model.set_period(self.ledgerPeriod)
             self._apply_filters()
 
     @Property("QVariantMap", notify=ledgerChanged)
@@ -2934,16 +2982,26 @@ class Backend(QObject):
 
     @Property(str, notify=ledgerChanged)
     def ledgerPeriod(self) -> str:
-        """'YYYY' 또는 'YYYY-MM'. 기록이 없으면 빈 문자열."""
+        """'YYYY' · 'YYYY-MM' · 'YYYY-MM-DD'. 기록이 없으면 빈 문자열.
+
+        하루를 고르면 그것도 '기간' 이다 — 그래야 집계·목록·도넛이 한 자리만
+        고치면 모두 그 날 것으로 따라온다.
+        """
         if not self._ledger_year:
             return ""
-        return self._ledger_year if self._ledger_month <= 0 else f"{self._ledger_year}-{self._ledger_month:02d}"
+        if self._ledger_month <= 0:
+            return self._ledger_year
+        ym = f"{self._ledger_year}-{self._ledger_month:02d}"
+        return self._ledger_day if self._ledger_day.startswith(ym) else ym
 
     @Property(str, notify=ledgerChanged)
     def ledgerPeriodText(self) -> str:
         if not self._ledger_year:
             return "기록 없음"
-        return f"{self._ledger_year}년" + ("" if self._ledger_month <= 0 else f" {self._ledger_month}월")
+        text = f"{self._ledger_year}년" + ("" if self._ledger_month <= 0 else f" {self._ledger_month}월")
+        if len(self.ledgerPeriod) == 10:
+            text += f" {int(self._ledger_day[8:10])}일"
+        return text
 
     @Property(str, notify=ledgerChanged)
     def ledgerYear(self) -> str:
@@ -2951,6 +3009,7 @@ class Backend(QObject):
 
     @ledgerYear.setter
     def ledgerYear(self, y: str) -> None:
+        self._ledger_day = ""
         y = str(y).strip()
         if y != self._ledger_year:
             self._ledger_year = y
@@ -2963,6 +3022,7 @@ class Backend(QObject):
 
     @ledgerMonth.setter
     def ledgerMonth(self, m: int) -> None:
+        self._ledger_day = ""
         m = max(0, min(12, int(m)))
         if m != self._ledger_month:
             self._ledger_month = m

@@ -2077,3 +2077,68 @@ def test_goal_rejects_zero_and_survives_save():
     p2 = P.from_dict(b._ws.plan.to_dict())
     assert p2.goals == [{"name": "중간 목표", "amount": 5_000_000}]
     assert [g["name"] for g in p2.goal_list()] == ["중간 목표"]   # 목표 자본금이 0 이면 중간 것만
+
+
+# ───────────────────────── 달력 보기
+
+def _calendar_backend():
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    for d, c, a in (("2026-11-05", "주거/관리비", 600_000),
+                    ("2026-11-25", "급여", 2_000_000),
+                    ("2026-10-05", "식비", 9_000)):
+        ws.ledger.add(Entry(d, c, a))
+    b = Backend(ws)
+    b.ledgerYear, b.ledgerMonth = "2026", 11
+    return b
+
+
+def test_calendar_cells_line_up_with_the_weekdays():
+    b = _calendar_backend()
+    cal = b.ledgerCalendar
+    assert len(cal) % 7 == 0
+
+    # 2026-11-01 은 일요일 → 앞에 빈칸이 없다
+    assert cal[0]["inMonth"] is True and cal[0]["day"] == 1
+    assert cal[4]["cost"] == 600_000 and cal[4]["count"] == 1
+    assert [c["day"] for c in cal if c["inMonth"]] == list(range(1, 31))
+    assert all(c["date"] == "" for c in cal if not c["inMonth"])
+
+    b.ledgerMonth = 10                                   # 2026-10-01 은 목요일
+    cal = b.ledgerCalendar
+    assert [c["inMonth"] for c in cal[:5]] == [False] * 4 + [True]
+    assert cal[4]["day"] == 1
+
+    b.ledgerMonth = 0                                    # 그 해 전체면 달력이 없다
+    assert b.ledgerCalendar == []
+
+
+def test_picking_a_day_narrows_everything_to_that_day():
+    b = _calendar_backend()
+    assert b.ledgerItems.rowCount() == 2 and b.ledgerDay == ""
+
+    b.showLedgerDay("2026-11-25")
+    assert b.ledgerPeriod == "2026-11-25"
+    assert b.ledgerPeriodText == "2026년 11월 25일"
+    assert b.ledgerItems.rowCount() == 1                 # 목록도
+    assert b.ledgerSummary["income"] == 2_000_000        # 집계도 그 날 것
+    assert [c["isChosen"] for c in b.ledgerCalendar if c["day"] == 25] == [True]
+    assert b.ledgerFiltered is True
+
+    b.showLedgerDay("2026-11-25")                        # 같은 날을 또 누르면 해제
+    assert b.ledgerDay == "" and b.ledgerPeriod == "2026-11"
+    assert b.ledgerItems.rowCount() == 2
+
+    b.showLedgerDay("2026-10-05")                        # 다른 달의 날을 고르면 그 달로 간다
+    assert (b.ledgerYear, b.ledgerMonth) == ("2026", 10)
+    assert b.ledgerItems.rowCount() == 1
+
+    b.ledgerMonth = 11                                   # 달을 바꾸면 하루 보기는 풀린다
+    assert b.ledgerDay == "" and b.ledgerPeriod == "2026-11"
+
+    b.showLedgerDay("2026-11-05")
+    b.clearLedgerFilters()                               # 거르기 해제로도 풀린다
+    assert b.ledgerDay == "" and b.ledgerItems.rowCount() == 2

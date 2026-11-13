@@ -519,3 +519,26 @@ def test_sorting_by_amount():
     assert [e.name for e in lg.search(sort="amount", desc=False)] == ["점심", "같은금액", "회사"]
     # 같은 금액은 날짜로 한 번 더 정렬한다 (목록이 들썩이지 않게)
     assert [e.name for e in lg.search(sort="date")] == ["같은금액", "회사", "점심"]
+
+
+# ───────────────────────── 달력
+
+def test_month_days_fills_every_day_of_the_month():
+    from capital_calc.ledger import Entry, Ledger
+
+    lg = Ledger()
+    lg.add(Entry("2026-11-05", "주거/관리비", 600_000))
+    lg.add(Entry("2026-11-05", "식비", 12_000))
+    lg.add(Entry("2026-11-25", "급여", 2_000_000))
+    lg.add(Entry("2026-10-05", "식비", 9_000))          # 다른 달
+
+    days = lg.month_days("2026-11")
+    assert len(days) == 30 and days[0]["date"] == "2026-11-01"
+    d5 = days[4]
+    assert (d5["count"], d5["cost"], d5["net"]) == (2, 612_000, -612_000)
+    assert days[24]["income"] == 2_000_000 and days[24]["net"] == 2_000_000
+    assert sum(d["count"] for d in days) == 3
+
+    assert lg.month_days("2026-02")[0]["date"] == "2026-02-01"
+    assert len(lg.month_days("2026-02")) == 28
+    assert lg.month_days("2026") == []                  # 달이 아니면 빈 목록

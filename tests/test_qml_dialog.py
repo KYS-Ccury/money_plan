@@ -678,3 +678,48 @@ def test_goals_dialog_adds_and_removes():
     backend.removeGoal(0)
     app.processEvents()
     assert backend.goalCount == 0 and btn.property("text") == "중간 목표"
+
+
+def test_calendar_view_toggle():
+    """달력 단추로 바꾸면 달력이 뜨고, 날을 누르면 그 날 목록으로 돌아온다."""
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Workspace
+
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    ws.ledger.add(Entry("2026-11-05", "식비", 12_000, "점심"))
+    ws.ledger.add(Entry("2026-11-25", "급여", 2_000_000, "회사"))
+    backend = Backend(ws)
+    backend.ledgerYear, backend.ledgerMonth = "2026", 11
+
+    engine = QQmlApplicationEngine()
+    engine.addImportPath(str(ROOT))
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+    assert engine.rootObjects(), "QML 로드 실패"
+    win = engine.rootObjects()[0]
+    win.setProperty("mode", "ledger")
+    app.processEvents()
+
+    view = win.findChild(QObject, "ledgerView")
+    cal = win.findChild(QObject, "ledgerCalendar")
+    assert view is not None and cal is not None
+    assert cal.property("visible") is False            # 기본은 목록
+
+    view.setProperty("viewMode", "calendar")
+    app.processEvents()
+    assert cal.property("visible") is True
+
+    QMetaObject.invokeMethod(view, "pickDay", Q_ARG("QVariant", "2026-11-25"))
+    app.processEvents()
+    assert backend.ledgerDay == "2026-11-25"
+    assert view.property("viewMode") == "list"         # 고른 날 내역을 보여 준다
+    assert backend.ledgerItems.rowCount() == 1
+
+    # 달 전체를 보면 달력 자체가 뜻이 없다
+    backend.ledgerMonth = 0
+    view.setProperty("viewMode", "calendar")
+    app.processEvents()
+    assert view.property("calendarOn") is False and cal.property("visible") is False
