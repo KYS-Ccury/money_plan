@@ -26,6 +26,7 @@ from PySide6.QtCore import (
 
 from .export_excel import composition, export_plan
 from .import_ledger import parse_file, parse_text
+from .ledger import sort_key
 from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Fixed,
                      Ledger, kind_of, month_key, prev_period, same_day_in, sample_ledger,
                      shift_month)
@@ -455,6 +456,10 @@ class LedgerModel(QAbstractListModel):
         self._kind = ""
         self._category = ""
         self._pay = ""
+        self._min = 0.0
+        self._max = 0.0
+        self._sort = "date"          # "date" | "amount"
+        self._desc = True
         self._rows: list[int] = []
         self._rebuild()
 
@@ -489,7 +494,7 @@ class LedgerModel(QAbstractListModel):
         if role == self.SourceRowRole:
             return src
         if role == self.DaySectionRole:
-            return e.date
+            return e.date if self._sort == "date" else ""
         if role == self.RuleRole:
             return e.rule
         if role == self.PayRole:
@@ -500,10 +505,11 @@ class LedgerModel(QAbstractListModel):
 
     # ---- 갱신 ----
     def _rebuild(self) -> None:
-        rows = [(e.date, i) for i, e in enumerate(self._ledger.entries)
+        key = sort_key(self._sort)
+        rows = [(key(e), i) for i, e in enumerate(self._ledger.entries)
                 if self._ledger.matches(e, self._period, self._query, self._kind,
-                                        self._category, self._pay)]
-        rows.sort(key=lambda t: t[0], reverse=True)
+                                        self._category, self._pay, self._min, self._max)]
+        rows.sort(key=lambda t: t[0], reverse=self._desc)
         self._rows = [i for _, i in rows]
 
     def refresh(self) -> None:
@@ -539,10 +545,20 @@ class LedgerModel(QAbstractListModel):
             self._rebuild()
             self.endResetModel()
 
-    def set_filters(self, query: str, kind: str, category: str, pay: str = "") -> None:
-        if (query, kind, category, pay) != (self._query, self._kind, self._category, self._pay):
+    def set_filters(self, query: str, kind: str, category: str, pay: str = "",
+                    min_amount: float = 0.0, max_amount: float = 0.0) -> None:
+        want = (query, kind, category, pay, min_amount, max_amount)
+        if want != (self._query, self._kind, self._category, self._pay, self._min, self._max):
             self.beginResetModel()
-            self._query, self._kind, self._category, self._pay = query, kind, category, pay
+            (self._query, self._kind, self._category, self._pay,
+             self._min, self._max) = want
+            self._rebuild()
+            self.endResetModel()
+
+    def set_sort(self, sort: str, desc: bool) -> None:
+        if (sort, desc) != (self._sort, self._desc):
+            self.beginResetModel()
+            self._sort, self._desc = sort, desc
             self._rebuild()
             self.endResetModel()
 
@@ -611,6 +627,10 @@ class Backend(QObject):
         self._ledger_kind = ""          # "" | income | cost
         self._ledger_category = ""      # "" = 전체
         self._ledger_pay = ""           # "" = 전체 (결제수단 거르기)
+        self._ledger_min = 0.0          # 금액 범위 (0 = 제한 없음)
+        self._ledger_max = 0.0
+        self._ledger_sort = "date"      # "date" | "amount"
+        self._ledger_desc = True        # 큰 것·최신이 위
         self._grouped = GroupedItems(self._items, self)
         self._group_by_category = True
         self._status = ""
@@ -1638,14 +1658,16 @@ class Backend(QObject):
             self._ledger_pay = ""
         self._ledger_model.set_period(self.ledgerPeriod)
         self._ledger_model.set_filters(self._ledger_query, self._ledger_kind,
-                                       self._ledger_category, self._ledger_pay)
+                                       self._ledger_category, self._ledger_pay,
+                                       self._ledger_min, self._ledger_max)
         self.ledgerChanged.emit()
         self.budgetsChanged.emit()
         self.fixedChanged.emit()
 
     def _apply_filters(self) -> None:
         self._ledger_model.set_filters(self._ledger_query, self._ledger_kind,
-                                       self._ledger_category, self._ledger_pay)
+                                       self._ledger_category, self._ledger_pay,
+                                       self._ledger_min, self._ledger_max)
         self.ledgerChanged.emit()
 
     def _clear_selection(self) -> None:
@@ -1707,6 +1729,51 @@ class Backend(QObject):
             self._ledger_pay = v
             self._apply_filters()
 
+    @Property(float, notify=ledgerChanged)
+    def ledgerMinAmount(self) -> float:
+        """이 금액 이상만 보기 (0 = 제한 없음). 부호는 보지 않는다."""
+        return self._ledger_min
+
+    @ledgerMinAmount.setter
+    def ledgerMinAmount(self, v: float) -> None:
+        v = max(0.0, float(v or 0))
+        if v != self._ledger_min:
+            self._ledger_min = v
+            self._apply_filters()
+
+    @Property(float, notify=ledgerChanged)
+    def ledgerMaxAmount(self) -> float:
+        """이 금액 이하만 보기 (0 = 제한 없음)."""
+        return self._ledger_max
+
+    @ledgerMaxAmount.setter
+    def ledgerMaxAmount(self, v: float) -> None:
+        v = max(0.0, float(v or 0))
+        if v != self._ledger_max:
+            self._ledger_max = v
+            self._apply_filters()
+
+    @Property(str, notify=ledgerChanged)
+    def ledgerSort(self) -> str:
+        """"date"(날짜순) | "amount"(금액순)"""
+        return self._ledger_sort
+
+    @Property(bool, notify=ledgerChanged)
+    def ledgerSortDesc(self) -> bool:
+        """큰 것·최신이 위인가."""
+        return self._ledger_desc
+
+    @Slot(str)
+    def sortLedgerBy(self, how: str) -> None:
+        """정렬 기준을 바꾼다. 같은 기준을 다시 누르면 오름/내림을 뒤집는다."""
+        how = "amount" if how == "amount" else "date"
+        if how == self._ledger_sort:
+            self._ledger_desc = not self._ledger_desc
+        else:
+            self._ledger_sort, self._ledger_desc = how, True
+        self._ledger_model.set_sort(self._ledger_sort, self._ledger_desc)
+        self.ledgerChanged.emit()
+
     @Property("QVariantList", notify=ledgerChanged)
     def ledgerUsedPays(self) -> list[str]:
         """그 기간에 실제로 쓴 결제수단 (거르기 목록용)."""
@@ -1732,13 +1799,14 @@ class Backend(QObject):
     @Property(bool, notify=ledgerChanged)
     def ledgerFiltered(self) -> bool:
         return bool(self._ledger_query or self._ledger_kind or self._ledger_category
-                    or self._ledger_pay)
+                    or self._ledger_pay or self._ledger_min or self._ledger_max)
 
     @Slot()
     def clearLedgerFilters(self) -> None:
         if self.ledgerFiltered:
             self._ledger_query = self._ledger_kind = self._ledger_category = ""
             self._ledger_pay = ""
+            self._ledger_min = self._ledger_max = 0.0
             self._apply_filters()
 
     @Property("QVariantMap", notify=ledgerChanged)
@@ -1749,7 +1817,8 @@ class Backend(QObject):
         for e in self._ws.ledger.entries:
             if not self._ws.ledger.matches(e, self.ledgerPeriod, self._ledger_query,
                                            self._ledger_kind, self._ledger_category,
-                                           self._ledger_pay):
+                                           self._ledger_pay, self._ledger_min,
+                                           self._ledger_max):
                 continue
             count += 1
             if e.is_income:

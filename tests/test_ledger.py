@@ -488,3 +488,34 @@ def test_repeat_copy_and_fixed_carry_the_pay():
                        pay="계좌이체", start="2026-09"))
     made = lg.apply_fixed("2026-10")
     assert made and all(x.pay == "계좌이체" for x in made)
+
+
+# ───────────────────────── 금액순 · 금액 범위
+
+def test_amount_range_ignores_the_sign():
+    from capital_calc.ledger import Entry, Ledger
+
+    lg = Ledger()
+    lg.add(Entry("2026-11-02", "식비", 12_000, "점심"))
+    lg.add(Entry("2026-11-03", "급여", 2_000_000, "회사"))
+    lg.add(Entry("2026-11-04", "교통", 1_500, "버스"))
+
+    assert [e.name for e in lg.search(min_amount=10_000)] == ["회사", "점심"]
+    assert [e.name for e in lg.search(max_amount=20_000)] == ["버스", "점심"]    # 최신 날짜부터
+    assert [e.name for e in lg.search(min_amount=1_000, max_amount=20_000)] == ["버스", "점심"]
+    assert lg.search(min_amount=3_000_000) == []
+    assert len(lg.search()) == 3                      # 0 이면 제한 없음
+
+
+def test_sorting_by_amount():
+    from capital_calc.ledger import Entry, Ledger
+
+    lg = Ledger()
+    lg.add(Entry("2026-11-02", "식비", 12_000, "점심"))
+    lg.add(Entry("2026-11-09", "식비", 12_000, "같은금액"))
+    lg.add(Entry("2026-11-03", "급여", 2_000_000, "회사"))
+
+    assert [e.name for e in lg.search(sort="amount")] == ["회사", "같은금액", "점심"]
+    assert [e.name for e in lg.search(sort="amount", desc=False)] == ["점심", "같은금액", "회사"]
+    # 같은 금액은 날짜로 한 번 더 정렬한다 (목록이 들썩이지 않게)
+    assert [e.name for e in lg.search(sort="date")] == ["같은금액", "회사", "점심"]

@@ -69,6 +69,10 @@ RowLayout {
         if (c) backend.setSelectedCategory(String(c))
     }
 
+    function moneyOf(text) {
+        return parseFloat(String(text).replace(/[^\d.]/g, "")) || 0
+    }
+
     function applyBulkPay(p) {
         backend.setSelectedPay(String(p || "").trim())
     }
@@ -282,6 +286,8 @@ RowLayout {
                     Material.foreground: Theme.yellow
                     onClicked: {
                         searchField.text = ""
+                        minField.text = ""
+                        maxField.text = ""
                         backend.clearLedgerFilters()
                         payFilter.currentIndex = 0
                     }
@@ -295,6 +301,89 @@ RowLayout {
                           + backend.won(backend.ledgerFilteredSummary.net)
                     color: backend.ledgerFilteredSummary.net >= 0 ? Theme.green : Theme.red
                     font.pixelSize: 12
+                }
+            }
+
+            // 정렬 · 금액 범위
+            RowLayout {
+                Layout.fillWidth: true
+                visible: backend.ledgerYears.length > 0
+                spacing: 8
+
+                Text { text: "정렬"; color: Theme.textDim; font.pixelSize: 12 }
+                Repeater {
+                    model: [{ k: "date", t: "날짜" }, { k: "amount", t: "금액" }]
+                    delegate: Rectangle {
+                        required property var modelData
+                        readonly property bool on: backend.ledgerSort === modelData.k
+                        objectName: "sortBy_" + modelData.k
+                        width: 66; height: 28; radius: 14
+                        color: on ? Theme.accent : "transparent"
+                        border.color: on ? Theme.accent : Theme.cardBorder
+                        TapHandler { onTapped: backend.sortLedgerBy(modelData.k) }
+                        ToolTip.visible: sortHover.hovered
+                        ToolTip.text: parent.on ? "다시 누르면 반대로 정렬합니다"
+                                                : (modelData.k === "amount" ? "금액이 큰 것부터" : "최근 날짜부터")
+                        HoverHandler { id: sortHover }
+                        Text {
+                            anchors.centerIn: parent
+                            text: modelData.t + (parent.on ? (backend.ledgerSortDesc ? "  ↓" : "  ↑") : "")
+                            color: parent.on ? "#ffffff" : Theme.textDim
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+
+                Item { width: 8 }
+                Text { text: "금액"; color: Theme.textDim; font.pixelSize: 12 }
+                TextField {
+                    id: minField
+                    objectName: "ledgerMinAmount"
+                    Layout.preferredWidth: 110
+                    placeholderText: "최소"
+                    horizontalAlignment: Text.AlignRight
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    Timer {
+                        id: minTimer
+                        interval: 300
+                        onTriggered: backend.ledgerMinAmount = view.moneyOf(minField.text)
+                    }
+                    onTextEdited: minTimer.restart()
+                    onEditingFinished: {
+                        minTimer.stop()
+                        backend.ledgerMinAmount = view.moneyOf(minField.text)
+                    }
+                }
+                Text { text: "~"; color: Theme.textDim; font.pixelSize: 12 }
+                TextField {
+                    id: maxField
+                    objectName: "ledgerMaxAmount"
+                    Layout.preferredWidth: 110
+                    placeholderText: "최대"
+                    horizontalAlignment: Text.AlignRight
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    Timer {
+                        id: maxTimer
+                        interval: 300
+                        onTriggered: backend.ledgerMaxAmount = view.moneyOf(maxField.text)
+                    }
+                    onTextEdited: maxTimer.restart()
+                    onEditingFinished: {
+                        maxTimer.stop()
+                        backend.ledgerMaxAmount = view.moneyOf(maxField.text)
+                    }
+                }
+                Text { text: "원"; color: Theme.textDim; font.pixelSize: 12 }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                    visible: backend.ledgerMinAmount > 0 || backend.ledgerMaxAmount > 0
+                    text: backend.ledgerMinAmount > 0 && backend.ledgerMaxAmount > 0
+                          ? backend.won(backend.ledgerMinAmount) + " ~ " + backend.won(backend.ledgerMaxAmount) + " 만"
+                          : (backend.ledgerMinAmount > 0 ? backend.won(backend.ledgerMinAmount) + " 이상만"
+                                                         : backend.won(backend.ledgerMaxAmount) + " 이하만")
+                    color: Theme.yellow; font.pixelSize: 11
                 }
             }
 
@@ -414,8 +503,10 @@ RowLayout {
                 section.delegate: Item {
                     required property string section
                     readonly property var info: backend.ledgerDayInfo(section)
+                    // 금액순으로 보면 날짜가 뒤섞여 구분줄이 뜻을 잃는다 → 접는다
+                    visible: section !== ""
                     width: ListView.view.width - 10
-                    height: 26
+                    height: section === "" ? 0 : 26
                     RowLayout {
                         anchors.fill: parent
                         anchors.leftMargin: 4; anchors.rightMargin: 14

@@ -226,6 +226,14 @@ class Fixed:
         )
 
 
+def sort_key(sort: str = "date"):
+    """정렬 기준. 금액순일 때는 같은 금액끼리 날짜로 한 번 더 정렬한다
+    (그래야 목록이 들썩이지 않는다)."""
+    if sort == "amount":
+        return lambda e: (e.amount, e.date)
+    return lambda e: (e.date, e.amount)
+
+
 @dataclass
 class Ledger:
     entries: list[Entry] = field(default_factory=list)
@@ -406,9 +414,18 @@ class Ledger:
         return [{"year": y, **self.summary(y)} for y in self.years()]
 
     def matches(self, e: Entry, period: str = "", query: str = "",
-                kind: str = "", category: str = "", pay: str = "") -> bool:
-        """기간·검색어·수입지출·분류·결제수단 조건에 모두 맞는가. 빈 조건은 통과."""
+                kind: str = "", category: str = "", pay: str = "",
+                min_amount: float = 0.0, max_amount: float = 0.0) -> bool:
+        """기간·검색어·수입지출·분류·결제수단·금액 범위에 모두 맞는가. 빈 조건은 통과.
+
+        금액은 부호를 빼고 본다 (지출 3만원과 수입 3만원이 같은 '3만원' 이다).
+        최대만 넣으면 '얼마 이하', 최소만 넣으면 '얼마 이상' 이 된다.
+        """
         if not e.in_period(period):
+            return False
+        if min_amount > 0 and e.amount < min_amount:
+            return False
+        if max_amount > 0 and e.amount > max_amount:
             return False
         if kind in (INCOME, COST) and e.kind != kind:
             return False
@@ -423,9 +440,11 @@ class Ledger:
         return True
 
     def search(self, period: str = "", query: str = "", kind: str = "", category: str = "",
-               pay: str = "") -> list[Entry]:
-        rows = [e for e in self.entries if self.matches(e, period, query, kind, category, pay)]
-        rows.sort(key=lambda e: e.date, reverse=True)
+               pay: str = "", min_amount: float = 0.0, max_amount: float = 0.0,
+               sort: str = "date", desc: bool = True) -> list[Entry]:
+        rows = [e for e in self.entries
+                if self.matches(e, period, query, kind, category, pay, min_amount, max_amount)]
+        rows.sort(key=sort_key(sort), reverse=desc)
         return rows
 
     def categories_used(self, period: str = "") -> list[str]:

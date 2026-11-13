@@ -1715,3 +1715,48 @@ def test_repeat_is_ignored_where_it_makes_no_sense():
     b.addItem("전셋집", 9, 30_000_000, 0, True, "2026-12-02", "", "[]", 0, "", "jeonse", 0, 0, 0, False, 12)
     b.addItem("월세", 6, 500_000, 0, True, "", "", "[]", 0, "", "", 0, 0, 0, False, 12)
     assert [i.every for i in b._ws.plan.items[-2:]] == [0, 0]
+
+
+def test_sort_and_amount_range_in_the_ledger_view():
+    from PySide6.QtCore import Qt
+
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    for d, c, a, n in (("2026-11-02", "식비", 12_000, "점심"),
+                       ("2026-11-03", "급여", 2_000_000, "회사"),
+                       ("2026-11-04", "교통", 1_500, "버스")):
+        ws.ledger.add(Entry(d, c, a, n))
+    b = Backend(ws)
+    m = b.ledgerItems
+
+    def names():
+        return [m.data(m.index(r), Qt.ItemDataRole.UserRole + 4) for r in range(m.rowCount())]
+
+    assert names() == ["버스", "회사", "점심"]          # 기본은 최신 날짜부터
+    assert (b.ledgerSort, b.ledgerSortDesc) == ("date", True)
+
+    b.sortLedgerBy("amount")
+    assert (b.ledgerSort, b.ledgerSortDesc) == ("amount", True)
+    assert names() == ["회사", "점심", "버스"]
+    # 금액순일 때는 날짜 구분줄을 접는다
+    assert m.data(m.index(0), Qt.ItemDataRole.UserRole + 10) == ""
+
+    b.sortLedgerBy("amount")                            # 같은 걸 또 누르면 뒤집힌다
+    assert b.ledgerSortDesc is False and names() == ["버스", "점심", "회사"]
+
+    b.sortLedgerBy("date")
+    assert (b.ledgerSort, b.ledgerSortDesc) == ("date", True)
+    assert m.data(m.index(0), Qt.ItemDataRole.UserRole + 10) == "2026-11-04"
+
+    b.ledgerMinAmount = 10_000
+    assert names() == ["회사", "점심"] and b.ledgerFiltered is True
+    assert b.ledgerFilteredSummary["count"] == 2
+    b.ledgerMaxAmount = 100_000
+    assert names() == ["점심"]
+
+    b.clearLedgerFilters()
+    assert (b.ledgerMinAmount, b.ledgerMaxAmount) == (0, 0) and len(names()) == 3
+    assert b.ledgerSort == "date"                       # 정렬은 거르기 해제로 건드리지 않는다
