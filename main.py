@@ -86,6 +86,8 @@ def main() -> int:
 
         def shoot() -> None:
             win.grabWindow().save(args.screenshot)
+            # 저장 안 된 변경이 있으면 창이 '닫을까요?' 를 띄워 끝나지 않는다 (스크린샷용이므로 그냥 닫는다)
+            win.setProperty("forceClose", True)
             app.quit()
 
         if args.open_dialog:

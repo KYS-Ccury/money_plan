@@ -865,3 +865,52 @@ def test_goal_month_uses_fast_search():
     p.target = 99_000_000_000
     assert p.summary().goal_month() is None
     assert p.summary().months_to_goal() is None
+
+
+# ───────────────────────── 저장 안전장치
+
+def test_save_is_atomic_and_keeps_a_backup(tmp_path):
+    """저장은 옆에 다 써 놓고 바꿔친다. 직전 파일은 .bak 으로 남는다."""
+    from capital_calc.model import Category, Item, Plan, Workspace
+
+    p = tmp_path / "data.json"
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.plan.add(Item("현금", Category.CASH, 1_000_000))
+
+    assert ws.save(p) is None                      # 처음 저장이면 백업할 것이 없다
+    assert p.exists() and not (tmp_path / "data.json.tmp").exists()
+    first = p.read_text(encoding="utf-8")
+
+    ws.plan.items[0].amount = 2_000_000
+    bak = ws.save(p)
+    assert bak == tmp_path / "data.json.bak"
+    assert bak.read_text(encoding="utf-8") == first         # 백업은 바뀌기 전 내용
+    assert "2000000" in p.read_text(encoding="utf-8").replace(".0", "")
+    assert not (tmp_path / "data.json.tmp").exists()        # 임시 파일을 남기지 않는다
+
+    again = Workspace.load(p)
+    assert again.plan.items[0].amount == 2_000_000
+
+
+def test_a_failed_save_leaves_the_old_file_alone(tmp_path, monkeypatch):
+    """쓰다가 터져도 원본은 그대로여야 한다 (잘린 파일이 남지 않는다)."""
+    import json as json_mod
+
+    from capital_calc.model import Category, Item, Plan, Workspace
+
+    p = tmp_path / "data.json"
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.plan.add(Item("현금", Category.CASH, 1_000_000))
+    ws.save(p)
+    before = p.read_text(encoding="utf-8")
+
+    def boom(*_a, **_k):
+        raise OSError("디스크가 꽉 찼습니다")
+
+    monkeypatch.setattr(json_mod, "dumps", boom)
+    ws.plan.items[0].amount = 9_999_999
+    try:
+        ws.save(p)
+    except OSError:
+        pass
+    assert p.read_text(encoding="utf-8") == before           # 원본 그대로

@@ -541,3 +541,29 @@ def test_item_dialog_pins_a_ledger_category():
     QMetaObject.invokeMethod(win, "openEditDialog", Q_ARG("QVariant", backend.itemCount - 1))
     app.processEvents()
     assert dlg.property("ledgerCategory") == "식비"
+
+
+def test_save_button_and_exit_dialog_follow_dirty(tmp_path):
+    """저장 안 된 변경이 있으면 단추에 표시가 붙고, 닫을 때 묻는 팝업이 준비되어 있다."""
+    app, engine, backend, win = _load()
+    backend.saveTo(str(tmp_path / "data.json"))       # 진짜 파일은 건드리지 않는다
+    app.processEvents()
+
+    btn = win.findChild(QObject, "saveButton")
+    state = win.findChild(QObject, "saveState")
+    exit_dlg = win.findChild(QObject, "exitDialog")
+    assert btn is not None and state is not None and exit_dlg is not None
+    assert btn.property("text") == "저장"
+    assert "자동 저장" in state.property("text")
+    assert exit_dlg.property("visible") is False
+
+    backend.addEntry("2026-11-13", "식비", 9_000, "커피", "", "")
+    app.processEvents()
+    assert btn.property("text") == "저장 ●"
+    assert state.property("text") == "● 저장 안 됨"
+
+    # 팝업의 '저장하고 닫기' 가 실제로 저장한다
+    QMetaObject.invokeMethod(exit_dlg, "saveAndClose")
+    app.processEvents()
+    assert backend.dirty is False
+    assert win.property("forceClose") is True         # 다시 닫을 때는 막지 않는다

@@ -12,6 +12,8 @@ from __future__ import annotations
 import calendar
 import json
 import math
+import os
+import shutil
 from dataclasses import dataclass, field, asdict
 from datetime import date
 from enum import Enum
@@ -1125,8 +1127,32 @@ class Workspace:
             return cls([Plan.from_dict(x) for x in d.get("scenarios", [])], int(d.get("active", 0)), lg)
         return cls([Plan.from_dict(d)], 0, lg)      # 구버전 파일: 계획 하나
 
-    def save(self, path: str | Path) -> None:
-        Path(path).write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    def save(self, path: str | Path) -> Path | None:
+        """저장. 쓰다가 죽어도 원본이 잘리지 않게 **옆에 다 써 놓고 바꿔친다**.
+
+        1. 같은 폴더의 .tmp 에 전부 쓰고 디스크까지 내려보낸 뒤 (flush + fsync)
+        2. 직전 파일을 .bak 으로 복사해 두고
+        3. os.replace 로 한 번에 바꾼다 (같은 볼륨 안에서는 원자적이다).
+
+        돌려주는 값은 남겨 둔 .bak 경로 (처음 저장이면 None).
+        """
+        p = Path(path)
+        text = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+        tmp = p.with_name(p.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+
+        bak = None
+        if p.exists():
+            bak = p.with_name(p.name + ".bak")
+            try:
+                shutil.copy2(p, bak)      # 옮기지 않고 복사한다 (바꿔치기 전까지 원본을 그대로 둔다)
+            except OSError:
+                bak = None
+        os.replace(tmp, p)
+        return bak
 
     @classmethod
     def load(cls, path: str | Path) -> "Workspace":

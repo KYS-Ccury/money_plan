@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import functools
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -19,6 +19,7 @@ from PySide6.QtCore import (
     QObject,
     QSortFilterProxyModel,
     Qt,
+    QTimer,
     QUrl,
     Signal,
     Slot,
@@ -582,6 +583,7 @@ def undoable(label: str):
             out = fn(self, *args, **kwargs)
             if self._ws.to_dict() != before:
                 self._push_undo(label, before, path)
+                self._mark_dirty()
             return out
         return wrapper
     return deco
@@ -603,6 +605,7 @@ class Backend(QObject):
     budgetsChanged = Signal()       # 예산만 변경 (가계부 집계는 그대로)
     fixedChanged = Signal()         # 고정 지출·수입 규칙 변경
     undoChanged = Signal()          # 되돌리기 더미 변경
+    dirtyChanged = Signal()         # 저장 안 된 변경 유무
     selectionChanged = Signal()     # 가계부에서 고른 줄 변경
     importChanged = Signal()        # 가져오기 미리보기 변경
     saved = Signal(str)        # 저장 완료 (경로)
@@ -648,6 +651,15 @@ class Backend(QObject):
         self._redo: list[tuple[str, dict, Path]] = []
         self.summaryChanged.connect(self._clear_cache)
         self._data_path = Path(DATA_FILE)
+        # 저장 안 된 변경이 있는가. 자동 저장은 '이미 저장해 둔 파일이 있을 때' 만 한다
+        # (처음 실행에서 예시 데이터를 멋대로 파일로 만들어 두지 않으려고).
+        self._dirty = False
+        self._saved_at = ""
+        self._autosave = True
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(self.AUTOSAVE_MS)
+        self._autosave_timer.timeout.connect(self._autosave_now)
         # 모델이 바뀌면 요약도 다시 계산되도록 연결
         for sig in (
             self._items.rowsInserted,
@@ -768,6 +780,7 @@ class Backend(QObject):
         i = int(i)
         if 0 <= i < len(self._ws.plans) and i != self._ws.active:
             self._ws.active = i
+            self._mark_dirty()                 # 어느 시나리오를 보고 있었는지도 파일에 들어간다
             self._replace_plan(self._ws.plan)
             self._set_status(f"시나리오 전환: {self._ws.plan.name}")
 
@@ -897,6 +910,7 @@ class Backend(QObject):
             self._end_text = ""            # 슬라이더로 바꿨으니 기억해 둔 종료일은 버린다
             self._items.refresh_all()      # 목록의 'N개월 후 …' 표시가 기간을 따라간다
             self.monthsChanged.emit()
+            self._mark_dirty()
             self._summary_changed()
 
     months = Property(int, _get_months, _set_months, notify=monthsChanged)
@@ -917,6 +931,7 @@ class Backend(QObject):
         months = max(0, month_offset(self._plan.basis, d))
         if months == self._plan.months:
             self._end_text = d.isoformat()
+            self._mark_dirty()
             self._summary_changed()         # 개월 수는 그대로여도 보여 줄 날짜가 바뀐다
         else:
             self.months = months               # 여기서 _end_text 를 비우므로
@@ -938,6 +953,7 @@ class Backend(QObject):
         if v != self._plan.target:
             self._plan.target = v
             self.targetChanged.emit()
+            self._mark_dirty()
             self._summary_changed()
 
     target = Property(float, _get_target, _set_target, notify=targetChanged)
@@ -955,6 +971,7 @@ class Backend(QObject):
             self._plan.start_date = iso
             self.basisDateChanged.emit()
             self._items.refresh_all()
+            self._mark_dirty()
             self._summary_changed()
 
     basisDate = Property(str, _get_basis_date, _set_basis_date, notify=basisDateChanged)
@@ -1485,7 +1502,7 @@ class Backend(QObject):
         self.saveTo(str(self._data_path))
 
     @Slot(str)
-    def saveTo(self, url_or_path: str) -> None:
+    def saveTo(self, url_or_path: str, auto: bool = False) -> None:
         """지정한 경로(file:// URL 또는 로컬 경로)에 저장하고 그 경로를 기본 경로로 삼는다."""
         path = self._to_path(url_or_path)
         if path.suffix.lower() != ".json":
@@ -1494,10 +1511,17 @@ class Backend(QObject):
             path.parent.mkdir(parents=True, exist_ok=True)
             self._ws.save(path)
         except Exception as e:
+            self._autosave_timer.stop()          # 저장이 안 되는데 계속 두드리지 않는다
             self._set_status(f"저장 실패: {e}")
             self.failed.emit(f"저장 실패: {e}")
             return
+        self._saved_at = datetime.now().strftime("%H:%M")
+        self._clear_dirty()
         self._set_data_path(path)
+        self.dirtyChanged.emit()      # 저장 시각·자동 저장 여부도 이 신호로 알린다
+        if auto:
+            self._set_status(f"자동 저장 {self._saved_at}")
+            return
         self._set_status(f"저장됨: {path}")
         self.saved.emit(str(path))
 
@@ -1520,6 +1544,7 @@ class Backend(QObject):
         self._replace_plan(ws.plan)
         self._reset_ledger()
         self._set_data_path(path)
+        self._clear_dirty()               # 막 불러왔으니 파일과 같다
         self._set_status(f"불러옴: {path}")
         self.loaded.emit(str(path))
 
@@ -1540,6 +1565,59 @@ class Backend(QObject):
     def excelDefaultUrl(self) -> str:
         """엑셀 저장 대화상자의 기본 파일 (file:// URL)."""
         return QUrl.fromLocalFile(str(self._data_path.with_suffix(".xlsx"))).toString()
+
+    # ---- 저장 상태 ----
+    AUTOSAVE_MS = 4000               # 마지막 손길 뒤 이만큼 지나면 저장한다
+
+    def _mark_dirty(self) -> None:
+        if not self._dirty:
+            self._dirty = True
+            self.dirtyChanged.emit()
+        if self._autosave and self._data_path.exists():
+            self._autosave_timer.start()       # 또 고치면 다시 처음부터 센다
+
+    def _clear_dirty(self) -> None:
+        self._autosave_timer.stop()
+        if self._dirty:
+            self._dirty = False
+            self.dirtyChanged.emit()
+
+    def _autosave_now(self) -> None:
+        if self._dirty and self._data_path.exists():
+            self.saveTo(str(self._data_path), auto=True)
+
+    @Property(bool, notify=dirtyChanged)
+    def dirty(self) -> bool:
+        """저장하지 않은 변경이 있는가."""
+        return self._dirty
+
+    @Property(str, notify=dirtyChanged)
+    def savedAt(self) -> str:
+        """마지막으로 저장한 시각 (HH:MM). 아직 저장한 적이 없으면 빈 문자열."""
+        return self._saved_at
+
+    @Property(bool, notify=dirtyChanged)
+    def autosaveOn(self) -> bool:
+        """자동 저장이 돌고 있는가 (저장해 둔 파일이 있어야 돈다)."""
+        return self._autosave and self._data_path.exists()
+
+    @Slot(bool)
+    def setAutosave(self, on: bool) -> None:
+        self._autosave = bool(on)
+        if not self._autosave:
+            self._autosave_timer.stop()
+        elif self._dirty:
+            self._autosave_timer.start()
+        self.dirtyChanged.emit()
+        self._set_status("자동 저장을 켰습니다." if on else "자동 저장을 껐습니다.")
+
+    @Slot(result=bool)
+    def saveIfDirty(self) -> bool:
+        """저장 안 된 변경이 있으면 저장한다 (창을 닫을 때 쓴다)."""
+        if not self._dirty:
+            return False
+        self.save()
+        return True
 
     # ---- 되돌리기 ----
     UNDO_LIMIT = 30                # 이만큼만 기억한다 (메모리에만 있다)
@@ -1599,6 +1677,7 @@ class Backend(QObject):
         self._redo.append((label, self._ws.to_dict(), self._data_path))
         self._restore(data, path)
         self.undoChanged.emit()
+        self._mark_dirty()
         self._set_status(f"되돌렸습니다: {label}")
         return True
 
@@ -1611,6 +1690,7 @@ class Backend(QObject):
         self._undo.append((label, self._ws.to_dict(), self._data_path))
         self._restore(data, path)
         self.undoChanged.emit()
+        self._mark_dirty()
         self._set_status(f"다시 실행: {label}")
         return True
 
@@ -1631,6 +1711,7 @@ class Backend(QObject):
         if path != self._data_path:
             self._data_path = path
             self.dataPathChanged.emit()
+            self.dirtyChanged.emit()      # 자동 저장이 도는지는 이 경로에 파일이 있는가에 달렸다
 
     @Slot()
     @undoable("예시 데이터 불러오기")
@@ -1647,7 +1728,10 @@ class Backend(QObject):
     # ------------------------------------------------------------ 가계부
     def _apply_fixed(self) -> int:
         """이번 달까지 아직 안 적힌 고정 지출·수입을 적는다. 적은 건수를 돌려준다."""
-        return len(self._ws.ledger.apply_fixed(month_key(date.today())))
+        n = len(self._ws.ledger.apply_fixed(month_key(date.today())))
+        if n:
+            self._mark_dirty()           # 저절로 적힌 내역도 저장해야 남는다
+        return n
 
     def _reset_ledger(self) -> None:
         """가계부가 통째로 바뀐 뒤 (불러오기·예시) 기간을 최신으로 맞춘다."""
@@ -2269,6 +2353,7 @@ class Backend(QObject):
     def setBudget(self, category: str, amount: float) -> None:
         """예산만 바꾼다. 내역·집계는 그대로이므로 budgetsChanged 만 보낸다 (슬라이더를 끌 때 가볍게)."""
         self._ws.ledger.set_budget(category, amount)
+        self._mark_dirty()
         self.budgetsChanged.emit()
 
     @Slot()

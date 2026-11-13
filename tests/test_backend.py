@@ -1831,3 +1831,94 @@ def test_by_category_is_empty_without_a_period():
     ws.ledger = Ledger()
     b = Backend(ws)
     assert b.planVsActualByCategory() == []           # 기록이 없으면 기간도 없다
+
+
+# ───────────────────────── 저장 안 된 변경 · 자동 저장
+
+def _save_backend(tmp_path):
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    b = Backend(ws)
+    b.saveTo(str(tmp_path / "data.json"))        # 진짜 데이터 파일은 건드리지 않는다
+    return b
+
+
+def test_dirty_turns_on_with_a_change_and_off_when_saved(tmp_path):
+    b = _save_backend(tmp_path)
+    assert b.dirty is False and b.savedAt != ""
+
+    b.addEntry("2026-11-13", "식비", 9_000, "커피", "", "")
+    assert b.dirty is True
+
+    b.save()
+    assert b.dirty is False
+    assert (tmp_path / "data.json.bak").exists()  # 저장할 때마다 직전 것을 남긴다
+
+
+def test_everything_that_changes_the_file_marks_it_dirty(tmp_path):
+    """되돌리기 더미에 안 올라가는 자리도 '저장 안 됨' 이 되어야 한다."""
+    from capital_calc.model import Category, Item
+
+    for change in (lambda b: setattr(b, "months", 24),
+                   lambda b: setattr(b, "target", 5_000_000),
+                   lambda b: setattr(b, "basisDate", "2027-01-02"),
+                   lambda b: b.setBudget("식비", 300_000),
+                   lambda b: b.addEntry("2026-11-13", "식비", 9_000, "커피", "", ""),
+                   lambda b: b.addItem("현금", 0, 1_000_000, 0, True)):
+        b = _save_backend(tmp_path)
+        assert b.dirty is False
+        change(b)
+        assert b.dirty is True, change
+
+    # 되돌리기·다시 실행도 파일과 달라진 상태다
+    b = _save_backend(tmp_path)
+    b.addItem("현금", 0, 1_000_000, 0, True)
+    b.save()
+    b.undo()
+    assert b.dirty is True
+    b.save()
+    b.redo()
+    assert b.dirty is True
+
+
+def test_autosave_only_runs_once_there_is_a_file(tmp_path):
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    b = Backend(ws)
+    b._data_path = tmp_path / "없는파일.json"       # 아직 저장한 적 없는 상태
+    assert b.autosaveOn is False
+
+    b.addEntry("2026-11-13", "식비", 9_000, "커피", "", "")
+    assert b.dirty is True
+    b._autosave_now()
+    assert b.dirty is True and not b._data_path.exists()   # 멋대로 파일을 만들지 않는다
+
+    b.saveTo(str(tmp_path / "data.json"))
+    assert b.autosaveOn is True
+    b.addEntry("2026-11-14", "교통", 1_500, "버스", "", "")
+    b._autosave_now()
+    assert b.dirty is False                                # 저절로 저장되었다
+
+    b.setAutosave(False)
+    assert b.autosaveOn is False
+
+
+def test_save_if_dirty_is_what_the_close_dialog_calls(tmp_path):
+    b = _save_backend(tmp_path)
+    assert b.saveIfDirty() is False                        # 바뀐 게 없으면 아무 일도 안 한다
+    b.addEntry("2026-11-13", "식비", 9_000, "커피", "", "")
+    assert b.saveIfDirty() is True and b.dirty is False
+
+
+def test_a_failed_save_says_so_and_stops_autosaving(tmp_path):
+    b = _save_backend(tmp_path)
+    b.addEntry("2026-11-13", "식비", 9_000, "커피", "", "")
+    b.saveTo(str(tmp_path / "없는폴더" / "x" / "\x00나쁜이름.json"))
+    assert b.dirty is True                                 # 저장이 안 됐으면 그대로 '저장 안 됨'
+    assert "실패" in b.status

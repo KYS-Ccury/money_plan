@@ -48,9 +48,72 @@ ApplicationWindow {
 
     ItemDialog { id: itemDialog }
 
-    // 되돌리기 / 다시 실행 (창 어디서나)
+    // 되돌리기 / 다시 실행 / 저장 (창 어디서나)
     Shortcut { sequences: ["Ctrl+Z"]; onActivated: backend.undo() }
     Shortcut { sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]; onActivated: backend.redo() }
+    Shortcut { sequences: ["Ctrl+S"]; onActivated: backend.save() }
+
+    // 저장 안 된 채로 닫으려 할 때. forceClose 를 세워 두고 다시 닫는다
+    property bool forceClose: false
+    onClosing: function(close) {
+        if (backend.dirty && !win.forceClose) {
+            close.accepted = false
+            exitDialog.open()
+        }
+    }
+
+    Popup {
+        id: exitDialog
+        objectName: "exitDialog"
+        modal: true
+        focus: true
+        anchors.centerIn: Overlay.overlay
+        padding: Theme.pad + 4
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle {
+            color: Theme.card; radius: Theme.radius
+            border.color: Theme.cardBorder; border.width: 1
+        }
+        Overlay.modal: Rectangle { color: "#99000000" }
+
+        function saveAndClose() {
+            backend.saveIfDirty()
+            win.forceClose = true
+            exitDialog.close()
+            win.close()
+        }
+        function closeAnyway() {
+            win.forceClose = true
+            exitDialog.close()
+            win.close()
+        }
+
+        ColumnLayout {
+            spacing: 14
+            Text { text: "저장하지 않고 닫을까요?"; color: Theme.text; font.pixelSize: 17; font.bold: true }
+            Text {
+                text: "저장 안 된 변경이 있습니다.\n" + backend.dataPath
+                color: Theme.textDim; font.pixelSize: 13
+                wrapMode: Text.Wrap; Layout.maximumWidth: 420
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                spacing: 8
+                Button { text: "취소"; flat: true; onClicked: exitDialog.close() }
+                Button {
+                    objectName: "closeAnyway"
+                    text: "저장 않고 닫기"; flat: true
+                    Material.foreground: Theme.red
+                    onClicked: exitDialog.closeAnyway()
+                }
+                Button {
+                    objectName: "saveAndClose"
+                    text: "저장하고 닫기"; highlighted: true
+                    onClicked: exitDialog.saveAndClose()
+                }
+            }
+        }
+    }
 
     Toast { id: toast }
 
@@ -214,11 +277,28 @@ ApplicationWindow {
                         ToolTip.text: "다시 실행 (Ctrl+Shift+Z)
 " + backend.redoLabel
                     }
+                    Text {
+                        objectName: "saveState"
+                        text: backend.dirty ? "● 저장 안 됨"
+                                            : (backend.savedAt !== ""
+                                               ? (backend.autosaveOn ? "자동 저장 " : "저장 ") + backend.savedAt
+                                               : "")
+                        color: backend.dirty ? Theme.yellow : Theme.textDim
+                        font.pixelSize: 11
+                        ToolTip.visible: saveStateHover.hovered
+                        ToolTip.text: backend.autosaveOn
+                                      ? "고치고 몇 초 지나면 저절로 저장합니다 (" + backend.dataPath + ")"
+                                      : "아직 저장한 파일이 없어 자동 저장이 꺼져 있습니다. 한 번 저장하면 켜집니다."
+                        HoverHandler { id: saveStateHover }
+                    }
                     Button {
-                        text: "저장"; flat: true; leftPadding: 10; rightPadding: 10
+                        objectName: "saveButton"
+                        text: backend.dirty ? "저장 ●" : "저장"
+                        flat: true; leftPadding: 10; rightPadding: 10
+                        Material.foreground: backend.dirty ? Theme.yellow : Theme.text
                         onClicked: backend.save()
                         ToolTip.visible: hovered; ToolTip.delay: 500
-                        ToolTip.text: "현재 파일에 저장:\n" + backend.dataPath
+                        ToolTip.text: "현재 파일에 저장 (Ctrl+S):\n" + backend.dataPath
                     }
                     Button {
                         text: "다른 이름으로"; flat: true; leftPadding: 10; rightPadding: 10
