@@ -1994,3 +1994,24 @@ def test_inflation_shows_todays_money():
 
     b.inflation = -5                                      # 음수는 0 으로
     assert b.inflation == 0
+
+
+# ───────────────────────── 창 상태
+
+def test_window_state_round_trip():
+    b = Backend()
+    st = b.windowState()
+    assert set(st) == {"x", "y", "width", "height", "maximized", "mode", "has"}
+
+    b.saveWindowState(120, 80, 1333, 777, False, "overview")
+    got = b.windowState()
+    assert (got["x"], got["y"], got["width"], got["height"]) == (120, 80, 1333, 777)
+    assert got["maximized"] is False and got["mode"] == "overview" and got["has"] is True
+
+    b.saveWindowState(0, 0, 10, 10, True, "ledger")        # 말이 안 되는 크기는 안 적는다
+    got = b.windowState()
+    assert (got["width"], got["height"]) == (1333, 777)
+    assert got["maximized"] is True and got["mode"] == "ledger"
+
+    b.saveWindowState(0, 0, 1200, 800, False, "엉뚱한화면")
+    assert b.windowState()["mode"] == "plan"               # 모르는 화면 이름은 계획으로

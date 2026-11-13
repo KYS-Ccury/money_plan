@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtQuick.Window
 
 ApplicationWindow {
     id: win
@@ -12,8 +13,34 @@ ApplicationWindow {
     title: "자본금 계산기"
     color: Theme.bg
 
-    // 화면 전환: "plan"(계획) | "ledger"(가계부)
+    // 화면 전환: "plan"(계획) | "ledger"(가계부) | "overview"(한눈에)
     property string mode: "plan"
+
+    // 지난번 창 크기·위치·화면을 그대로 띄운다.
+    // 모니터를 바꿨을 수도 있으니 화면 밖으로 나가면 가운데로 되돌린다.
+    Component.onCompleted: {
+        var st = backend.windowState()
+        if (!st.has)
+            return
+        win.width = Math.max(win.minimumWidth, st.width)
+        win.height = Math.max(win.minimumHeight, st.height)
+        var scr = win.screen
+        if (st.x > -10000 && st.y > -10000 && scr
+            && st.x + 100 < scr.virtualX + scr.desktopAvailableWidth
+            && st.y + 60 < scr.virtualY + scr.desktopAvailableHeight
+            && st.x + st.width > scr.virtualX && st.y + st.height > scr.virtualY) {
+            win.x = st.x
+            win.y = st.y
+        }
+        if (st.maximized)
+            win.visibility = Window.Maximized
+        win.mode = st.mode
+    }
+
+    function rememberWindow() {
+        var maxed = win.visibility === Window.Maximized || win.visibility === Window.FullScreen
+        backend.saveWindowState(win.x, win.y, win.width, win.height, maxed, win.mode)
+    }
 
     Material.theme: Material.Dark
     Material.accent: Theme.accent
@@ -49,14 +76,33 @@ ApplicationWindow {
 
     ItemDialog { id: itemDialog }
 
-    // 되돌리기 / 다시 실행 / 저장 (창 어디서나)
+    // 단축키 (창 어디서나)
     Shortcut { sequences: ["Ctrl+Z"]; onActivated: backend.undo() }
     Shortcut { sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]; onActivated: backend.redo() }
     Shortcut { sequences: ["Ctrl+S"]; onActivated: backend.save() }
+    Shortcut { sequences: ["Ctrl+Shift+S"]; onActivated: saveDialog.open() }
+    Shortcut { sequences: ["Ctrl+O"]; onActivated: openDialog.open() }
+    // 지금 보고 있는 화면에 맞는 '새로 추가'
+    Shortcut {
+        sequences: ["Ctrl+N"]
+        onActivated: {
+            if (win.mode === "ledger") ledgerView.openAdd()
+            else if (win.mode === "plan") itemDialog.openForAdd()
+        }
+    }
+    // 가계부 검색칸으로 (다른 화면이면 가계부로 넘어가면서)
+    Shortcut {
+        sequences: ["Ctrl+F"]
+        onActivated: { win.mode = "ledger"; ledgerView.focusSearch() }
+    }
+    Shortcut { sequences: ["Ctrl+1"]; onActivated: win.mode = "plan" }
+    Shortcut { sequences: ["Ctrl+2"]; onActivated: win.mode = "ledger" }
+    Shortcut { sequences: ["Ctrl+3"]; onActivated: win.mode = "overview" }
 
     // 저장 안 된 채로 닫으려 할 때. forceClose 를 세워 두고 다시 닫는다
     property bool forceClose: false
     onClosing: function(close) {
+        win.rememberWindow()
         if (backend.dirty && !win.forceClose) {
             close.accepted = false
             exitDialog.open()

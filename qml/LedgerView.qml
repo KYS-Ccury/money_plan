@@ -12,6 +12,7 @@ RowLayout {
     function openBudget() { budgetDialog.open() }
     function openFixed() { fixedDialog.open() }
     function openImport() { importDialog.start() }
+    function focusSearch() { searchField.forceActiveFocus(); searchField.selectAll() }
 
     function defaultDate() {
         if (backend.ledgerMonth > 0)

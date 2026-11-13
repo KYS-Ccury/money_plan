@@ -18,6 +18,7 @@ from PySide6.QtCore import (
     QAbstractListModel,
     QModelIndex,
     QObject,
+    QSettings,
     QSortFilterProxyModel,
     Qt,
     QTimer,
@@ -36,6 +37,12 @@ from .model import INTEREST_CATEGORIES, INTEREST_TAX
 from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
                      REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS, month_offset,
                      Category, Item, Plan, Workspace, add_months, parse_date, sample_plan, won)
+
+# 창 크기·위치·마지막 화면을 적어 두는 파일. 데이터 파일 옆에 둔다
+# (테스트가 데이터 파일을 임시 폴더로 돌리면 이것도 따라간다).
+def _window_file() -> Path:
+    return DATA_FILE.with_name(DATA_FILE.stem + "_window.ini")
+
 
 # 데이터 파일. CAPITAL_DATA_FILE 로 다른 곳을 가리킬 수 있다 —
 # 테스트·실험이 진짜 데이터 파일을 건드리지 않게 하려는 장치다.
@@ -1624,6 +1631,43 @@ class Backend(QObject):
     def excelDefaultUrl(self) -> str:
         """엑셀 저장 대화상자의 기본 파일 (file:// URL)."""
         return QUrl.fromLocalFile(str(self._data_path.with_suffix(".xlsx"))).toString()
+
+    # ---- 창 상태 (크기·위치·마지막 화면) ----
+    @Slot(result="QVariantMap")
+    def windowState(self) -> dict:
+        """지난번에 쓰던 창 크기·위치·화면. 없으면 빈 값(=기본값 쓰라는 뜻)."""
+        st = QSettings(str(_window_file()), QSettings.Format.IniFormat)
+
+        def num(key: str) -> int:
+            try:
+                return int(st.value(f"window/{key}", -1))
+            except (TypeError, ValueError):
+                return -1
+
+        mode = str(st.value("window/mode", "plan"))
+        return {
+            "x": num("x"), "y": num("y"),
+            "width": num("width"), "height": num("height"),
+            "maximized": str(st.value("window/maximized", "false")).lower() == "true",
+            "mode": mode if mode in ("plan", "ledger", "overview") else "plan",
+            "has": num("width") > 0 and num("height") > 0,
+        }
+
+    @Slot(int, int, int, int, bool, str)
+    def saveWindowState(self, x: int, y: int, w: int, h: int,
+                        maximized: bool, mode: str) -> None:
+        """창을 닫을 때 QML 이 불러 준다."""
+        st = QSettings(str(_window_file()), QSettings.Format.IniFormat)
+        # 최대화 상태에서는 그때의 크기가 아니라 '원래 크기' 가 들어와야 하므로
+        # 말이 안 되는 값은 적지 않는다
+        if w > 200 and h > 200:
+            st.setValue("window/x", int(x))
+            st.setValue("window/y", int(y))
+            st.setValue("window/width", int(w))
+            st.setValue("window/height", int(h))
+        st.setValue("window/maximized", "true" if maximized else "false")
+        st.setValue("window/mode", mode if mode in ("plan", "ledger", "overview") else "plan")
+        st.sync()
 
     # ---- 저장 상태 ----
     AUTOSAVE_MS = 4000               # 마지막 손길 뒤 이만큼 지나면 저장한다

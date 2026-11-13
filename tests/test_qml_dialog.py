@@ -616,3 +616,39 @@ def test_summary_shows_todays_money_when_inflation_is_set():
     app.processEvents()
     assert field.property("text") == "3"
     assert backend.netReal < backend.net               # 지금 돈으로는 더 적다
+
+
+def test_window_restores_the_last_size_and_screen():
+    """지난번 창 크기·화면을 그대로 띄운다."""
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    backend = Backend(Plan(months=12))
+    backend.saveWindowState(0, 0, 1333, 777, False, "ledger")
+
+    engine = QQmlApplicationEngine()
+    engine.addImportPath(str(ROOT))
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+    assert engine.rootObjects(), "QML 로드 실패"
+    win = engine.rootObjects()[0]
+    app.processEvents()
+
+    assert win.property("width") == 1333
+    assert win.property("height") == 777
+    assert win.property("mode") == "ledger"
+
+    # 다음 테스트가 영향받지 않게 치운다
+    backend.saveWindowState(0, 0, 1280, 840, False, "plan")
+
+
+def test_shortcuts_are_wired():
+    """Ctrl+N · Ctrl+F · Ctrl+1/2/3 이 실제로 걸려 있는지 (시퀀스 목록으로 확인)."""
+    app, engine, backend, win = _load()
+    app.processEvents()
+    seqs = set()
+    for o in win.findChildren(QObject):
+        if "Shortcut" in o.metaObject().className():
+            v = o.property("sequences")
+            seqs |= {str(x) for x in (v if isinstance(v, list) else [v])}
+    for key in ("Ctrl+Z", "Ctrl+S", "Ctrl+N", "Ctrl+F", "Ctrl+1", "Ctrl+2", "Ctrl+3"):
+        assert key in seqs, f"{key} 가 없습니다: {sorted(seqs)}"
