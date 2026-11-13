@@ -2142,3 +2142,61 @@ def test_picking_a_day_narrows_everything_to_that_day():
     b.showLedgerDay("2026-11-05")
     b.clearLedgerFilters()                               # 거르기 해제로도 풀린다
     assert b.ledgerDay == "" and b.ledgerItems.rowCount() == 2
+
+
+# ───────────────────────── PNG · PDF 내보내기
+
+def test_export_pdf_through_the_backend(tmp_path):
+    b = Backend()
+    b.loadSample()
+
+    out = tmp_path / "요약.pdf"
+    assert b.exportPdf(str(out)) == ""                  # 빈 문자열 = 잘됨
+    assert out.exists() and out.read_bytes()[:4] == b"%PDF"
+    assert "PDF" in b.status
+
+    # 그래프 그림까지 넣으면 더 크다
+    from PySide6.QtGui import QColor, QImage
+
+    img = QImage(400, 200, QImage.Format.Format_RGB32)
+    img.fill(QColor("#101320"))
+    png = tmp_path / "chart.png"
+    assert img.save(str(png))
+    out2 = tmp_path / "요약2.pdf"
+    assert b.exportPdf(str(out2), str(png)) == ""
+    assert out2.stat().st_size > out.stat().st_size
+
+
+def test_temp_image_path_is_ours_and_cleaned_up(tmp_path):
+    from pathlib import Path as P
+
+    b = Backend()
+    b.loadSample()
+    tmp = b.tempImagePath()
+    assert P(tmp).name.startswith("capital_chart_") and P(tmp).exists()
+
+    from PySide6.QtGui import QColor, QImage
+
+    img = QImage(10, 10, QImage.Format.Format_RGB32)
+    img.fill(QColor("white"))
+    img.save(tmp)
+
+    assert b.exportPdf(str(tmp_path / "x.pdf"), tmp) == ""
+    assert not P(tmp).exists()                          # 끼운 뒤에는 치운다
+
+
+def test_export_pdf_says_why_it_failed(tmp_path):
+    b = Backend()
+    b.loadSample()
+    blocker = tmp_path / "여긴파일"
+    blocker.write_text("폴더가 아니다", encoding="utf-8")
+    why = b.exportPdf(str(blocker / "x.pdf"))          # 파일 안에 폴더를 만들 수는 없다
+    assert why != "" and "실패" in b.status
+
+
+def test_default_urls_follow_the_data_file(tmp_path):
+    b = Backend()
+    b.saveTo(str(tmp_path / "data.json"))
+    assert b.pdfDefaultUrl.endswith("data.pdf")
+    assert b.pngDefaultUrl.endswith("data.png")
+    assert b.toLocalPath(b.pdfDefaultUrl).endswith("data.pdf")

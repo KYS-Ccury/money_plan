@@ -9,8 +9,7 @@ ApplicationWindow {
     id: win
     visible: true
     width: 1280; height: 840
-    // 상단 줄이 접히게 바뀌어 이전보다 좁혀도 깨지지 않는다.
-    minimumWidth: 1000; minimumHeight: 640
+    minimumWidth: 1100; minimumHeight: 640
     title: "자본금 계산기"
     color: Theme.bg
 
@@ -184,6 +183,52 @@ ApplicationWindow {
         currentFolder: backend.dataDirUrl
         onAccepted: backend.saveTo(selectedFile.toString())
     }
+    // ── 그림(PNG) · PDF 로 내보내기 ──
+    // 그래프는 QML 이 그린 것을 그대로 떠서 쓴다 (다시 그리면 화면과 달라진다).
+    FileDialog {
+        id: pngDialog
+        title: "그래프를 그림으로 저장"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["PNG 그림 (*.png)"]
+        defaultSuffix: "png"
+        currentFolder: backend.dataDirUrl
+        selectedFile: backend.pngDefaultUrl
+        onAccepted: win.grabChart(backend.toLocalPath(selectedFile.toString()), function (ok, path) {
+            if (ok) backend.pngSaved(path)
+        })
+    }
+    FileDialog {
+        id: pdfDialog
+        title: "요약·그래프를 PDF 로 저장"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["PDF 문서 (*.pdf)"]
+        defaultSuffix: "pdf"
+        currentFolder: backend.dataDirUrl
+        selectedFile: backend.pdfDefaultUrl
+        onAccepted: {
+            var target = selectedFile.toString()
+            var tmp = backend.tempImagePath()
+            win.grabChart(tmp, function (ok, path) {
+                backend.exportPdf(target, ok ? path : "")
+            })
+        }
+    }
+
+    // 그래프 카드를 그림 파일로 뜬다. 계획 화면이 아니면 그래프 없이 넘어간다.
+    function grabChart(path, done) {
+        var card = win.mode === "plan" ? chartCard : null
+        if (!card || card.width <= 0) {
+            done(false, path)
+            return
+        }
+        // 화면보다 두 배 크게 떠서 인쇄·확대에 견디게 한다
+        var ok = card.grabToImage(function (result) {
+            done(result.saveToFile(path), path)
+        }, Qt.size(card.width * 2, card.height * 2))
+        if (!ok)
+            done(false, path)
+    }
+
     FileDialog {
         id: excelDialog
         title: "엑셀로 내보내기"
@@ -267,28 +312,21 @@ ApplicationWindow {
                 anchors.fill: parent
                 spacing: 10
 
-                // 창이 좁아지면 단추가 다음 줄로 접힌다.
-                // RowLayout 은 줄바꿈이 없어 폭이 모자라면 오른쪽 밖으로 밀려나 버렸다.
-                Flow {
+                RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
-                    Text {
-                        text: "자본금 계산기"; color: Theme.text; font.pixelSize: 20; font.bold: true
-                        height: 40; verticalAlignment: Text.AlignVCenter
-                    }
+                    Text { text: "자본금 계산기"; color: Theme.text; font.pixelSize: 20; font.bold: true }
 
                     // 계획 / 가계부 전환
                     Row {
                         spacing: 0
                         leftPadding: 12
-                        height: 40
                         Repeater {
                             model: [{ m: "plan", t: "계획" }, { m: "ledger", t: "가계부" },
                                     { m: "overview", t: "한눈에" }]
                             delegate: Rectangle {
                                 required property var modelData
                                 readonly property bool on: win.mode === modelData.m
-                                anchors.verticalCenter: parent.verticalCenter
                                 width: 72; height: 32
                                 radius: 8
                                 color: on ? Theme.accent : (tabHover.hovered ? Theme.rowHover : "transparent")
@@ -307,6 +345,7 @@ ApplicationWindow {
                         }
                     }
 
+                    Item { Layout.fillWidth: true }
                     Button {
                         text: "＋ 항목 추가"; highlighted: true
                         visible: win.mode === "plan"
@@ -340,7 +379,6 @@ ApplicationWindow {
                                                : "")
                         color: backend.dirty ? Theme.yellow : Theme.textDim
                         font.pixelSize: 11
-                        height: 40; verticalAlignment: Text.AlignVCenter
                         ToolTip.visible: saveStateHover.hovered
                         ToolTip.text: backend.autosaveOn
                                       ? "고치고 몇 초 지나면 저절로 저장합니다 (" + backend.dataPath + ")"
@@ -372,20 +410,33 @@ ApplicationWindow {
                         onClicked: excelDialog.open()
                         ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "요약·항목·월별 추이·비중을 .xlsx 로 내보내기"
                     }
+                    Button {
+                        objectName: "pngButton"
+                        text: "그림"; flat: true; leftPadding: 10; rightPadding: 10
+                        Material.foreground: Theme.green
+                        visible: win.mode === "plan"
+                        onClicked: pngDialog.open()
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: "순 자본 추이 그래프를 PNG 그림으로 저장합니다 (화면의 두 배 크기)"
+                    }
+                    Button {
+                        objectName: "pdfButton"
+                        text: "PDF"; flat: true; leftPadding: 10; rightPadding: 10
+                        Material.foreground: Theme.green
+                        onClicked: pdfDialog.open()
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: "요약·목표·그래프·항목을 A4 한 장으로 저장합니다"
+                    }
                     Button { text: "예시 데이터"; flat: true; leftPadding: 10; rightPadding: 10; onClicked: backend.loadSample() }
                     Button { text: "전체 삭제"; flat: true; leftPadding: 10; rightPadding: 10; Material.foreground: Theme.red; onClicked: clearDialog.open() }
                 }
 
                 // 시나리오 탭: 클릭 = 전환, 더블클릭 = 이름 변경
-                // 시나리오가 늘어나도 밀려나지 않게 여기도 접힌다.
-                Flow {
+                RowLayout {
                     Layout.fillWidth: true
                     visible: win.mode === "plan"
                     spacing: 6
-                    Text {
-                        text: "시나리오"; color: Theme.textDim; font.pixelSize: 12; rightPadding: 4
-                        height: 36; verticalAlignment: Text.AlignVCenter
-                    }
+                    Text { text: "시나리오"; color: Theme.textDim; font.pixelSize: 12; rightPadding: 4 }
                     Repeater {
                         model: backend.scenarioNames
                         delegate: Rectangle {
@@ -434,11 +485,11 @@ ApplicationWindow {
                         enabled: backend.scenarioCount > 1
                         onClicked: removeScenarioDialog.open()
                     }
+                    Item { Layout.fillWidth: true }
                     Text {
                         visible: backend.scenarioCount > 1
                         text: "그래프에서 다른 시나리오는 점선으로 겹쳐 보입니다"
                         color: Theme.textDim; font.pixelSize: 11
-                        height: 36; verticalAlignment: Text.AlignVCenter
                     }
                 }
 
@@ -640,20 +691,12 @@ ApplicationWindow {
                                     Text { id: cntText; anchors.centerIn: parent; text: secHeader.info.count + "개"; color: Theme.text; font.pixelSize: 10 }
                                 }
                                 Item { Layout.fillWidth: true }
+                                Text { text: "합계 " + backend.won(secHeader.info.total); color: Theme.text; font.pixelSize: 12 }
                                 Text {
-                                    text: "합계 " + backend.won(secHeader.info.total)
-                                    color: Theme.text; font.pixelSize: 12
-                                    Layout.maximumWidth: 160
-                                    elide: Text.ElideLeft          // 금액은 뒷자리가 중요하다
-                                }
-                                Text {
-                                    // 좁으면 월 환산은 접는다 (줄마다 다시 나온다)
-                                    visible: secHeader.info.monthly !== 0 && secHeader.width > 420
+                                    visible: secHeader.info.monthly !== 0
                                     text: "월 " + (secHeader.info.monthly > 0 ? "+" : "") + backend.won(secHeader.info.monthly)
                                     color: secHeader.info.monthly > 0 ? Theme.green : Theme.red
                                     font.pixelSize: 12
-                                    Layout.maximumWidth: 150
-                                    elide: Text.ElideLeft
                                 }
                             }
                         }
@@ -777,14 +820,14 @@ ApplicationWindow {
 
                             RowLayout {
                                 anchors.fill: parent
-                                anchors.leftMargin: 14; anchors.rightMargin: 6
+                                anchors.leftMargin: 18; anchors.rightMargin: 8
                                 anchors.bottomMargin: rowItem.subText !== "" ? 14 : 0
                                 spacing: 8
                                 Text {
                                     // 칸이 모자라면 이름이 먼저 줄어든다 (금액이 잘리면 쓸모가 없다)
                                     Layout.fillWidth: true
                                     Layout.maximumWidth: 170
-                                    Layout.minimumWidth: 72
+                                    Layout.minimumWidth: 90
                                     text: rowItem.name
                                     color: Theme.text; font.pixelSize: 14
                                     font.strikeout: !rowItem.active      // 계산에서 빠져 있다
@@ -793,7 +836,7 @@ ApplicationWindow {
                                 Rectangle {
                                     // 칩은 글자만큼만 (창이 좁아도 금액 칸을 덜 빼앗는다)
                                     Layout.preferredWidth: Math.min(104, catText.implicitWidth + 18)
-                                    Layout.minimumWidth: 44
+                                    Layout.minimumWidth: 48
                                     height: 22; radius: 11
                                     color: Theme.accentSoft
                                     clip: true
@@ -809,25 +852,22 @@ ApplicationWindow {
                                 Text {
                                     text: rowItem.amountText; color: Theme.text; font.pixelSize: 14
                                     Layout.preferredWidth: 120
-                                    Layout.minimumWidth: 88
+                                    Layout.minimumWidth: 104
                                     horizontalAlignment: Text.AlignRight
                                     elide: Text.ElideLeft          // 금액은 뒷자리가 중요하다
                                 }
                                 Text {
-                                    // 좁으면 접는다. 이율은 이름 아래 작은 글씨에도 나오므로
-                                    // 금액·월 환산을 자르는 것보다 이쪽을 접는 게 낫다.
-                                    visible: rowItem.width > 600
                                     text: rowItem.rateText; color: Theme.textDim; font.pixelSize: 13
-                                    Layout.preferredWidth: visible ? 60 : 0
-                                    Layout.minimumWidth: visible ? 34 : 0
+                                    Layout.preferredWidth: 60
+                                    Layout.minimumWidth: 34
                                     horizontalAlignment: Text.AlignRight
                                     elide: Text.ElideRight
                                 }
                                 Text {
                                     text: rowItem.monthlyText
                                     font.pixelSize: 13
-                                    Layout.preferredWidth: 130
-                                    Layout.minimumWidth: 64
+                                    Layout.preferredWidth: 150
+                                    Layout.minimumWidth: 80
                                     horizontalAlignment: Text.AlignRight
                                     elide: Text.ElideLeft
                                     color: rowItem.monthlyKind === "income" ? Theme.green
@@ -835,16 +875,11 @@ ApplicationWindow {
                                          : rowItem.monthlyKind === "once" ? Theme.yellow : Theme.textDim
                                 }
                                 RowLayout {
-                                    id: rowButtons
-                                    readonly property int btn: rowItem.width > 640 ? 32 : 26
-                                    // 아주 좁으면 ▲▼ 를 접는다. 순서 바꾸기는 창을 넓혀서 하면 되지만
-                                    // 금액과 ✕ 가 잘려 나가는 건 그대로 두면 안 된다.
-                                    readonly property bool wide: rowItem.width > 520
                                     spacing: 0
-                                    Layout.preferredWidth: btn * (wide ? 5 : 3)
+                                    Layout.preferredWidth: 168
                                     ToolButton {
                                         text: rowItem.active ? "⏸" : "▶"
-                                        font.pixelSize: 11; implicitWidth: rowButtons.btn
+                                        font.pixelSize: 11; implicitWidth: 32
                                         Material.foreground: rowItem.active ? Theme.textDim : Theme.yellow
                                         onClicked: backend.toggleItemActive(backend.sourceRowAt(rowItem.index))
                                         ToolTip.visible: hovered; ToolTip.delay: 500
@@ -853,7 +888,7 @@ ApplicationWindow {
                                                       : "다시 켭니다"
                                     }
                                     ToolButton {
-                                        text: "▤"; font.pixelSize: 12; implicitWidth: rowButtons.btn
+                                        text: "▤"; font.pixelSize: 12; implicitWidth: 32
                                         Material.foreground: Theme.accent
                                         onClicked: backend.toLedger(backend.sourceRowAt(rowItem.index))
                                         ToolTip.visible: hovered; ToolTip.delay: 500
@@ -861,8 +896,7 @@ ApplicationWindow {
                                     }
                                     // 묶어 보면 보이는 차례와 원본 차례가 달라서, 같은 분류 안에서만 옮긴다
                                     ToolButton {
-                                        text: "▲"; font.pixelSize: 11; implicitWidth: rowButtons.btn
-                                        visible: rowButtons.wide
+                                        text: "▲"; font.pixelSize: 11; implicitWidth: 32
                                         enabled: backend.groupByCategory ? rowItem.groupPos > 0
                                                                          : rowItem.index > 0
                                         ToolTip.visible: hovered; ToolTip.delay: 700
@@ -874,8 +908,7 @@ ApplicationWindow {
                                         }
                                     }
                                     ToolButton {
-                                        text: "▼"; font.pixelSize: 11; implicitWidth: rowButtons.btn
-                                        visible: rowButtons.wide
+                                        text: "▼"; font.pixelSize: 11; implicitWidth: 32
                                         enabled: backend.groupByCategory ? rowItem.groupPos < rowItem.groupCount - 1
                                                                          : rowItem.index < backend.itemCount - 1
                                         ToolTip.visible: hovered; ToolTip.delay: 700
@@ -887,7 +920,7 @@ ApplicationWindow {
                                         }
                                     }
                                     ToolButton {
-                                        text: "✕"; font.pixelSize: 12; implicitWidth: rowButtons.btn
+                                        text: "✕"; font.pixelSize: 12; implicitWidth: 32
                                         Material.foreground: Theme.red
                                         onClicked: {
                                             // 저장해 둔 번호는 그 사이 삭제가 있었으면 밀려 있다. 누르는 순간 다시 확인한다
@@ -920,10 +953,8 @@ ApplicationWindow {
                 id: rightFlick
                 Layout.fillHeight: true
                 Layout.fillWidth: false
-                // 창이 좁으면 요약 칸도 같이 좁아진다. 고정 폭으로 두면 좁은 창에서
-                // 왼쪽 목록이 먼저 잘려 금액이 안 보인다.
-                Layout.preferredWidth: Math.max(340, Math.min(430, win.width * 0.33))
-                Layout.minimumWidth: 340
+                Layout.preferredWidth: 430
+                Layout.minimumWidth: 400
                 Layout.maximumWidth: 480
                 clip: true
                 contentWidth: width
@@ -1441,6 +1472,7 @@ ApplicationWindow {
 
                 Card {
                     id: chartCard
+                    objectName: "chartCard"
                     property int horizon: Math.max(12, backend.months)   // 그래프 보기 기간
                     Layout.fillWidth: true
                     Layout.preferredHeight: 400

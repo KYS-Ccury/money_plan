@@ -28,6 +28,7 @@ from PySide6.QtCore import (
 )
 
 from .export_excel import composition, export_plan
+from .export_pdf import export_summary
 from .import_ledger import parse_file, parse_text
 from .ledger import sort_key
 from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Fixed,
@@ -1703,6 +1704,59 @@ class Backend(QObject):
     def excelDefaultUrl(self) -> str:
         """엑셀 저장 대화상자의 기본 파일 (file:// URL)."""
         return QUrl.fromLocalFile(str(self._data_path.with_suffix(".xlsx"))).toString()
+
+    @Property(str, notify=dataPathChanged)
+    def pdfDefaultUrl(self) -> str:
+        return QUrl.fromLocalFile(str(self._data_path.with_suffix(".pdf"))).toString()
+
+    @Property(str, notify=dataPathChanged)
+    def pngDefaultUrl(self) -> str:
+        return QUrl.fromLocalFile(str(self._data_path.with_suffix(".png"))).toString()
+
+    @Slot(str, result=str)
+    def toLocalPath(self, url_or_path: str) -> str:
+        """file:// URL 을 실제 경로로 (QML 의 grabToImage 가 경로만 받는다)."""
+        return str(self._to_path(url_or_path))
+
+    @Slot(result=str)
+    def tempImagePath(self) -> str:
+        """그래프를 잠깐 담아 둘 파일. PDF 에 끼운 뒤 지운다."""
+        import tempfile
+        fd, path = tempfile.mkstemp(prefix="capital_chart_", suffix=".png")
+        os.close(fd)
+        return path
+
+    @Slot(str, str, result=str)
+    @Slot(str, result=str)
+    def exportPdf(self, url_or_path: str, chart_png: str = "") -> str:
+        """요약·목표·그래프·항목을 A4 한 장으로. 잘되면 빈 문자열, 아니면 까닭."""
+        path = self._to_path(url_or_path)
+        chart = (chart_png or "").strip()
+        if chart.startswith("file:"):
+            chart = str(self._to_path(chart))
+        try:
+            out = export_summary(self._plan, path, chart or None, self.compareRows())
+        except Exception as e:
+            self._set_status(f"PDF 내보내기 실패: {e}")
+            self.failed.emit(f"PDF 내보내기 실패: {e}")
+            return str(e)
+        finally:
+            if chart and Path(chart).name.startswith("capital_chart_"):
+                try:
+                    Path(chart).unlink()
+                except OSError:
+                    pass
+        self._set_status(f"PDF 로 내보냄: {out}")
+        self.exported.emit(str(out))
+        return ""
+
+    @Slot(str, result=str)
+    def pngSaved(self, url_or_path: str) -> str:
+        """QML 이 그림을 저장한 뒤 알려 준다 (상태줄·토스트용)."""
+        path = self._to_path(url_or_path)
+        self._set_status(f"그림으로 내보냄: {path}")
+        self.exported.emit(str(path))
+        return str(path)
 
     # ---- 창 상태 (크기·위치·마지막 화면) ----
     @Slot(result="QVariantMap")

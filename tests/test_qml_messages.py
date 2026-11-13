@@ -75,3 +75,29 @@ def test_no_qml_complaints_while_opening_everything():
 
     bad = [m for m in msgs if any(w in m for w in BAD)]
     assert not bad, "QML 이 투덜댑니다:\n" + "\n".join(bad)
+
+
+def test_export_buttons_exist():
+    """그림·PDF 단추가 달려 있고, 그림 단추는 계획 화면에서만 보인다."""
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    backend = Backend()
+    backend.loadSample()
+    engine = QQmlApplicationEngine()
+    engine.addImportPath(str(ROOT))
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+    assert engine.rootObjects(), "QML 로드 실패"
+    win = engine.rootObjects()[0]
+    app.processEvents()
+
+    png = win.findChild(QObject, "pngButton")
+    pdf = win.findChild(QObject, "pdfButton")
+    card = win.findChild(QObject, "chartCard")
+    assert png is not None and pdf is not None and card is not None
+    assert png.property("visible") is True and pdf.property("visible") is True
+
+    win.setProperty("mode", "ledger")
+    app.processEvents()
+    assert png.property("visible") is False      # 그래프가 없는 화면에서는 숨긴다
+    assert pdf.property("visible") is True       # PDF 는 어디서든 (요약은 늘 있다)
