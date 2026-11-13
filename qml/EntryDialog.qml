@@ -12,6 +12,7 @@ Popup {
     property string category: "식비"
     property real amount: 0
     property int repeatMonths: 1             // 1 이면 한 번만, 2 이상이면 다음 달부터 반복
+    property string pay: ""                  // 결제수단 (비우면 지정 안 함)
     readonly property string kind: backend.ledgerKindOf(category)
     property string newCatKind: "cost"       // 분류를 만들 때 고른 수입/지출
     // 지금 고른 분류가 직접 만든 것인가 (기본 분류는 지울 수 없다)
@@ -67,10 +68,11 @@ Popup {
         repeatMonths = 1
         nameField.text = ""
         noteField.text = ""
+        setPay("")                           // 마지막에 쓴 결제수단을 기억하진 않는다
         open(); amountInput.forceActiveFocus()
     }
 
-    function openForEdit(row, date, category, amount, name, note) {
+    function openForEdit(row, date, category, amount, name, note, pay) {
         editRow = row
         repeatMonths = 1
         entryDate = date || backend.today
@@ -78,19 +80,29 @@ Popup {
         dlg.amount = amount
         nameField.text = name || ""
         noteField.text = note || ""
+        setPay(pay || "")
         open(); amountInput.forceActiveFocus()
+    }
+
+    // 결제수단은 목록에 없는 이름도 직접 적을 수 있다 ('신한카드' 처럼)
+    function setPay(p) {
+        dlg.pay = p || ""
+        payBox.editText = dlg.pay
     }
 
     function save() {
         if (!dateField.valid || dlg.amount <= 0) return false
+        dlg.pay = payBox.editText.trim()
         if (editRow < 0) {
             if (dlg.repeatMonths > 1)
                 backend.addEntryRepeat(dlg.entryDate, dlg.category, dlg.amount,
-                                       nameField.text, noteField.text, dlg.repeatMonths)
+                                       nameField.text, noteField.text, dlg.repeatMonths, dlg.pay)
             else
-                backend.addEntry(dlg.entryDate, dlg.category, dlg.amount, nameField.text, noteField.text)
+                backend.addEntry(dlg.entryDate, dlg.category, dlg.amount, nameField.text,
+                                 noteField.text, dlg.pay)
         } else {
-            backend.updateEntry(editRow, dlg.entryDate, dlg.category, dlg.amount, nameField.text, noteField.text)
+            backend.updateEntry(editRow, dlg.entryDate, dlg.category, dlg.amount, nameField.text,
+                                noteField.text, dlg.pay)
         }
         return true
     }
@@ -239,11 +251,28 @@ Popup {
             onEdited: (v) => dlg.amount = v
         }
 
-        TextField {
-            id: nameField
+        RowLayout {
             Layout.fillWidth: true
-            placeholderText: "쓴 곳 / 받은 곳 (선택)"
-            onAccepted: dlg.submit()
+            spacing: 8
+            TextField {
+                id: nameField
+                Layout.fillWidth: true
+                placeholderText: "쓴 곳 / 받은 곳 (선택)"
+                onAccepted: dlg.submit()
+            }
+            Text { text: "결제수단"; color: Theme.textDim; font.pixelSize: 12 }
+            ComboBox {
+                id: payBox
+                objectName: "entryPay"
+                Layout.preferredWidth: 130
+                editable: true                       // 목록에 없는 이름도 직접 적는다
+                model: backend.ledgerPays
+                onAccepted: dlg.pay = editText.trim()
+                onActivated: dlg.pay = editText.trim()
+                Component.onCompleted: payBox.editText = dlg.pay
+                ToolTip.visible: hovered; ToolTip.delay: 600
+                ToolTip.text: "결제수단 (선택). 목록에 없는 이름도 직접 적을 수 있습니다 — 비우면 '지정 안 함'"
+            }
         }
         TextField {
             id: noteField

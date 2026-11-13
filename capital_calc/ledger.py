@@ -24,6 +24,10 @@ LEDGER_CATEGORIES: list[str] = LEDGER_INCOME_CATEGORIES + LEDGER_COST_CATEGORIES
 
 INCOME, COST = "income", "cost"
 
+# 결제수단. 고르지 않으면 빈 문자열("지정 안 함")이고, 여기 없는 이름도 직접 적을 수 있다
+# ('신한카드' 처럼). 직접 적은 이름은 그것을 쓰는 내역이 있는 동안 목록에 남는다.
+LEDGER_PAYS: list[str] = ["카드", "현금", "계좌이체", "간편결제", "자동이체"]
+
 
 def kind_of(category: str) -> str:
     """분류 이름으로 수입/지출을 판정한다. 모르는 분류는 지출로 본다."""
@@ -68,11 +72,13 @@ class Entry:
     kind: str = ""                 # "income" | "cost". 비우면 분류로 자동 판정
     note: str = ""
     rule: str = ""                 # 고정 지출·수입 규칙이 만든 줄이면 그 규칙 번호
+    pay: str = ""                  # 결제수단 (카드·현금·계좌이체…). 비우면 지정 안 함
 
     def __post_init__(self) -> None:
         if self.kind not in (INCOME, COST):
             self.kind = kind_of(self.category)
         self.amount = max(0.0, float(self.amount))
+        self.pay = (self.pay or "").strip()
         d = parse_date(self.date)
         self.date = d.isoformat() if d else date.today().isoformat()
 
@@ -104,7 +110,8 @@ class Entry:
 
     def to_dict(self) -> dict:
         return {"date": self.date, "category": self.category, "amount": self.amount,
-                "name": self.name, "kind": self.kind, "note": self.note, "rule": self.rule}
+                "name": self.name, "kind": self.kind, "note": self.note, "rule": self.rule,
+                "pay": self.pay}
 
     @classmethod
     def from_dict(cls, d: dict) -> "Entry":
@@ -116,6 +123,7 @@ class Entry:
             kind=str(d.get("kind") or ""),
             note=str(d.get("note") or ""),
             rule=str(d.get("rule") or ""),
+            pay=str(d.get("pay") or ""),
         )
 
 
@@ -135,6 +143,7 @@ class Fixed:
     day: int = 1                   # 매달 며칟날. 말일을 넘으면 그 달 말일로
     kind: str = ""                 # 비우면 분류로 판정
     note: str = ""
+    pay: str = ""                  # 결제수단 (적어 주는 내역에 그대로 붙는다)
     start: str = ""                # 'YYYY-MM' 부터 (비우면 만드는 달부터)
     end: str = ""                  # 'YYYY-MM' 까지 (비우면 끝없이)
     active: bool = True
@@ -146,6 +155,7 @@ class Fixed:
         self.amount = max(0.0, float(self.amount))
         self.day = max(1, min(31, int(self.day or 1)))
         self.name = (self.name or "").strip()
+        self.pay = (self.pay or "").strip()
         self.start = (self.start or "")[:7]
         self.end = (self.end or "")[:7]
         self.done = sorted({str(x)[:7] for x in self.done if str(x)[:7]})
@@ -189,12 +199,13 @@ class Fixed:
     def entry_for(self, ym: str) -> Entry:
         """그 달에 적을 한 줄."""
         return Entry(same_day_in(ym, self.day), self.category, self.amount,
-                     self.name, kind=self.kind, note=self.note, rule=self.rid)
+                     self.name, kind=self.kind, note=self.note, rule=self.rid,
+                     pay=self.pay)
 
     def to_dict(self) -> dict:
         return {"rid": self.rid, "name": self.name, "category": self.category,
                 "amount": self.amount, "day": self.day, "kind": self.kind,
-                "note": self.note, "start": self.start, "end": self.end,
+                "note": self.note, "pay": self.pay, "start": self.start, "end": self.end,
                 "active": self.active, "done": list(self.done)}
 
     @classmethod
@@ -207,6 +218,7 @@ class Fixed:
             day=int(d.get("day", 1) or 1),
             kind=str(d.get("kind") or ""),
             note=str(d.get("note") or ""),
+            pay=str(d.get("pay") or ""),
             start=str(d.get("start") or ""),
             end=str(d.get("end") or ""),
             active=bool(d.get("active", True)),
@@ -264,6 +276,26 @@ class Ledger:
         self.custom.pop(name, None)
         self.budgets.pop(name, None)
         return ""
+
+    # ---- 결제수단 ----
+    def pays(self) -> list[str]:
+        """고를 수 있는 결제수단 — 기본 목록 + 내역에 쓰인 이름 (가나다순)."""
+        used = sorted({e.pay for e in self.entries if e.pay and e.pay not in LEDGER_PAYS})
+        return LEDGER_PAYS + used
+
+    def pays_used(self, period: str = "") -> list[str]:
+        """그 기간에 실제로 쓴 결제수단 (가나다순). 지정 안 한 것은 빼고."""
+        return sorted({e.pay for e in self.entries if e.pay and e.in_period(period)})
+
+    def by_pay(self, period: str = "", kind: str = COST) -> list[tuple[str, float]]:
+        """결제수단별 합계, 큰 금액부터. 지정 안 한 것은 '지정 안 함' 으로 묶는다."""
+        totals: dict[str, float] = {}
+        for e in self.entries:
+            if e.kind != kind or not e.in_period(period):
+                continue
+            key = e.pay or "지정 안 함"
+            totals[key] = totals.get(key, 0.0) + e.amount
+        return sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
 
     # ---- 목록 조작 ----
     def add(self, entry: Entry) -> Entry:
@@ -374,22 +406,25 @@ class Ledger:
         return [{"year": y, **self.summary(y)} for y in self.years()]
 
     def matches(self, e: Entry, period: str = "", query: str = "",
-                kind: str = "", category: str = "") -> bool:
-        """기간·검색어·수입지출·분류 조건에 모두 맞는가. 빈 조건은 통과."""
+                kind: str = "", category: str = "", pay: str = "") -> bool:
+        """기간·검색어·수입지출·분류·결제수단 조건에 모두 맞는가. 빈 조건은 통과."""
         if not e.in_period(period):
             return False
         if kind in (INCOME, COST) and e.kind != kind:
             return False
         if category and e.category != category:
             return False
+        if pay and e.pay != pay:
+            return False
         if query:
             q = query.strip().lower()
-            if q and q not in f"{e.name} {e.category} {e.note}".lower():
+            if q and q not in f"{e.name} {e.category} {e.note} {e.pay}".lower():
                 return False
         return True
 
-    def search(self, period: str = "", query: str = "", kind: str = "", category: str = "") -> list[Entry]:
-        rows = [e for e in self.entries if self.matches(e, period, query, kind, category)]
+    def search(self, period: str = "", query: str = "", kind: str = "", category: str = "",
+               pay: str = "") -> list[Entry]:
+        rows = [e for e in self.entries if self.matches(e, period, query, kind, category, pay)]
         rows.sort(key=lambda e: e.date, reverse=True)
         return rows
 
@@ -584,7 +619,7 @@ class Ledger:
             ym = shift_month(entry.ym, i)
             made.append(self.add(Entry(same_day_in(ym, entry.day.day), entry.category,
                                        entry.amount, entry.name, kind=entry.kind,
-                                       note=entry.note)))
+                                       note=entry.note, pay=entry.pay)))
         return made
 
     def copy_month(self, src_ym: str, dst_ym: str) -> list[Entry]:
@@ -599,7 +634,8 @@ class Ledger:
             if key in exists:
                 continue
             exists.add(key)
-            made.append(self.add(Entry(d, e.category, e.amount, e.name, kind=e.kind, note=e.note)))
+            made.append(self.add(Entry(d, e.category, e.amount, e.name, kind=e.kind,
+                                       note=e.note, pay=e.pay)))
         return made
 
     # ---- 저장 / 불러오기 ----
@@ -637,12 +673,12 @@ def sample_ledger(basis: date | None = None) -> Ledger:
     prev_y, prev_m = (y, m - 1) if m > 1 else (y - 1, 12)
     lg = Ledger()
     for yy, mm in ((prev_y, prev_m), (y, m)):
-        lg.add(Entry(f"{yy:04d}-{mm:02d}-25", "급여", 2_000_000, "회사"))
-        lg.add(Entry(f"{yy:04d}-{mm:02d}-05", "주거/관리비", 600_000, "월세·관리비"))
-        lg.add(Entry(f"{yy:04d}-{mm:02d}-07", "식비", 420_000, "장보기·외식"))
-        lg.add(Entry(f"{yy:04d}-{mm:02d}-12", "통신", 88_000, "휴대폰"))
-        lg.add(Entry(f"{yy:04d}-{mm:02d}-15", "교통", 110_000, "대중교통"))
-        lg.add(Entry(f"{yy:04d}-{mm:02d}-20", "문화/여가", 95_000, "영화·구독"))
+        lg.add(Entry(f"{yy:04d}-{mm:02d}-25", "급여", 2_000_000, "회사", pay="계좌이체"))
+        lg.add(Entry(f"{yy:04d}-{mm:02d}-05", "주거/관리비", 600_000, "월세·관리비", pay="자동이체"))
+        lg.add(Entry(f"{yy:04d}-{mm:02d}-07", "식비", 420_000, "장보기·외식", pay="카드"))
+        lg.add(Entry(f"{yy:04d}-{mm:02d}-12", "통신", 88_000, "휴대폰", pay="자동이체"))
+        lg.add(Entry(f"{yy:04d}-{mm:02d}-15", "교통", 110_000, "대중교통", pay="카드"))
+        lg.add(Entry(f"{yy:04d}-{mm:02d}-20", "문화/여가", 95_000, "영화·구독", pay="간편결제"))
     lg.add(Entry(f"{y:04d}-{m:02d}-10", "상여금", 500_000, "성과급"))
     for c, v in (("식비", 400_000), ("주거/관리비", 600_000), ("교통", 100_000),
                  ("통신", 90_000), ("문화/여가", 80_000)):

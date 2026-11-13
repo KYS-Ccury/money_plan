@@ -79,7 +79,7 @@ def _ledger_sheets(wb, ledger, plan=None) -> None:
     from openpyxl.chart import BarChart
 
     ws = wb.create_sheet("가계부 내역")
-    _header(ws, 1, ["날짜", "수입/지출", "분류", "내용", "금액", "메모"])
+    _header(ws, 1, ["날짜", "수입/지출", "분류", "내용", "금액", "결제수단", "메모"])
     rows = sorted(ledger.entries, key=lambda e: e.date)
     for r, e in enumerate(rows, start=2):
         ws.cell(row=r, column=1, value=e.date)
@@ -87,7 +87,8 @@ def _ledger_sheets(wb, ledger, plan=None) -> None:
         ws.cell(row=r, column=3, value=e.category)
         ws.cell(row=r, column=4, value=e.name)
         ws.cell(row=r, column=5, value=e.signed).number_format = WON
-        ws.cell(row=r, column=6, value=e.note or None)
+        ws.cell(row=r, column=6, value=e.pay or None)
+        ws.cell(row=r, column=7, value=e.note or None)
     _autowidth(ws)
 
     ws = wb.create_sheet("가계부 월별")

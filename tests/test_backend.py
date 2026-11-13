@@ -1522,3 +1522,80 @@ def test_summary_is_fresh_the_moment_it_is_announced():
 
     assert seen, "요약이 바뀌었다고 알리지 않았다"
     assert seen[-1] == (b.capital, b.net, b.monthlyCost)
+
+
+# ───────────────────────── 결제수단
+
+def test_pay_filter_and_breakdown():
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    for d, c, a, n, pay in (("2026-11-02", "식비", 12_000, "점심", "카드"),
+                            ("2026-11-03", "식비", 9_000, "커피", "현금"),
+                            ("2026-11-04", "교통", 1_500, "버스", "카드"),
+                            ("2026-11-05", "통신", 88_000, "휴대폰", "")):
+        ws.ledger.add(Entry(d, c, a, n, pay=pay))
+    b = Backend(ws)
+
+    assert b.ledgerUsedPays == ["전체", "카드", "현금"]
+    rows = b.ledgerByPay("cost")
+    assert [(r["label"], r["value"]) for r in rows] == [
+        ("지정 안 함", 88_000), ("카드", 13_500), ("현금", 9_000)]      # 큰 금액부터
+    assert abs(sum(r["share"] for r in rows) - 1.0) < 1e-9
+
+    b.ledgerPayFilter = "카드"
+    assert b.ledgerItems.rowCount() == 2 and b.ledgerFiltered is True
+    assert b.ledgerFilteredSummary["cost"] == 13_500
+
+    b.clearLedgerFilters()
+    assert b.ledgerPayFilter == "" and b.ledgerItems.rowCount() == 4
+
+
+def test_pay_goes_in_and_out_of_every_entry_point():
+    """추가·수정·반복·고정 어디로 넣어도 결제수단이 붙어 다닌다."""
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    b = Backend(ws)
+
+    b.addEntry("2026-11-02", "식비", 12_000, "점심", "", "신한카드")
+    assert ws.ledger.entries[0].pay == "신한카드"
+    assert "신한카드" in b.ledgerPays                      # 직접 적은 이름이 목록에 들어온다
+
+    b.updateEntry(0, "2026-11-02", "식비", 12_000, "점심", "", "현금")
+    assert ws.ledger.entries[0].pay == "현금"
+
+    b.addEntryRepeat("2026-11-03", "통신", 88_000, "휴대폰", "", 3, "자동이체")
+    assert [e.pay for e in ws.ledger.entries[1:]] == ["자동이체"] * 3
+
+    assert b.addFixed("월세", "주거/관리비", 600_000, 5, "", "2026-11", "", "계좌이체") == ""
+    assert b.fixedRows[0]["pay"] == "계좌이체"
+    assert [e.pay for e in ws.ledger.entries if e.rule] == ["계좌이체"]
+
+
+def test_set_selected_pay_changes_many_at_once():
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    for d in ("2026-11-02", "2026-11-03", "2026-11-04"):
+        ws.ledger.add(Entry(d, "식비", 10_000, "밥", pay="카드"))
+    b = Backend(ws)
+
+    b.toggleEntrySelected(0)
+    b.toggleEntrySelected(2)
+    assert b.setSelectedPay("현금") == 2
+    assert [e.pay for e in ws.ledger.entries] == ["현금", "카드", "현금"]
+
+    assert b.setSelectedPay("지정 안 함") == 2            # 비우기
+    assert [e.pay for e in ws.ledger.entries] == ["", "카드", ""]
+    assert b.setSelectedPay("지정 안 함") == 0            # 바뀐 게 없으면 더미에도 안 쌓인다
+
+    b.undo()
+    # 되돌리기는 가계부를 통째로 새로 만든다 — 그래서 b 쪽에서 다시 꺼내 본다
+    assert [e.pay for e in b._ws.ledger.entries] == ["현금", "카드", "현금"]

@@ -67,6 +67,10 @@ RowLayout {
         if (c) backend.setSelectedCategory(String(c))
     }
 
+    function applyBulkPay(p) {
+        backend.setSelectedPay(String(p || "").trim())
+    }
+
     ConfirmDialog {
         id: clearLedgerDialog
         title: "가계부 비우기"
@@ -204,7 +208,7 @@ RowLayout {
                 TextField {
                     id: searchField
                     objectName: "ledgerSearch"
-                    Layout.preferredWidth: 220
+                    Layout.preferredWidth: 180
                     placeholderText: "검색 (내용·분류·메모)"
                     text: backend.ledgerQuery
                     onTextEdited: backend.ledgerQuery = text
@@ -244,11 +248,33 @@ RowLayout {
                     }
                 }
 
+                ComboBox {
+                    id: payFilter
+                    objectName: "ledgerPayFilter"
+                    Layout.preferredWidth: 140
+                    visible: backend.ledgerUsedPays.length > 1
+                    model: backend.ledgerUsedPays
+                    displayText: backend.ledgerPayFilter === "" ? "결제수단" : backend.ledgerPayFilter
+                    onActivated: backend.ledgerPayFilter = String(currentValue)
+                    Connections {
+                        target: backend
+                        function onLedgerChanged() {
+                            var want = backend.ledgerPayFilter === "" ? "전체" : backend.ledgerPayFilter
+                            var i = backend.ledgerUsedPays.indexOf(want)
+                            if (i >= 0 && i !== payFilter.currentIndex) payFilter.currentIndex = i
+                        }
+                    }
+                }
+
                 Button {
                     text: "거르기 해제"; flat: true; leftPadding: 8; rightPadding: 8
                     visible: backend.ledgerFiltered
                     Material.foreground: Theme.yellow
-                    onClicked: { searchField.text = ""; backend.clearLedgerFilters() }
+                    onClicked: {
+                        searchField.text = ""
+                        backend.clearLedgerFilters()
+                        payFilter.currentIndex = 0
+                    }
                 }
 
                 Item { Layout.fillWidth: true }
@@ -294,16 +320,27 @@ RowLayout {
 
                     Button {
                         objectName: "selectVisibleButton"
-                        text: "보이는 것 모두"
+                        text: "모두"
                         flat: true; leftPadding: 10; rightPadding: 10
                         onClicked: backend.selectVisibleEntries()
                         ToolTip.visible: hovered; ToolTip.delay: 500
                         ToolTip.text: "지금 보이는 줄을 모두 고릅니다 (다 골랐으면 모두 풉니다)"
                     }
                     ComboBox {
+                        id: bulkPayBox
+                        objectName: "bulkPayBox"
+                        Layout.preferredWidth: 140
+                        // 여기서는 고르기만 한다 (새 이름은 내역 팝업에서 적으면 목록에 들어온다)
+                        model: ["지정 안 함"].concat(backend.ledgerPays)
+                        displayText: "결제수단 바꾸기"
+                        onActivated: view.applyBulkPay(currentValue)
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: "고른 줄의 결제수단을 한꺼번에 바꿉니다 (직접 적어도 됩니다)"
+                    }
+                    ComboBox {
                         id: bulkCatBox
                         objectName: "bulkCategoryBox"
-                        Layout.preferredWidth: 150
+                        Layout.preferredWidth: 140
                         model: backend.ledgerCategories
                         textRole: "value"
                         valueRole: "value"
@@ -404,6 +441,7 @@ RowLayout {
                     required property int sourceRow
                     required property string rule
                     required property bool selected
+                    required property string pay
 
                     width: ListView.view.width - 10
                     height: 44
@@ -421,7 +459,8 @@ RowLayout {
                     HoverHandler { id: rowHover }
                     TapHandler {
                         onDoubleTapped: entryDialog.openForEdit(entryRow.sourceRow, entryRow.date, entryRow.category,
-                                                                entryRow.amount, entryRow.name, entryRow.note)
+                                                                entryRow.amount, entryRow.name, entryRow.note,
+                                                                entryRow.pay)
                     }
 
                     RowLayout {
@@ -479,8 +518,11 @@ RowLayout {
                                 Layout.fillWidth: true
                             }
                             Text {
-                                visible: entryRow.note !== ""
-                                text: entryRow.note
+                                visible: entryRow.note !== "" || entryRow.pay !== ""
+                                text: entryRow.pay !== ""
+                                      ? (entryRow.note !== "" ? entryRow.pay + "  ·  " + entryRow.note
+                                                              : entryRow.pay)
+                                      : entryRow.note
                                 color: Theme.textDim; font.pixelSize: 10; elide: Text.ElideRight
                                 Layout.fillWidth: true
                             }
@@ -851,10 +893,11 @@ RowLayout {
         Card {
             id: ledgerPie
             property string kind: "cost"
+            property string by: "cat"            // "cat" 분류별 | "pay" 결제수단별
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.minimumHeight: 260
-            title: "분류별"
+            title: ledgerPie.by === "cat" ? "분류별" : "결제수단별"
 
             ColumnLayout {
                 anchors.fill: parent
@@ -863,6 +906,24 @@ RowLayout {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
+                    Repeater {
+                        model: [{ k: "cat", t: "분류" }, { k: "pay", t: "결제수단" }]
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property bool on: ledgerPie.by === modelData.k
+                            width: modelData.k === "pay" ? 76 : 54
+                            height: 24; radius: 12
+                            color: on ? Theme.accentSoft : "transparent"
+                            border.color: on ? Theme.accent : Theme.cardBorder
+                            TapHandler { onTapped: ledgerPie.by = modelData.k }
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.t
+                                color: parent.on ? Theme.text : Theme.textDim
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
                     Item { Layout.fillWidth: true }
                     Repeater {
                         model: [{ k: "cost", t: "지출" }, { k: "income", t: "수입" }]
@@ -886,7 +947,9 @@ RowLayout {
                 PieChart {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    slices: (backend.ledgerPeriod, backend.ledgerSummary, backend.ledgerByCategory(ledgerPie.kind))
+                    slices: (backend.ledgerPeriod, backend.ledgerSummary,
+                             ledgerPie.by === "cat" ? backend.ledgerByCategory(ledgerPie.kind)
+                                                    : backend.ledgerByPay(ledgerPie.kind))
                     total: ledgerPie.kind === "income" ? backend.ledgerSummary.income : backend.ledgerSummary.cost
                     centerTitle: ledgerPie.kind === "income" ? "수입" : "지출"
                 }

@@ -409,6 +409,7 @@ class LedgerModel(QAbstractListModel):
     DaySectionRole = Qt.ItemDataRole.UserRole + 10  # 날짜 구분 헤더용
     RuleRole = Qt.ItemDataRole.UserRole + 11        # 고정 규칙이 적어 준 줄이면 그 번호
     SelectedRole = Qt.ItemDataRole.UserRole + 12    # 여러 건 고르기에서 골라졌는가
+    PayRole = Qt.ItemDataRole.UserRole + 13         # 결제수단
 
     _ROLES = {
         DateRole: b"date",
@@ -423,6 +424,7 @@ class LedgerModel(QAbstractListModel):
         DaySectionRole: b"daySection",
         RuleRole: b"rule",
         SelectedRole: b"selected",
+        PayRole: b"pay",
     }
 
     def __init__(self, ledger: Ledger, parent: QObject | None = None):
@@ -434,6 +436,7 @@ class LedgerModel(QAbstractListModel):
         self._query = ""
         self._kind = ""
         self._category = ""
+        self._pay = ""
         self._rows: list[int] = []
         self._rebuild()
 
@@ -471,6 +474,8 @@ class LedgerModel(QAbstractListModel):
             return e.date
         if role == self.RuleRole:
             return e.rule
+        if role == self.PayRole:
+            return e.pay
         if role == self.SelectedRole:
             return src in self._selection
         return None
@@ -478,7 +483,8 @@ class LedgerModel(QAbstractListModel):
     # ---- 갱신 ----
     def _rebuild(self) -> None:
         rows = [(e.date, i) for i, e in enumerate(self._ledger.entries)
-                if self._ledger.matches(e, self._period, self._query, self._kind, self._category)]
+                if self._ledger.matches(e, self._period, self._query, self._kind,
+                                        self._category, self._pay)]
         rows.sort(key=lambda t: t[0], reverse=True)
         self._rows = [i for _, i in rows]
 
@@ -515,10 +521,10 @@ class LedgerModel(QAbstractListModel):
             self._rebuild()
             self.endResetModel()
 
-    def set_filters(self, query: str, kind: str, category: str) -> None:
-        if (query, kind, category) != (self._query, self._kind, self._category):
+    def set_filters(self, query: str, kind: str, category: str, pay: str = "") -> None:
+        if (query, kind, category, pay) != (self._query, self._kind, self._category, self._pay):
             self.beginResetModel()
-            self._query, self._kind, self._category = query, kind, category
+            self._query, self._kind, self._category, self._pay = query, kind, category, pay
             self._rebuild()
             self.endResetModel()
 
@@ -583,6 +589,7 @@ class Backend(QObject):
         self._ledger_query = ""
         self._ledger_kind = ""          # "" | income | cost
         self._ledger_category = ""      # "" = 전체
+        self._ledger_pay = ""           # "" = 전체 (결제수단 거르기)
         self._grouped = GroupedItems(self._items, self)
         self._group_by_category = True
         self._status = ""
@@ -1602,14 +1609,18 @@ class Backend(QObject):
     def _apply_period(self) -> None:
         if self._ledger_category and self._ledger_category not in self._ws.ledger.categories_used(self.ledgerPeriod):
             self._ledger_category = ""
+        if self._ledger_pay and self._ledger_pay not in self._ws.ledger.pays_used(self.ledgerPeriod):
+            self._ledger_pay = ""
         self._ledger_model.set_period(self.ledgerPeriod)
-        self._ledger_model.set_filters(self._ledger_query, self._ledger_kind, self._ledger_category)
+        self._ledger_model.set_filters(self._ledger_query, self._ledger_kind,
+                                       self._ledger_category, self._ledger_pay)
         self.ledgerChanged.emit()
         self.budgetsChanged.emit()
         self.fixedChanged.emit()
 
     def _apply_filters(self) -> None:
-        self._ledger_model.set_filters(self._ledger_query, self._ledger_kind, self._ledger_category)
+        self._ledger_model.set_filters(self._ledger_query, self._ledger_kind,
+                                       self._ledger_category, self._ledger_pay)
         self.ledgerChanged.emit()
 
     def _clear_selection(self) -> None:
@@ -1659,6 +1670,35 @@ class Backend(QObject):
             self._ledger_category = c
             self._apply_filters()
 
+    @Property(str, notify=ledgerChanged)
+    def ledgerPayFilter(self) -> str:
+        """"" = 전체"""
+        return self._ledger_pay
+
+    @ledgerPayFilter.setter
+    def ledgerPayFilter(self, v: str) -> None:
+        v = "" if v in ("전체", "모두") else v
+        if v != self._ledger_pay:
+            self._ledger_pay = v
+            self._apply_filters()
+
+    @Property("QVariantList", notify=ledgerChanged)
+    def ledgerUsedPays(self) -> list[str]:
+        """그 기간에 실제로 쓴 결제수단 (거르기 목록용)."""
+        return ["전체"] + self._ws.ledger.pays_used(self.ledgerPeriod)
+
+    @Property("QVariantList", notify=ledgerChanged)
+    def ledgerPays(self) -> list[str]:
+        """고를 수 있는 결제수단 (팝업용). 직접 적은 이름도 목록에 남는다."""
+        return self._ws.ledger.pays()
+
+    @Slot(str, result="QVariantList")
+    def ledgerByPay(self, kind: str) -> list[dict]:
+        """결제수단별 합계 [{label, value, share}] — 지금 보고 있는 기간."""
+        rows = self._ws.ledger.by_pay(self.ledgerPeriod, kind if kind in ("income", "cost") else "cost")
+        total = sum(v for _, v in rows)
+        return [{"label": n, "value": v, "share": (v / total) if total else 0.0} for n, v in rows]
+
     @Property("QVariantList", notify=ledgerChanged)
     def ledgerUsedCategories(self) -> list[str]:
         """현재 기간에 실제로 쓴 분류 (필터 콤보박스용, 맨 앞에 '전체')."""
@@ -1666,12 +1706,14 @@ class Backend(QObject):
 
     @Property(bool, notify=ledgerChanged)
     def ledgerFiltered(self) -> bool:
-        return bool(self._ledger_query or self._ledger_kind or self._ledger_category)
+        return bool(self._ledger_query or self._ledger_kind or self._ledger_category
+                    or self._ledger_pay)
 
     @Slot()
     def clearLedgerFilters(self) -> None:
         if self.ledgerFiltered:
             self._ledger_query = self._ledger_kind = self._ledger_category = ""
+            self._ledger_pay = ""
             self._apply_filters()
 
     @Property("QVariantMap", notify=ledgerChanged)
@@ -1681,7 +1723,8 @@ class Backend(QObject):
         count = 0
         for e in self._ws.ledger.entries:
             if not self._ws.ledger.matches(e, self.ledgerPeriod, self._ledger_query,
-                                           self._ledger_kind, self._ledger_category):
+                                           self._ledger_kind, self._ledger_category,
+                                           self._ledger_pay):
                 continue
             count += 1
             if e.is_income:
@@ -1729,14 +1772,15 @@ class Backend(QObject):
                 "net": self._ws.ledger.day_total(day)}
 
     # ---- 반복 / 복사 ----
+    @Slot(str, str, float, str, str, int, str)
     @Slot(str, str, float, str, str, int)
     @undoable("가계부 내역 반복 추가")
     def addEntryRepeat(self, date_str: str, category: str, amount: float,
-                       name: str, note: str, months: int) -> None:
+                       name: str, note: str, months: int, pay: str = "") -> None:
         """같은 내역을 months 달 동안 (이번 달 포함) 넣는다."""
         months = max(1, min(60, int(months)))
         e = Entry(date_str, category, amount, name.strip(),
-                  kind=self._ws.ledger.kind_of(category), note=note.strip())
+                  kind=self._ws.ledger.kind_of(category), note=note.strip(), pay=pay.strip())
         self._ws.ledger.add(e)
         made = self._ws.ledger.repeat(e, months)
         if not self._ledger_year:
@@ -1936,6 +1980,26 @@ class Backend(QObject):
         self._set_status(f"{changed}건의 분류를 '{category}' 로 바꿨습니다.")
         return changed
 
+    @Slot(str, result=int)
+    @undoable("결제수단 여러 건 바꾸기")
+    def setSelectedPay(self, pay: str) -> int:
+        """고른 줄의 결제수단을 한꺼번에 바꾼다 ('지정 안 함' 이면 비운다)."""
+        want = "" if pay in ("지정 안 함", "전체") else (pay or "").strip()
+        changed = 0
+        for i in sorted(self._selected):
+            if not (0 <= i < len(self._ws.ledger.entries)):
+                continue
+            e = self._ws.ledger.entries[i]
+            if e.pay == want:
+                continue
+            e.pay = want
+            changed += 1
+        if not changed:
+            return 0
+        self._ledger_touched()
+        self._set_status(f"{changed}건의 결제수단을 '{want or '지정 안 함'}' 으로 바꿨습니다.")
+        return changed
+
     # ---- 분류별 예산 ----
     @Property(bool, notify=budgetsChanged)
     def hasBudgets(self) -> bool:
@@ -1994,7 +2058,7 @@ class Backend(QObject):
                 "rid": f.rid, "name": f.name, "label": f.label,
                 "category": f.category, "amount": f.amount,
                 "amountText": ("+" if f.is_income else "-") + won(f.amount),
-                "day": f.day, "kind": f.kind, "note": f.note,
+                "day": f.day, "kind": f.kind, "note": f.note, "pay": f.pay,
                 "start": f.start, "end": f.end, "active": f.active,
                 "made": len(lg.fixed_entries(f.rid)),
                 "periodText": (f.start or "") + " ~ " + (f.end or "계속"),
@@ -2022,31 +2086,33 @@ class Backend(QObject):
         if status:
             self._set_status(status + (f" · 내역 {n}건 적음" if n else ""))
 
+    @Slot(str, str, float, int, str, str, str, str, result=str)
     @Slot(str, str, float, int, str, str, str, result=str)
     @Slot(str, str, float, int, str, str, result=str)
     @Slot(str, str, float, int, str, result=str)
     @Slot(str, str, float, int, result=str)
     @undoable("고정 항목 추가")
     def addFixed(self, name: str, category: str, amount: float, day: int,
-                 note: str = "", start: str = "", end: str = "") -> str:
+                 note: str = "", start: str = "", end: str = "", pay: str = "") -> str:
         """고정 지출·수입을 하나 만든다. 만들었으면 빈 문자열, 아니면 까닭을 돌려준다."""
         why = self._check_fixed(category, amount, start, end)
         if why:
             self.failed.emit(why)
             return why
         f = self._ws.ledger.add_fixed(Fixed(name=name, category=category, amount=amount,
-                                            day=day, note=note.strip(),
+                                            day=day, note=note.strip(), pay=pay.strip(),
                                             start=start[:7], end=end[:7]))
         self._fixed_touched(f"고정 {'수입' if f.is_income else '지출'} 추가: {f.label} {won(f.amount)}")
         return ""
 
+    @Slot(str, str, str, float, int, str, str, str, str, result=str)
     @Slot(str, str, str, float, int, str, str, str, result=str)
     @Slot(str, str, str, float, int, str, str, result=str)
     @Slot(str, str, str, float, int, str, result=str)
     @Slot(str, str, str, float, int, result=str)
     @undoable("고정 항목 수정")
     def updateFixed(self, rid: str, name: str, category: str, amount: float, day: int,
-                    note: str = "", start: str = "", end: str = "") -> str:
+                    note: str = "", start: str = "", end: str = "", pay: str = "") -> str:
         """규칙 내용을 바꾼다 (이미 적어 둔 내역은 그대로 둔다)."""
         why = self._check_fixed(category, amount, start, end)
         if why:
@@ -2054,7 +2120,7 @@ class Backend(QObject):
             return why
         ok = self._ws.ledger.update_fixed(rid, Fixed(name=name, category=category,
                                                      amount=amount, day=day,
-                                                     note=note.strip(),
+                                                     note=note.strip(), pay=pay.strip(),
                                                      start=start[:7], end=end[:7]))
         if not ok:
             return "없는 규칙입니다."
@@ -2119,7 +2185,7 @@ class Backend(QObject):
             return why
         f = self._ws.ledger.add_fixed(Fixed(name=e.name, category=e.category, amount=e.amount,
                                             day=e.day.day, kind=e.kind, note=e.note,
-                                            start=shift_month(e.ym, 1)))
+                                            pay=e.pay, start=shift_month(e.ym, 1)))
         self._fixed_touched(f"고정 항목 등록: {f.label} {won(f.amount)} (매달 {f.day}일)")
         return ""
 
@@ -2398,13 +2464,15 @@ class Backend(QObject):
     def ledgerKindOf(self, category: str) -> str:
         return self._ws.ledger.kind_of(category)
 
+    @Slot(str, str, float, str, str, str)
     @Slot(str, str, float, str, str)
     @Slot(str, str, float, str)
     @Slot(str, str, float)
     @undoable("가계부 내역 추가")
-    def addEntry(self, date_str: str, category: str, amount: float, name: str = "", note: str = "") -> None:
+    def addEntry(self, date_str: str, category: str, amount: float, name: str = "",
+                 note: str = "", pay: str = "") -> None:
         e = Entry(date_str, category, amount, name.strip(),
-                  kind=self._ws.ledger.kind_of(category), note=note.strip())
+                  kind=self._ws.ledger.kind_of(category), note=note.strip(), pay=pay.strip())
         self._ws.ledger.add(e)
         if not self._ledger_year:                 # 첫 기록이면 그 달로 맞춘다
             self._ledger_year, self._ledger_month = e.year, e.day.month
@@ -2412,17 +2480,19 @@ class Backend(QObject):
         self._ledger_touched()
         self._set_status(f"가계부 추가: {e.category} {won(e.amount)}")  # noqa: E501
 
+    @Slot(int, str, str, float, str, str, str)
     @Slot(int, str, str, float, str, str)
     @Slot(int, str, str, float, str)
     @Slot(int, str, str, float)
     @undoable("가계부 내역 수정")
     def updateEntry(self, row: int, date_str: str, category: str, amount: float,
-                    name: str = "", note: str = "") -> None:
+                    name: str = "", note: str = "", pay: str = "") -> None:
         old = self._ws.ledger.entries[row] if 0 <= row < len(self._ws.ledger.entries) else None
         if self._ws.ledger.update(row, Entry(date_str, category, amount, name.strip(),
                                             kind=self._ws.ledger.kind_of(category),
                                             note=note.strip(),
-                                            rule=old.rule if old else "")):
+                                            rule=old.rule if old else "",
+                                            pay=pay.strip())):
             self._ledger_touched()
             self._set_status("가계부 수정")
 

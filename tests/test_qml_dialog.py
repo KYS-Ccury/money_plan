@@ -389,3 +389,47 @@ def test_summary_text_follows_an_item_being_switched_off():
     assert after != before
     assert after[0] == backend.capital                   # 보유 자금이 바로 새 값
     assert backend.offCount == 1
+
+
+def test_entry_dialog_keeps_the_pay_method():
+    """팝업의 결제수단 칸이 저장되고, 수정할 때 그대로 다시 올라온다."""
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Workspace
+
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    backend = Backend(ws)
+    engine = QQmlApplicationEngine()
+    engine.addImportPath(str(ROOT))
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+    assert engine.rootObjects(), "QML 로드 실패"
+    win = engine.rootObjects()[0]
+    win.setProperty("mode", "ledger")
+    app.processEvents()
+
+    dlg = win.findChild(QObject, "entryDialog")
+    QMetaObject.invokeMethod(dlg, "openForAdd", Q_ARG("QVariant", "2026-11-13"))
+    app.processEvents()
+    pay = dlg.findChild(QObject, "entryPay")
+    assert pay is not None
+    assert pay.property("editText") == ""                  # 지난번 값을 기억하지 않는다
+
+    pay.setProperty("editText", "신한카드")                 # 목록에 없는 이름도 직접
+    dlg.setProperty("amount", 12_000)
+    QMetaObject.invokeMethod(dlg, "submit")
+    app.processEvents()
+
+    assert ws.ledger.entries[0].pay == "신한카드"
+    assert "신한카드" in backend.ledgerPays
+
+    # 고쳐 열면 그 결제수단이 칸에 올라와 있다
+    QMetaObject.invokeMethod(dlg, "openForEdit",
+                             Q_ARG("QVariant", 0), Q_ARG("QVariant", "2026-11-13"),
+                             Q_ARG("QVariant", "식비"), Q_ARG("QVariant", 12_000),
+                             Q_ARG("QVariant", ""), Q_ARG("QVariant", ""),
+                             Q_ARG("QVariant", "신한카드"))
+    app.processEvents()
+    assert pay.property("editText") == "신한카드"

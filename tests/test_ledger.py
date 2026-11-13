@@ -443,3 +443,48 @@ def test_range_aggregates_match_the_months_they_cover():
     assert s["cost"] == sum(lg.summary(ym)["cost"] for ym in yms)
     assert lg.range_by_category(yms, "cost") == [("식비", 600_000)]
     assert lg.range_by_category(yms, "income") == [("급여", 4_000_000)]
+
+
+# ───────────────────────── 결제수단
+
+def test_pay_is_kept_and_listed():
+    from capital_calc.ledger import LEDGER_PAYS, Entry, Ledger
+
+    lg = Ledger()
+    lg.add(Entry("2026-11-02", "식비", 12_000, "점심", pay="신한카드"))
+    lg.add(Entry("2026-11-03", "식비", 9_000, "커피", pay="현금"))
+    lg.add(Entry("2026-11-04", "교통", 1_500, "버스"))          # 지정 안 함
+
+    assert lg.pays() == LEDGER_PAYS + ["신한카드"]              # 직접 적은 이름이 목록에 들어온다
+    assert lg.pays_used("2026-11") == ["신한카드", "현금"]
+    assert lg.by_pay("2026-11") == [("신한카드", 12_000), ("현금", 9_000), ("지정 안 함", 1_500)]
+
+    lg2 = Ledger.from_dict(lg.to_dict())
+    assert [e.pay for e in lg2.entries] == ["신한카드", "현금", ""]
+
+
+def test_pay_filters_and_search():
+    from capital_calc.ledger import Entry, Ledger
+
+    lg = Ledger()
+    lg.add(Entry("2026-11-02", "식비", 12_000, "점심", pay="카드"))
+    lg.add(Entry("2026-11-03", "식비", 9_000, "커피", pay="현금"))
+
+    assert [e.name for e in lg.search(pay="카드")] == ["점심"]
+    assert [e.name for e in lg.search(pay="")] == ["커피", "점심"]      # 빈 조건은 통과
+    assert [e.name for e in lg.search(query="현금")] == ["커피"]        # 검색어가 결제수단도 본다
+    assert lg.search(pay="카드", kind="income") == []
+
+
+def test_repeat_copy_and_fixed_carry_the_pay():
+    from capital_calc.ledger import Entry, Fixed, Ledger
+
+    lg = Ledger()
+    e = lg.add(Entry("2026-01-10", "통신", 88_000, "휴대폰", pay="자동이체"))
+    assert all(x.pay == "자동이체" for x in lg.repeat(e, 3))
+    assert all(x.pay == "자동이체" for x in lg.copy_month("2026-01", "2026-06"))
+
+    lg.add_fixed(Fixed(name="월세", category="주거/관리비", amount=600_000, day=5,
+                       pay="계좌이체", start="2026-09"))
+    made = lg.apply_fixed("2026-10")
+    assert made and all(x.pay == "계좌이체" for x in made)

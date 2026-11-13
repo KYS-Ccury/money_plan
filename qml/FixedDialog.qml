@@ -23,6 +23,7 @@ Popup {
         amountField.text = ""
         dayBox.value = 1
         noteField.text = ""
+        payBox.editText = ""
         startField.text = dlg.thisMonth()
         endField.text = ""
         dlg.formOpen = true
@@ -37,6 +38,7 @@ Popup {
         amountField.text = String(row.amount)
         dayBox.value = row.day
         noteField.text = row.note
+        payBox.editText = row.pay
         startField.text = row.start
         endField.text = row.end
         dlg.formOpen = true
@@ -52,11 +54,12 @@ Popup {
 
     function save() {
         var amount = parseFloat(amountField.text.replace(/,/g, "")) || 0
+        var pay = payBox.editText.trim()
         var why = dlg.editRid === ""
             ? backend.addFixed(nameField.text, String(catBox.currentValue), amount,
-                               dayBox.value, noteField.text, startField.text, endField.text)
+                               dayBox.value, noteField.text, startField.text, endField.text, pay)
             : backend.updateFixed(dlg.editRid, nameField.text, String(catBox.currentValue), amount,
-                                  dayBox.value, noteField.text, startField.text, endField.text)
+                                  dayBox.value, noteField.text, startField.text, endField.text, pay)
         if (why !== "") return
         dlg.formOpen = false
         dlg.editRid = ""
@@ -374,6 +377,16 @@ Popup {
                     Layout.preferredWidth: 110
                     placeholderText: "비우면 계속"
                     maximumLength: 7
+                }
+                Text { text: "결제수단"; color: Theme.textDim; font.pixelSize: 12 }
+                ComboBox {
+                    id: payBox
+                    objectName: "fixedPay"
+                    Layout.preferredWidth: 120
+                    editable: true
+                    model: backend.ledgerPays
+                    ToolTip.visible: hovered; ToolTip.delay: 600
+                    ToolTip.text: "결제수단 (선택). 적어 주는 내역에 그대로 붙습니다"
                 }
                 TextField {
                     id: noteField
