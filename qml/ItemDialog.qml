@@ -12,6 +12,10 @@ Popup {
     property real rate: 0
     property string startDate: ""
     property string onceDate: ""        // 일시 지출·일시 수입의 지출일/수입일
+    property int every: 0               // 일시 지출·수입이 몇 개월마다 되풀이되는지 (0 = 한 번만)
+    // 되풀이를 정할 수 있는가 — 일시 지출·일시 수입만 (보증금은 돌려받는 돈이라 뺀다)
+    readonly property bool canRepeat: dlg.info.dateMode === "once" && !dlg.info.isHousing
+                                      && !dlg.info.returnable
     property string endDate: ""
     property real monthlyRepayRate: 0
     property string repayMethod: "bullet"
@@ -74,6 +78,7 @@ Popup {
         startDate = backend.basisDate
         endDate = ""
         onceDate = ""
+        every = 0
         principalCheck.checked = true
         monthlyRepayRate = 0
         setRepayMethod("bullet")
@@ -94,7 +99,7 @@ Popup {
         methodBox.currentIndex = Math.max(0, methodBox.indexOfValue(dlg.repayMethod))
     }
     function openForEdit(row, name, catIndex, amount, rate, includePrincipal, startDate, endDate, repayments,
-                         monthlyRepayRate, repayMethod, housingType, monthly, growth, support, locked) {
+                         monthlyRepayRate, repayMethod, housingType, monthly, growth, support, locked, every) {
         editRow = row
         nameField.text = name
         catBox.currentIndex = catIndex
@@ -111,6 +116,7 @@ Popup {
         dlg.growth = growth || 0
         dlg.support = support || 0
         dlg.locked = locked === true
+        dlg.every = every || 0
         loadRepayments(repayments)
         open(); nameField.forceActiveFocus()
     }
@@ -125,7 +131,8 @@ Popup {
         if (!datesValid()) return
         var sd = dlg.info.dateMode === "range" ? startDate : (dlg.info.dateMode === "once" ? onceDate : "")
         var returnable = dlg.info.isHousing ? dlg.houseInfo.returnable : dlg.info.returnable
-        var ed = (dlg.info.dateMode === "range" || returnable) ? endDate : ""
+        var repeating = dlg.canRepeat && dlg.every > 0
+        var ed = (dlg.info.dateMode === "range" || returnable || repeating) ? endDate : ""
         var ht = dlg.info.isHousing ? dlg.housingType : ""
         var mo = (dlg.info.isHousing && dlg.houseInfo.usesRent) ? dlg.monthly : 0
         var gr = dlg.info.usesGrowth ? dlg.growth : 0
@@ -134,9 +141,9 @@ Popup {
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
         if (editRow < 0)
-            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk)
+            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0)
         else
-            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk)
+            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0)
         close()
     }
 
@@ -167,6 +174,7 @@ Popup {
 
             ComboBox {
                 id: catBox
+                objectName: "itemCategory"
                 Layout.fillWidth: true
                 model: backend.categories
                 onCurrentIndexChanged: dlg.info = backend.categoryInfo(currentIndex)
@@ -340,6 +348,60 @@ Popup {
                           ? "비우면 기준일 " + backend.basisDate + " 에 들어옵니다. 날짜를 넣으면 그 달에 순 자본이 늘어납니다."
                           : "비우면 기준일 " + backend.basisDate + " 에 나갑니다. 날짜를 넣으면 그 달에 순 자본이 줄어듭니다."
                     color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true
+                }
+
+                // ── 되풀이 (자동차세·보험 연납처럼 한 달 주기가 아닌 돈) ──
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 4
+                    visible: dlg.canRepeat
+                    spacing: 6
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Text { text: "되풀이"; color: Theme.text; font.pixelSize: 13; font.bold: true }
+                        Item { width: 6 }
+                        Repeater {
+                            model: [{ v: 0, t: "한 번만" }, { v: 3, t: "분기" },
+                                    { v: 6, t: "반년" }, { v: 12, t: "해마다" }]
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool on: dlg.every === modelData.v
+                                width: 60; height: 26; radius: 13
+                                color: on ? Theme.accent : "transparent"
+                                border.color: on ? Theme.accent : Theme.cardBorder
+                                TapHandler { onTapped: dlg.every = modelData.v }
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: modelData.t
+                                    color: parent.on ? "#ffffff" : Theme.textDim
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+
+                    DateField {
+                        id: repeatEndField
+                        objectName: "repeatEnd"
+                        Layout.fillWidth: true
+                        visible: dlg.every > 0
+                        label: "되풀이 끝"
+                        placeholder: "되풀이 끝 (비우면 계속)"
+                        value: dlg.endDate
+                        optional: true
+                        onEdited: (v) => dlg.endDate = v
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: dlg.every > 0
+                        text: "같은 날짜로 " + (dlg.every === 12 ? "해마다" : dlg.every + "개월마다")
+                              + " 되풀이됩니다 (자동차세·보험 연납처럼). "
+                              + "기간 안에 들어오는 횟수만큼 더해집니다."
+                        color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap
+                    }
                 }
             }
 

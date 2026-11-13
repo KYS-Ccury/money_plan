@@ -475,3 +475,39 @@ def test_import_dialog_reads_pasted_text_and_puts_it_in():
         ("2026-11-03", 12_000, "카드"), ("2026-11-04", 4_500, "")]
     # 넣고 나면 미리보기를 치우고 팝업을 닫는다 (닫히는 애니메이션이 있어 visible 은 조금 남는다)
     assert backend.importInfo == {}
+
+
+def test_item_dialog_can_set_a_repeat():
+    """항목 팝업의 '되풀이' 를 고르면 그대로 저장되고, 다시 열면 그 값이 올라온다."""
+    app, engine, backend, win = _load()
+    app.processEvents()
+    before = backend.itemCount
+
+    dlg = win.findChild(QObject, "itemDialog")
+    assert dlg is not None
+    QMetaObject.invokeMethod(win, "openAddDialog")
+    app.processEvents()
+
+    cat = dlg.findChild(QObject, "itemCategory")
+    cat.setProperty("currentIndex", 10)            # 일시 지출
+    app.processEvents()
+    assert dlg.property("canRepeat") is True
+
+    dlg.setProperty("amount", 500_000)
+    dlg.setProperty("onceDate", "2026-12-02")
+    dlg.setProperty("every", 12)
+    QMetaObject.invokeMethod(dlg, "submit")
+    app.processEvents()
+
+    assert backend.itemCount == before + 1
+    it = backend._ws.plan.items[-1]
+    assert it.every == 12 and it.repeats
+
+    QMetaObject.invokeMethod(win, "openEditDialog", Q_ARG("QVariant", backend.itemCount - 1))
+    app.processEvents()
+    assert dlg.property("every") == 12              # 열면 고른 주기가 그대로
+
+    # 매달 오가는 분류로 바꾸면 되풀이 칸 자체가 없다
+    cat.setProperty("currentIndex", 6)              # 월세
+    app.processEvents()
+    assert dlg.property("canRepeat") is False

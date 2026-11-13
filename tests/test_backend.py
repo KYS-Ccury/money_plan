@@ -1681,3 +1681,37 @@ def test_import_of_a_broken_file_says_why(tmp_path):
     info = b.previewImportFile(str(tmp_path / "없는파일.csv"))
     assert info["ok"] is False and info["problems"]
     assert b.applyImport(True, "") == 0
+
+
+def test_repeating_once_item_through_the_backend():
+    """팝업이 넘기는 대로 되풀이가 들어가고, 목록 글씨에도 나온다."""
+    from PySide6.QtCore import Qt
+
+    b = _fresh_backend()
+    b.months = 36
+    b.basisDate = "2026-11-02"
+    # 일시 지출(10) · 2026-12-02 부터 해마다
+    b.addItem("자동차세", 10, 500_000, 0, True, "2026-12-02", "", "[]", 0, "", "", 0, 0, 0, False, 12)
+
+    it = b._ws.plan.items[-1]
+    assert it.every == 12 and it.repeats
+    row = b.items.index(b.itemCount - 1)
+    sub = b.items.data(row, Qt.ItemDataRole.UserRole + 15)
+    assert "해마다" in sub and "3번" in sub
+    assert b.items.data(row, Qt.ItemDataRole.UserRole + 8) == "해마다 -500,000원"
+    assert b.items.data(row, Qt.ItemDataRole.UserRole + 27) == 12
+    assert b.onceCost == 1_500_000
+
+    # 되풀이를 끄면 한 번만
+    b.updateItem(b.itemCount - 1, "자동차세", 10, 500_000, 0, True, "2026-12-02", "", "[]",
+                 0, "", "", 0, 0, 0, False, 0)
+    assert b._ws.plan.items[-1].every == 0
+    assert b.onceCost == 500_000
+
+
+def test_repeat_is_ignored_where_it_makes_no_sense():
+    """보증금·월세처럼 되풀이가 어울리지 않는 분류에는 붙지 않는다."""
+    b = _fresh_backend()
+    b.addItem("전셋집", 9, 30_000_000, 0, True, "2026-12-02", "", "[]", 0, "", "jeonse", 0, 0, 0, False, 12)
+    b.addItem("월세", 6, 500_000, 0, True, "", "", "[]", 0, "", "", 0, 0, 0, False, 12)
+    assert [i.every for i in b._ws.plan.items[-2:]] == [0, 0]

@@ -264,3 +264,68 @@ def test_active_flag_survives_save():
     p2 = Plan.from_dict(p.to_dict())
     assert [i.active for i in p2.items] == [True, False]
     assert near(p2.net_at(5), 1_000_000)                         # 월세가 안 나간다
+
+
+# ───────────────────────── 몇 달마다 되풀이되는 일시 지출·수입
+
+def test_yearly_expense_lands_once_a_year():
+    """자동차세처럼 해마다 나가는 돈 — 기준일에서 1개월 뒤부터 12개월마다."""
+    p = mk(36, Item("현금", Category.CASH, 10_000_000),
+               Item("자동차세", Category.EXPENSE, 500_000, start_date="2026-12-02", every=12))
+    for m in range(37):
+        want = 10_000_000 - 500_000 * (1 + (m - 1) // 12 if m >= 1 else 0)
+        assert near(p.net_at(m), want), f"{m}개월"
+    assert near(p.summary().once_cost, 1_500_000)      # 36개월 안에 세 번
+
+
+def test_repeat_stops_at_the_end_date():
+    p = mk(36, Item("현금", Category.CASH, 10_000_000),
+               Item("보험", Category.EXPENSE, 300_000, start_date="2026-12-02",
+                    end_date="2028-06-02", every=6))
+    it = p.items[1]
+    assert [m for m in range(37) if it.occurs_at(m, p.basis)] == [1, 7, 13, 19]
+    assert near(p.net_at(36), 10_000_000 - 300_000 * 4)
+
+
+def test_repeat_that_started_before_the_basis_still_counts_later_rounds():
+    """작년부터 내던 돈이면, 기준일 전 회차는 빼고 앞으로 나갈 것만 센다."""
+    p = mk(24, Item("현금", Category.CASH, 10_000_000),
+               Item("자동차세", Category.EXPENSE, 500_000, start_date="2025-06-02", every=12))
+    it = p.items[1]
+    assert it.once_month(p.basis) == -17                  # 기준일보다 한참 앞
+    assert [m for m in range(25) if it.occurs_at(m, p.basis)] == [7, 19]
+    assert near(p.net_at(6), 10_000_000)
+    assert near(p.net_at(7), 9_500_000)
+
+
+def test_repeating_income_adds_up_the_same_way():
+    p = mk(24, Item("현금", Category.CASH, 0),
+               Item("상여금", Category.INCOME_ONCE, 1_000_000, start_date="2027-01-02", every=6))
+    assert near(p.net_at(1), 0)
+    assert near(p.net_at(2), 1_000_000)
+    assert near(p.net_at(8), 2_000_000)
+    assert near(p.net_at(24), 4_000_000)
+    assert near(p.summary().once_income, 4_000_000)
+
+
+def test_a_plain_once_item_is_unchanged():
+    """되풀이를 안 쓰면 예전과 똑같아야 한다."""
+    p = mk(24, Item("현금", Category.CASH, 1_000_000),
+               Item("이사비", Category.EXPENSE, 500_000, start_date="2027-01-02"))
+    assert near(p.net_at(1), 1_000_000)
+    assert near(p.net_at(2), 500_000)
+    assert near(p.net_at(24), 500_000)
+
+
+def test_planned_out_sees_each_round(tmp_path=None):
+    """가계부 비교(그 달에 나갈 돈)도 회차마다 잡힌다."""
+    p = mk(36, Item("자동차세", Category.EXPENSE, 500_000, start_date="2026-12-02", every=12))
+    assert near(p.planned_out_at(1), 500_000)
+    assert near(p.planned_out_at(2), 0)
+    assert near(p.planned_out_at(13), 500_000)
+
+
+def test_every_survives_save():
+    p = mk(12, Item("자동차세", Category.EXPENSE, 500_000, start_date="2026-12-02", every=12))
+    p2 = Plan.from_dict(p.to_dict())
+    assert p2.items[0].every == 12 and p2.items[0].repeats

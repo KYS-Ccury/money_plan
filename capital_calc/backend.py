@@ -65,6 +65,7 @@ class ItemListModel(QAbstractListModel):
     GroupPosRole = Qt.ItemDataRole.UserRole + 24    # 같은 분류 안에서 몇 번째인가 (묶어 보기 ▲▼ 용)
     GroupCountRole = Qt.ItemDataRole.UserRole + 25  # 같은 분류 항목이 몇 개인가
     ActiveRole = Qt.ItemDataRole.UserRole + 26      # 켜져 있는가 (꺼 두면 계산에서 빠진다)
+    EveryRole = Qt.ItemDataRole.UserRole + 27       # 몇 개월마다 되풀이되는지 (0 = 한 번만)
 
     _ROLES = {
         NameRole: b"name",
@@ -93,6 +94,7 @@ class ItemListModel(QAbstractListModel):
         GroupPosRole: b"groupPos",
         GroupCountRole: b"groupCount",
         ActiveRole: b"active",
+        EveryRole: b"every",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -138,6 +140,8 @@ class ItemListModel(QAbstractListModel):
             return it.monthly_repay_rate
         if role == self.ActiveRole:
             return it.active
+        if role == self.EveryRole:
+            return it.every
         if role in (self.GroupPosRole, self.GroupCountRole):
             same = [k for k, x in enumerate(self._plan.items) if x.category == it.category]
             if role == self.GroupCountRole:
@@ -167,6 +171,14 @@ class ItemListModel(QAbstractListModel):
                 when = f"지난 {word}" if om < 0 else (f"기준일에 {word}" if om == 0 else f"{om}개월 뒤 {word}")
                 head = f"{it.housing_label} · {d.isoformat()[:7]} 입주" if it.is_housing else f"{d.isoformat()[:7]}  ·  {when}"
                 parts = [head]
+                if it.repeats:
+                    n = self._plan.months
+                    times = it.count_upto(n, self._plan.basis)
+                    cycle = {3: "분기마다", 6: "반년마다", 12: "해마다"}.get(it.every, f"{it.every}개월마다")
+                    tail = f"{cycle} · {n}개월 안에 {times}번"
+                    if it.end_date:
+                        tail += f" · {it.end_date[:7]} 까지"
+                    parts.append(tail)
                 if it.housing_rent() > 0:
                     parts.append(f"월세 {won(it.housing_rent())}")
                 rm = it.return_month(self._plan.basis)
@@ -231,13 +243,9 @@ class ItemListModel(QAbstractListModel):
             elif net < 0:
                 kind, text = "cost", won(net)
             elif it.once_cost() > 0:
-                om = it.once_month(basis)
-                prefix = f"{om}개월 뒤 " if om > 0 else ""
-                kind, text = "once", prefix + "일시 -" + won(it.once_cost())
+                kind, text = "once", self._once_text(it, basis, "-" + won(it.once_cost()))
             elif it.once_income() > 0:
-                om = it.once_month(basis)
-                prefix = f"{om}개월 뒤 " if om > 0 else ""
-                kind, text = "income", prefix + "일시 +" + won(it.once_income())
+                kind, text = "income", self._once_text(it, basis, "+" + won(it.once_income()))
             else:
                 kind, text = "capital", "자본"
             return text if role == self.MonthlyTextRole else kind
@@ -254,6 +262,15 @@ class ItemListModel(QAbstractListModel):
             # 묶음 안 위치·개수는 start 앞쪽 항목도 달라질 수 있으므로 전부 알린다
             self.dataChanged.emit(self.index(0), self.index(n - 1),
                                   [self.SourceRowRole, self.GroupPosRole, self.GroupCountRole])
+
+    def _once_text(self, it: Item, basis, money: str) -> str:
+        """일시 지출·수입의 '월 환산' 칸 글. 되풀이면 몇 달마다인지 보여 준다."""
+        if it.repeats:
+            cycle = {3: "분기마다", 6: "반년마다", 12: "해마다"}.get(it.every, f"{it.every}개월마다")
+            return f"{cycle} {money}"
+        om = it.once_month(basis)
+        prefix = f"{om}개월 뒤 " if om > 0 else ""
+        return prefix + "일시 " + money
 
     def refresh_all(self) -> None:
         """기준일이 바뀌면 표시 문자열이 전부 달라지므로 전체 갱신."""
@@ -1319,7 +1336,7 @@ class Backend(QObject):
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
-                   support: float = 0.0, locked: bool = False) -> Item:
+                   support: float = 0.0, locked: bool = False, every: int = 0) -> Item:
         cat = CATEGORY_LIST[max(0, min(cat_index, len(CATEGORY_LIST) - 1))]
         mode = CATEGORY_INFO[cat]["date_mode"]
         sd = parse_date(start_date) if mode in ("range", "once") else None   # once 면 지출일·수입일
@@ -1337,8 +1354,11 @@ class Backend(QObject):
             growth=max(0.0, float(growth)),
             support=max(0.0, float(support)),
             locked=bool(locked),
+            # 되풀이는 일시 지출·수입에서만 (다른 분류는 이미 매달 오간다)
+            every=max(0, int(every)) if cat in (Category.EXPENSE, Category.INCOME_ONCE) else 0,
         )
 
+    @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float)
@@ -1352,13 +1372,14 @@ class Backend(QObject):
                 start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                 monthly_repay_rate: float = 0.0, repay_method: str = "",
                 housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
-                support: float = 0.0, locked: bool = False) -> None:
+                support: float = 0.0, locked: bool = False, every: int = 0) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
-                               growth, support, locked)
+                               growth, support, locked, every)
         self._items.add(item)
         self._set_status(f"추가: {item.name}")
 
+    @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float)
@@ -1372,10 +1393,10 @@ class Backend(QObject):
                    start_date: str = "", end_date: str = "", repayments_json: str = "[]",
                    monthly_repay_rate: float = 0.0, repay_method: str = "",
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
-                   support: float = 0.0, locked: bool = False) -> None:
+                   support: float = 0.0, locked: bool = False, every: int = 0) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
-                               growth, support, locked)
+                               growth, support, locked, every)
         old = self._plan.items[row] if 0 <= row < len(self._plan.items) else None
         item.active = old.active if old else True      # 꺼 둔 항목은 고쳐도 꺼진 채로
         self._items.update(row, item)

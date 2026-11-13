@@ -196,6 +196,7 @@ class Item:
     support: float = 0.0             # 월 지원금 (청년도약계좌처럼 남이 보태 주는 돈). 내 돈은 안 나가고 잔액만 는다
     locked: bool = False             # 만기 전까지 못 쓰는 돈으로 볼지 (적금). 만기가 있어야 적용된다
     active: bool = True              # 끄면 계산에서 빠진다 (지우지 않고 잠시 빼 볼 때)
+    every: int = 0                   # 일시 지출·수입이 몇 개월마다 되풀이되는지 (0 = 한 번만)
 
     def __post_init__(self) -> None:
         if self.repay_method not in REPAY_METHODS:
@@ -355,6 +356,55 @@ class Item:
             return 0
         d = parse_date(self.start_date)
         return month_offset(basis, d) if d else 0
+
+    @property
+    def repeats(self) -> bool:
+        """몇 달마다 되풀이되는 일시 지출·수입인가.
+
+        자동차세·보험 연납처럼 한 달 주기가 아닌 돈을 위한 것이다. 보증금처럼
+        돌려받는 항목은 되풀이라는 말이 어울리지 않으므로 뺀다.
+        """
+        return self.every > 0 and self.date_mode == "once" and not self.returnable
+
+    def repeat_end_month(self, basis: date) -> int | None:
+        """되풀이가 끝나는 개월 (종료일이 없으면 None = 계속)."""
+        d = parse_date(self.end_date) if self.repeats else None
+        return month_offset(basis, d) if d else None
+
+    def first_month(self, basis: date) -> int | None:
+        """이 계획 안에서 처음 돈이 오가는 개월. 기준일 전이면 되풀이의 첫 회차를 찾는다."""
+        om = self.once_month(basis)
+        if om >= 0:
+            return om
+        if not self.repeats:
+            return None                       # 기준일 전에 이미 치른 돈은 세지 않는다
+        k = (-om + self.every - 1) // self.every
+        return om + k * self.every
+
+    def occurs_at(self, m: int, basis: date) -> bool:
+        """m개월에 이 돈이 오가는가."""
+        first = self.first_month(basis)
+        if first is None or m < first:
+            return False
+        if not self.repeats:
+            return m == first
+        end = self.repeat_end_month(basis)
+        if end is not None and m > end:
+            return False
+        return (m - first) % self.every == 0
+
+    def count_upto(self, m: int, basis: date) -> int:
+        """m개월까지 이 돈이 몇 번 오갔는지 (되풀이가 아니면 0 또는 1)."""
+        first = self.first_month(basis)
+        if first is None or m < first:
+            return 0
+        if not self.repeats:
+            return 1
+        end = self.repeat_end_month(basis)
+        last = m if end is None else min(m, end)
+        if last < first:
+            return 0
+        return (last - first) // self.every + 1
 
     def active_range(self, basis: date) -> tuple[int, int | None]:
         """기준일 대비 활성 구간 [start_m, end_m). 날짜를 안 쓰는 항목은 (0, None)."""
@@ -528,8 +578,7 @@ class Item:
         c = self.once_cost()
         if c <= 0:
             return 0.0
-        om = self.once_month(basis)
-        return c if 0 <= om <= m else 0.0
+        return c * self.count_upto(m, basis)
 
     def once_returned_at(self, m: int, basis: date) -> float:
         """m개월 시점까지 돌려받은 보증금. 언제 냈든 돌려받는 건 그대로 들어온다."""
@@ -549,7 +598,7 @@ class Item:
         """m개월 시점까지 들어온 일시 수입. 보증금 반환과 묶인 적금의 만기 수령을 포함한다."""
         c = self.once_income()
         if c > 0:
-            return c if m >= self.once_month(basis) else 0.0
+            return c * self.count_upto(m, basis)
         got = self.once_returned_at(m, basis)
         if self.is_locked(basis):                       # 묶인 적금은 만기에 한꺼번에 들어온다
             mat = self.maturity_month(basis)
@@ -629,6 +678,7 @@ class Item:
             support=float(d.get("support", 0.0) or 0.0),
             locked=bool(d.get("locked", False)),
             active=bool(d.get("active", True)),
+            every=int(d.get("every", 0) or 0),
         )
 
 
@@ -812,7 +862,7 @@ class Plan:
         b = self.basis
         out = self.monthly_cost_at(m)
         for i in self.live:
-            if i.date_mode == "once" and i.once_cost() > 0 and i.once_month(b) == m:
+            if i.date_mode == "once" and i.once_cost() > 0 and i.occurs_at(m, b):
                 out += i.once_cost()
             if i.category == Category.LOAN and i.include_principal:
                 # 원금을 자본에 넣은 대출은 월 지출에 상환액이 안 잡히므로 여기서 더한다
@@ -829,7 +879,7 @@ class Plan:
         b = self.basis
         inc = self.monthly_income_at(m)
         for i in self.live:
-            if i.once_income() > 0 and i.once_month(b) == m:
+            if i.once_income() > 0 and i.occurs_at(m, b):
                 inc += i.once_income()
             if i.return_month(b) == m:
                 inc += i.once_cost()
