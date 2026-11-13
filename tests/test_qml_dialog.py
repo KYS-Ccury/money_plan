@@ -315,3 +315,54 @@ def test_undo_button_follows_the_stack():
     app.processEvents()
     assert undo.property("enabled") is False
     assert redo.property("visible") is True
+
+
+def test_selection_bar_appears_and_acts_on_every_chosen_row():
+    """줄을 고르면 띠가 나오고, 거기서 분류 바꾸기·삭제가 한꺼번에 먹는다."""
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Workspace
+
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    for d, c, a in (("2026-11-02", "식비", 12_000), ("2026-11-03", "식비", 9_000),
+                    ("2026-11-04", "교통", 1_500)):
+        ws.ledger.add(Entry(d, c, a))
+    backend = Backend(ws)
+    engine = QQmlApplicationEngine()
+    engine.addImportPath(str(ROOT))
+    engine.rootContext().setContextProperty("backend", backend)
+    engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+    assert engine.rootObjects(), "QML 로드 실패"
+    win = engine.rootObjects()[0]
+    win.setProperty("mode", "ledger")
+    app.processEvents()
+
+    bar = win.findChild(QObject, "selectionBar")
+    assert bar is not None and bar.property("visible") is False
+
+    backend.toggleEntrySelected(0)
+    app.processEvents()
+    assert bar.property("visible") is True
+
+    view = win.findChild(QObject, "ledgerView")
+    QMetaObject.invokeMethod(view, "applyBulkCategory", Q_ARG("QVariant", "교통"))
+    app.processEvents()
+    assert ws.ledger.entries[0].category == "교통"
+
+    # 삭제는 묻고 나서
+    backend.selectVisibleEntries()
+    app.processEvents()
+    assert backend.selectedCount == 3
+    QMetaObject.invokeMethod(view, "confirmRemoveSelected")
+    app.processEvents()
+    dlg = win.findChild(QObject, "removeSelectedDialog")
+    assert dlg is not None and dlg.property("visible") is True
+    assert "3건" in dlg.property("message")
+    assert len(ws.ledger.entries) == 3              # 아직 안 지웠다
+
+    QMetaObject.invokeMethod(dlg, "accepted")
+    app.processEvents()
+    assert ws.ledger.entries == []
+    assert bar.property("visible") is False

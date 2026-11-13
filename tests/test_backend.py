@@ -1375,3 +1375,99 @@ def test_undo_restores_fixed_rules_without_rewriting_them():
 
     assert b.undo() and b.fixedCount == 0
     assert b._ws.ledger.entries == []                     # 되돌린 자리에 다시 적지 않는다
+
+
+# ───────────────────────── 여러 건 한꺼번에
+
+def _ledger_backend():
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    for d, c, a, n in (("2026-11-02", "식비", 12_000, "점심"),
+                       ("2026-11-03", "식비", 9_000, "커피"),
+                       ("2026-11-04", "교통", 1_500, "버스"),
+                       ("2026-11-25", "급여", 2_000_000, "회사"),
+                       ("2026-10-02", "식비", 20_000, "지난달")):
+        ws.ledger.add(Entry(d, c, a, n))
+    return Backend(ws)
+
+
+def test_selection_adds_up_and_toggles():
+    b = _ledger_backend()
+    assert b.selectedCount == 0 and b.selectionSummary["net"] == 0
+
+    b.toggleEntrySelected(0)
+    b.toggleEntrySelected(3)
+    s = b.selectionSummary
+    assert (s["count"], s["income"], s["cost"]) == (2, 2_000_000, 12_000)
+    assert s["net"] == 2_000_000 - 12_000
+
+    b.toggleEntrySelected(0)                       # 다시 누르면 풀린다
+    assert b.selectedCount == 1
+    b.clearSelection()
+    assert b.selectedCount == 0
+
+
+def test_select_visible_follows_the_filter():
+    """'보이는 것 모두' 는 걸러져 보이는 줄만 고른다."""
+    b = _ledger_backend()
+    b.ledgerYear = "2026"
+    b.ledgerMonth = 11                              # 11월만 보기 (4건)
+    b.selectVisibleEntries()
+    assert b.selectedCount == 4
+
+    b.selectVisibleEntries()                        # 다 골라 둔 상태면 모두 푼다
+    assert b.selectedCount == 0
+
+    b.ledgerCategoryFilter = "식비"
+    b.selectVisibleEntries()
+    assert b.selectedCount == 2                     # 11월 식비 두 건만
+
+
+def test_remove_selected_deletes_every_chosen_row():
+    b = _ledger_backend()
+    b.toggleEntrySelected(0)
+    b.toggleEntrySelected(2)
+    b.toggleEntrySelected(4)
+
+    assert b.removeSelectedEntries() == 3
+    names = [e.name for e in b._ws.ledger.entries]
+    assert names == ["커피", "회사"]                 # 고르지 않은 줄만 남는다
+    assert b.selectedCount == 0                      # 번호가 밀리므로 고른 것을 푼다
+
+    assert b.undo() and len(b._ws.ledger.entries) == 5
+    assert b.undoLabel == ""                         # 한 번에 되돌아간다 (한 건씩이 아니라)
+
+
+def test_set_selected_category_moves_kind_too():
+    b = _ledger_backend()
+    b.toggleEntrySelected(0)
+    b.toggleEntrySelected(2)
+
+    assert b.setSelectedCategory("문화/여가") == 2
+    assert [e.category for e in b._ws.ledger.entries][:3] == ["문화/여가", "식비", "문화/여가"]
+    assert b.selectedCount == 2                      # 이어서 또 바꿀 수 있게 고른 채로 둔다
+
+    # 수입 분류로 바꾸면 수입이 된다
+    assert b.setSelectedCategory("용돈") == 2
+    assert all(b._ws.ledger.entries[i].is_income for i in (0, 2))
+    assert b.ledgerSummary["income"] == 2_000_000 + 12_000 + 1_500
+
+    assert b.undo() and b._ws.ledger.entries[0].category == "문화/여가"
+
+
+def test_selection_is_dropped_when_rows_shift():
+    """한 건 삭제·비우기·되돌리기 뒤에 남은 선택은 엉뚱한 줄을 가리킨다."""
+    b = _ledger_backend()
+    b.toggleEntrySelected(3)
+    b.removeEntry(0)
+    assert b.selectedCount == 0
+
+    b.toggleEntrySelected(1)
+    b.clearLedger()
+    assert b.selectedCount == 0
+
+    b.undo()
+    assert b.selectedCount == 0

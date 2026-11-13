@@ -48,6 +48,26 @@ RowLayout {
     }
 
     ConfirmDialog {
+        id: removeSelectedDialog
+        objectName: "removeSelectedDialog"
+        title: "여러 건 삭제"
+        okText: "삭제"
+        onAccepted: backend.removeSelectedEntries()
+    }
+
+    function confirmRemoveSelected() {
+        var s = backend.selectionSummary
+        removeSelectedDialog.message = "고른 " + s.count + "건을 지웁니다"
+            + "  (합계 " + (s.net >= 0 ? "+" : "") + backend.won(s.net) + ")."
+            + "\n되돌릴 수 있지만, 한 번 더 확인해 주세요."
+        removeSelectedDialog.open()
+    }
+
+    function applyBulkCategory(c) {
+        if (c) backend.setSelectedCategory(String(c))
+    }
+
+    ConfirmDialog {
         id: clearLedgerDialog
         title: "가계부 비우기"
         message: "기록한 내역을 모두 지웁니다. 되돌릴 수 없습니다."
@@ -244,6 +264,68 @@ RowLayout {
 
             Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
 
+            // 여러 건을 골랐을 때만 나오는 띠
+            Rectangle {
+                objectName: "selectionBar"
+                Layout.fillWidth: true
+                visible: backend.selectedCount > 0
+                implicitHeight: 44
+                radius: 8
+                color: Theme.accentSoft
+                border.color: Theme.accent
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 8
+                    spacing: 8
+
+                    Text {
+                        text: backend.selectedCount + "건 선택"
+                        color: Theme.text; font.pixelSize: 13; font.bold: true
+                    }
+                    Text {
+                        text: "합계 " + (backend.selectionSummary.net >= 0 ? "+" : "")
+                              + backend.won(backend.selectionSummary.net)
+                        color: backend.selectionSummary.net >= 0 ? Theme.green : Theme.red
+                        font.pixelSize: 12
+                    }
+                    Item { Layout.fillWidth: true }
+
+                    Button {
+                        objectName: "selectVisibleButton"
+                        text: "보이는 것 모두"
+                        flat: true; leftPadding: 10; rightPadding: 10
+                        onClicked: backend.selectVisibleEntries()
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: "지금 보이는 줄을 모두 고릅니다 (다 골랐으면 모두 풉니다)"
+                    }
+                    ComboBox {
+                        id: bulkCatBox
+                        objectName: "bulkCategoryBox"
+                        Layout.preferredWidth: 150
+                        model: backend.ledgerCategories
+                        textRole: "value"
+                        valueRole: "value"
+                        displayText: "분류 바꾸기"
+                        onActivated: view.applyBulkCategory(bulkCatBox.currentValue)
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: "고른 줄의 분류를 한꺼번에 바꿉니다"
+                    }
+                    Button {
+                        objectName: "removeSelectedButton"
+                        text: "삭제"
+                        flat: true; leftPadding: 10; rightPadding: 10
+                        Material.foreground: Theme.red
+                        onClicked: view.confirmRemoveSelected()
+                    }
+                    Button {
+                        text: "해제"; flat: true; leftPadding: 10; rightPadding: 10
+                        onClicked: backend.clearSelection()
+                    }
+                }
+            }
+
             // 기록이 없을 때
             ColumnLayout {
                 Layout.fillWidth: true
@@ -321,11 +403,13 @@ RowLayout {
                     required property string note
                     required property int sourceRow
                     required property string rule
+                    required property bool selected
 
                     width: ListView.view.width - 10
                     height: 44
                     radius: 8
-                    color: rowHover.hovered ? Theme.rowHover : Theme.row
+                    color: entryRow.selected ? Theme.accentSoft
+                           : (rowHover.hovered ? Theme.rowHover : Theme.row)
                     Behavior on color { ColorAnimation { duration: Theme.fast } }
 
                     Rectangle {
@@ -345,6 +429,22 @@ RowLayout {
                         anchors.leftMargin: 20
                         anchors.rightMargin: 10
                         spacing: 10
+
+                        // 여러 건 고르기
+                        Rectangle {
+                            implicitWidth: 18; implicitHeight: 18
+                            radius: 4
+                            color: entryRow.selected ? Theme.accent : "transparent"
+                            border.color: entryRow.selected ? Theme.accent
+                                          : (rowHover.hovered ? Theme.textDim : Theme.cardBorder)
+                            Behavior on color { ColorAnimation { duration: Theme.fast } }
+                            Text {
+                                anchors.centerIn: parent
+                                visible: entryRow.selected
+                                text: "✓"; color: "#ffffff"; font.pixelSize: 11
+                            }
+                            TapHandler { onTapped: backend.toggleEntrySelected(entryRow.sourceRow) }
+                        }
 
                         Rectangle {
                             radius: 10
@@ -412,7 +512,7 @@ RowLayout {
             }
 
             Text {
-                text: "행 더블클릭: 수정  ·  ⟳: 고정 항목으로  ·  ✕: 삭제"
+                text: "행 더블클릭: 수정  ·  왼쪽 네모칸: 여러 건 고르기  ·  ⟳: 고정 항목으로  ·  ✕: 삭제"
                 color: Theme.textDim; font.pixelSize: 11
             }
         }

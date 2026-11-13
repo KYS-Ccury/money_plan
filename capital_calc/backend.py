@@ -392,6 +392,7 @@ class LedgerModel(QAbstractListModel):
     SourceRowRole = Qt.ItemDataRole.UserRole + 9   # Ledger.entries 에서의 번호
     DaySectionRole = Qt.ItemDataRole.UserRole + 10  # 날짜 구분 헤더용
     RuleRole = Qt.ItemDataRole.UserRole + 11        # 고정 규칙이 적어 준 줄이면 그 번호
+    SelectedRole = Qt.ItemDataRole.UserRole + 12    # 여러 건 고르기에서 골라졌는가
 
     _ROLES = {
         DateRole: b"date",
@@ -405,11 +406,14 @@ class LedgerModel(QAbstractListModel):
         SourceRowRole: b"sourceRow",
         DaySectionRole: b"daySection",
         RuleRole: b"rule",
+        SelectedRole: b"selected",
     }
 
     def __init__(self, ledger: Ledger, parent: QObject | None = None):
         super().__init__(parent)
         self._ledger = ledger
+        # 고른 줄 (Ledger.entries 의 번호). Backend 가 가진 집합을 그대로 가리킨다
+        self._selection: set[int] = set()
         self._period = ""
         self._query = ""
         self._kind = ""
@@ -451,6 +455,8 @@ class LedgerModel(QAbstractListModel):
             return e.date
         if role == self.RuleRole:
             return e.rule
+        if role == self.SelectedRole:
+            return src in self._selection
         return None
 
     # ---- 갱신 ----
@@ -464,6 +470,21 @@ class LedgerModel(QAbstractListModel):
         self.beginResetModel()
         self._rebuild()
         self.endResetModel()
+
+    def set_selection(self, selection: set) -> None:
+        """Backend 의 집합을 그대로 들고 있는다 (복사하면 둘이 어긋난다)."""
+        self._selection = selection
+        self.refresh_selection()
+
+    def refresh_selection(self) -> None:
+        """고른 줄 표시만 다시 그린다 (목록을 통째로 새로 만들지 않는다)."""
+        if self._rows:
+            self.dataChanged.emit(self.index(0), self.index(len(self._rows) - 1),
+                                  [self.SelectedRole])
+
+    def visible_sources(self) -> list[int]:
+        """지금 보이는 줄들의 Ledger.entries 번호."""
+        return list(self._rows)
 
     def set_ledger(self, ledger: Ledger) -> None:
         self.beginResetModel()
@@ -522,6 +543,7 @@ class Backend(QObject):
     budgetsChanged = Signal()       # 예산만 변경 (가계부 집계는 그대로)
     fixedChanged = Signal()         # 고정 지출·수입 규칙 변경
     undoChanged = Signal()          # 되돌리기 더미 변경
+    selectionChanged = Signal()     # 가계부에서 고른 줄 변경
     saved = Signal(str)        # 저장 완료 (경로)
     exported = Signal(str)     # 엑셀 내보내기 완료 (경로)
     loaded = Signal(str)       # 불러오기 완료 (경로)
@@ -538,6 +560,8 @@ class Backend(QObject):
         self._plan = self._ws.plan
         self._items = ItemListModel(self._plan, self)
         self._ledger_model = LedgerModel(self._ws.ledger, self)
+        self._selected: set[int] = set()        # 가계부에서 고른 줄 (entries 번호)
+        self._ledger_model.set_selection(self._selected)
         self._ledger_year = ""
         self._ledger_month = 0          # 0 = 그 해 전체
         self._ledger_query = ""
@@ -1422,6 +1446,8 @@ class Backend(QObject):
         """찍어 둔 상태로 통째로 돌아간다. 보고 있던 달은 가능하면 그대로 둔다."""
         year, month = self._ledger_year, self._ledger_month
         self._ws = Workspace.from_dict(data)
+        self._selected.clear()
+        self.selectionChanged.emit()
         self._replace_plan(self._ws.plan)
         self._ledger_model.set_ledger(self._ws.ledger)
         months = self._ws.ledger.months()
@@ -1516,6 +1542,7 @@ class Backend(QObject):
 
     def _reset_ledger(self) -> None:
         """가계부가 통째로 바뀐 뒤 (불러오기·예시) 기간을 최신으로 맞춘다."""
+        self._clear_selection()
         self._apply_fixed()              # 안 쓴 동안 밀린 고정 지출·수입을 먼저 적는다
         self._ledger_model.set_ledger(self._ws.ledger)
         months = self._ws.ledger.months()
@@ -1537,6 +1564,13 @@ class Backend(QObject):
     def _apply_filters(self) -> None:
         self._ledger_model.set_filters(self._ledger_query, self._ledger_kind, self._ledger_category)
         self.ledgerChanged.emit()
+
+    def _clear_selection(self) -> None:
+        """줄을 지우거나 가계부를 갈아 끼우면 번호가 밀리므로 고른 것을 푼다."""
+        if self._selected:
+            self._selected.clear()
+            self._ledger_model.refresh_selection()
+            self.selectionChanged.emit()
 
     def _ledger_touched(self) -> None:
         self._ledger_model.refresh()
@@ -1773,6 +1807,88 @@ class Backend(QObject):
                          + (f" ({skipped}건은 이미 있어 건너뜀)" if skipped else ""))
         return added
 
+    # ---- 여러 건 한꺼번에 ----
+    @Property(int, notify=selectionChanged)
+    def selectedCount(self) -> int:
+        return len(self._selected)
+
+    @Property("QVariantMap", notify=selectionChanged)
+    def selectionSummary(self) -> dict:
+        """고른 줄의 {count, income, cost, net}."""
+        income = cost = 0.0
+        for i in sorted(self._selected):
+            if not (0 <= i < len(self._ws.ledger.entries)):
+                continue
+            e = self._ws.ledger.entries[i]
+            if e.is_income:
+                income += e.amount
+            else:
+                cost += e.amount
+        return {"count": len(self._selected), "income": income, "cost": cost,
+                "net": income - cost}
+
+    @Slot(int)
+    def toggleEntrySelected(self, row: int) -> None:
+        """한 줄을 골랐다 풀었다 한다 (row 는 Ledger.entries 번호)."""
+        if not (0 <= row < len(self._ws.ledger.entries)):
+            return
+        self._selected.discard(row) if row in self._selected else self._selected.add(row)
+        self._ledger_model.refresh_selection()
+        self.selectionChanged.emit()
+
+    @Slot()
+    def selectVisibleEntries(self) -> None:
+        """지금 걸러져 보이는 줄을 모두 고른다. 이미 다 골랐으면 모두 푼다."""
+        rows = set(self._ledger_model.visible_sources())
+        if rows and rows <= self._selected:
+            self._selected -= rows
+        else:
+            self._selected |= rows
+        self._ledger_model.refresh_selection()
+        self.selectionChanged.emit()
+
+    @Slot()
+    def clearSelection(self) -> None:
+        self._clear_selection()
+
+    @Slot(result=int)
+    @undoable("가계부 내역 여러 건 삭제")
+    def removeSelectedEntries(self) -> int:
+        """고른 줄을 한꺼번에 지운다. 지운 건수를 돌려준다."""
+        rows = sorted(self._selected, reverse=True)      # 뒤에서부터 지워야 번호가 안 밀린다
+        gone = 0
+        for i in rows:
+            if self._ws.ledger.remove(i):
+                gone += 1
+        if not gone:
+            return 0
+        self._clear_selection()
+        self._ledger_touched()
+        self._set_status(f"가계부 내역 {gone}건을 지웠습니다.")
+        return gone
+
+    @Slot(str, result=int)
+    @undoable("가계부 분류 여러 건 바꾸기")
+    def setSelectedCategory(self, category: str) -> int:
+        """고른 줄의 분류를 한꺼번에 바꾼다. 수입/지출도 새 분류를 따라간다."""
+        if not category:
+            return 0
+        kind = self._ws.ledger.kind_of(category)
+        changed = 0
+        for i in sorted(self._selected):
+            if not (0 <= i < len(self._ws.ledger.entries)):
+                continue
+            e = self._ws.ledger.entries[i]
+            if e.category == category:
+                continue
+            e.category, e.kind = category, kind
+            changed += 1
+        if not changed:
+            return 0
+        self._ledger_touched()
+        self._set_status(f"{changed}건의 분류를 '{category}' 로 바꿨습니다.")
+        return changed
+
     # ---- 분류별 예산 ----
     @Property(bool, notify=budgetsChanged)
     def hasBudgets(self) -> bool:
@@ -1932,6 +2048,8 @@ class Backend(QObject):
             return -1
         label = f.label
         gone = self._ws.ledger.remove_fixed(rid, purge)
+        if gone:
+            self._clear_selection()
         self.fixedChanged.emit()
         self._ledger_touched()
         self._set_status(f"고정 항목 삭제: {label}" + (f" · 내역 {gone}건도 지움" if gone else ""))
@@ -2266,12 +2384,14 @@ class Backend(QObject):
     def removeEntry(self, row: int) -> None:
         e = self._ws.ledger.remove(row)
         if e:
+            self._clear_selection()
             self._ledger_touched()
             self._set_status(f"가계부 삭제: {e.category} {won(e.amount)}")
 
     @Slot()
     @undoable("가계부 비우기")
     def clearLedger(self) -> None:
+        self._clear_selection()
         self._ws.ledger.clear()
         self._reset_ledger()
         self._set_status("가계부를 비웠습니다.")
