@@ -1922,3 +1922,30 @@ def test_a_failed_save_says_so_and_stops_autosaving(tmp_path):
     b.saveTo(str(tmp_path / "없는폴더" / "x" / "\x00나쁜이름.json"))
     assert b.dirty is True                                 # 저장이 안 됐으면 그대로 '저장 안 됨'
     assert "실패" in b.status
+
+
+def test_backend_never_autosaves_to_a_file_it_did_not_open(tmp_path):
+    """이 실행에서 열거나 저장한 파일이 아니면 자동 저장하지 않는다.
+
+    (파일이 거기 있다는 것만으로 쓰기 시작하면, 다른 목적으로 만든 Backend 가
+     남의 데이터 파일을 덮어쓴다. 실제로 그런 일이 있었다.)
+    """
+    from capital_calc.ledger import Ledger
+    from capital_calc.model import Workspace
+
+    victim = tmp_path / "남의파일.json"
+    victim.write_text('{"version": 3, "scenarios": [], "ledger": {}}', encoding="utf-8")
+    before = victim.read_text(encoding="utf-8")
+
+    ws = Workspace(plans=[Plan(months=12)])
+    ws.ledger = Ledger()
+    b = Backend(ws)
+    b._data_path = victim                     # 경로만 가리켜 둔 상태
+    assert b.autosaveOn is False
+
+    b.addEntry("2026-11-13", "식비", 9_000, "커피", "", "")
+    b._autosave_now()
+    assert victim.read_text(encoding="utf-8") == before      # 손대지 않는다
+
+    b.saveTo(str(victim))                     # 사람이 저장하면 그때부터 내 파일이다
+    assert b.autosaveOn is True

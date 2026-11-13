@@ -1,5 +1,7 @@
 # 개인 재무 데이터 (저장 버튼이 만드는 파일) — 저장소에 올리지 않는다
 capital_data.json
+capital_data.json.bak
+capital_data.json.tmp
 
 __pycache__/
 *.py[cod]

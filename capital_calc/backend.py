@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 from datetime import date, datetime
 from pathlib import Path
 
@@ -35,7 +36,10 @@ from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIS
                      REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS, month_offset,
                      Category, Item, Plan, Workspace, add_months, parse_date, sample_plan, won)
 
-DATA_FILE = Path(__file__).resolve().parent.parent / "capital_data.json"
+# 데이터 파일. CAPITAL_DATA_FILE 로 다른 곳을 가리킬 수 있다 —
+# 테스트·실험이 진짜 데이터 파일을 건드리지 않게 하려는 장치다.
+DATA_FILE = Path(os.environ.get("CAPITAL_DATA_FILE")
+                 or Path(__file__).resolve().parent.parent / "capital_data.json")
 
 
 class ItemListModel(QAbstractListModel):
@@ -656,6 +660,10 @@ class Backend(QObject):
         self._dirty = False
         self._saved_at = ""
         self._autosave = True
+        # 이 실행에서 실제로 불러왔거나 저장한 파일에만 자동 저장한다.
+        # (파일이 있다는 것만으로 쓰기 시작하면, 다른 목적으로 Backend 를 만든
+        #  코드가 남의 파일을 덮어쓸 수 있다.)
+        self._autosave_path_ok = False
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.setInterval(self.AUTOSAVE_MS)
@@ -670,11 +678,12 @@ class Backend(QObject):
         ):
             sig.connect(self._emit_summary)
 
-    @staticmethod
-    def _load_or_sample() -> Workspace:
+    def _load_or_sample(self) -> Workspace:
         if DATA_FILE.exists():
             try:
-                return Workspace.load(DATA_FILE)
+                ws = Workspace.load(DATA_FILE)
+                self._autosave_path_ok = True      # 이 파일에서 열었으니 여기에 저장해도 된다
+                return ws
             except Exception:
                 pass
         return Workspace([sample_plan()])
@@ -1516,6 +1525,7 @@ class Backend(QObject):
             self.failed.emit(f"저장 실패: {e}")
             return
         self._saved_at = datetime.now().strftime("%H:%M")
+        self._autosave_path_ok = True
         self._clear_dirty()
         self._set_data_path(path)
         self.dirtyChanged.emit()      # 저장 시각·자동 저장 여부도 이 신호로 알린다
@@ -1541,6 +1551,7 @@ class Backend(QObject):
             self.failed.emit(f"불러오기 실패: {path.name} — {e}")
             return
         self._ws = ws
+        self._autosave_path_ok = True
         self._replace_plan(ws.plan)
         self._reset_ledger()
         self._set_data_path(path)
@@ -1573,7 +1584,7 @@ class Backend(QObject):
         if not self._dirty:
             self._dirty = True
             self.dirtyChanged.emit()
-        if self._autosave and self._data_path.exists():
+        if self.autosaveOn:
             self._autosave_timer.start()       # 또 고치면 다시 처음부터 센다
 
     def _clear_dirty(self) -> None:
@@ -1583,7 +1594,7 @@ class Backend(QObject):
             self.dirtyChanged.emit()
 
     def _autosave_now(self) -> None:
-        if self._dirty and self._data_path.exists():
+        if self._dirty and self.autosaveOn:
             self.saveTo(str(self._data_path), auto=True)
 
     @Property(bool, notify=dirtyChanged)
@@ -1598,15 +1609,19 @@ class Backend(QObject):
 
     @Property(bool, notify=dirtyChanged)
     def autosaveOn(self) -> bool:
-        """자동 저장이 돌고 있는가 (저장해 둔 파일이 있어야 돈다)."""
-        return self._autosave and self._data_path.exists()
+        """자동 저장이 돌고 있는가.
+
+        이 실행에서 **실제로 불러왔거나 저장한** 파일이어야 한다. 파일이 거기
+        있다는 것만으로 쓰기 시작하지는 않는다.
+        """
+        return self._autosave and self._autosave_path_ok and self._data_path.exists()
 
     @Slot(bool)
     def setAutosave(self, on: bool) -> None:
         self._autosave = bool(on)
         if not self._autosave:
             self._autosave_timer.stop()
-        elif self._dirty:
+        elif self._dirty and self.autosaveOn:
             self._autosave_timer.start()
         self.dirtyChanged.emit()
         self._set_status("자동 저장을 켰습니다." if on else "자동 저장을 껐습니다.")
