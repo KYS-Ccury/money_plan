@@ -1782,6 +1782,14 @@ class Backend(QObject):
                 bits.append(f"{r['every']}개월마다")
             if r["start"]:
                 bits.append(r["start"] + (" ~ " + r["end"] if r["end"] else ""))
+            if r.get("payDay"):
+                bits.append(f"매달 {r['payDay']}일")
+            if r.get("locked"):
+                bits.append("만기까지 묶음")
+            if cat == Category.LOAN and not r.get("includePrincipal", True):
+                bits.append("원금 자본 미포함")
+            if not r.get("active", True):
+                bits.append("꺼짐")
             label = cat.value
             if cat == Category.DEPOSIT and r["housing"]:
                 label += f" ({HOUSING_TYPES.get(r['housing'], '')})"
@@ -1827,6 +1835,18 @@ class Backend(QObject):
                 growth=r["growth"],
                 support=r["support"],
                 every=r["every"],
+                # 엑셀에 적어 둔 설정들. 칸이 없던 표에서는 미리보기가 기본값을
+                # 채워 두므로, 손으로 적은 표를 읽어도 예전과 똑같이 들어온다.
+                include_principal=r.get("includePrincipal", True),
+                locked=r.get("locked", False),
+                pay_day=r.get("payDay", 0),
+                compound=r.get("compound", False),
+                after_tax=r.get("afterTax", False),
+                repay_method=r.get("repayMethod", ""),
+                monthly_repay_rate=r.get("repayRate", 0.0),
+                repayments=list(r.get("repayments") or []),
+                active=r.get("active", True),
+                ledger_category=r.get("ledgerCategory", ""),
             ))
         n = len(rows)
         self._plan_import, self._plan_import_info = [], {}

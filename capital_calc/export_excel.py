@@ -204,9 +204,11 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
 
     # ---------------------------------------------------------- 항목
     ws = wb.create_sheet("항목")
+    # 머리글 이름은 import_plan.HEADER_KEYS 와 짝이다 — 여기를 고치면 거기도 고친다.
+    # '첫 달 상환액'·'총 이자'·'월 환산' 은 계산해서 보여 주는 값이라 다시 읽지 않는다.
     _header(ws, 1, ["이름", "분류", "금액", "연이율(%)", "원금 자본 포함", "시작일", "종료일",
                     "상환 방식", "첫 달 상환액", "총 이자", "중도 상환", "월 환산(0개월)", "연 상승률(%)",
-                    "월 지원금", "만기까지 묶임"])
+                    "월 지원금", "만기까지 묶임", "받는 날", "복리", "세후 이자", "가계부 분류", "켜짐"])
     basis = plan.basis
     for r, it in enumerate(plan.items, start=2):
         info = CATEGORY_INFO[it.category]
@@ -235,7 +237,16 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
         ws.cell(row=r, column=12, value=it.monthly_net_at(0, basis)).number_format = WON
         ws.cell(row=r, column=13, value=it.growth or None)
         ws.cell(row=r, column=14, value=it.support or None).number_format = WON
-        ws.cell(row=r, column=15, value=("예" if it.locked else None))
+        # 아래 칸들은 **되읽기 위한** 칸이다. 비워 두면 가져올 때 기본값으로 돌아가
+        # 버리므로, 그 분류에서 뜻이 있는 설정이면 '예/아니오' 로 또렷이 적는다.
+        ws.cell(row=r, column=15, value=("예" if it.locked else "아니오")
+                if it.category == Category.SAVING else None)
+        ws.cell(row=r, column=16, value=(f"{it.pay_day}일" if it.pay_day else None))
+        if info["uses_rate"]:
+            ws.cell(row=r, column=17, value="예" if it.compound else "아니오")
+            ws.cell(row=r, column=18, value="예" if it.after_tax else "아니오")
+        ws.cell(row=r, column=19, value=it.ledger_category or None)
+        ws.cell(row=r, column=20, value="예" if it.active else "아니오")
     _autowidth(ws)
 
     # ---------------------------------------------------------- 월별 추이 (+ 선 그래프)

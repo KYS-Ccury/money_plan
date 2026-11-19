@@ -382,7 +382,11 @@ Popup {
                 }
                 Text {
                     Layout.fillWidth: true
-                    text: "가계부에 적을 때 이 날짜로 들어갑니다 (계산은 달 단위라 그대로입니다)"
+                    // 29·30·31일은 없는 달이 있다 — 그럴 때는 말일로 당겨 적는다
+                    // (ledger.same_day_in). 고르고 나서야 알면 늦으니 미리 알려 준다.
+                    text: dlg.payDay >= 29
+                          ? "그 날이 없는 달(2월 등)에는 말일에 들어갑니다. 계산은 달 단위라 그대로입니다"
+                          : "가계부에 적을 때 이 날짜로 들어갑니다 (계산은 달 단위라 그대로입니다)"
                     color: Theme.textDim; font.pixelSize: 11
                     wrapMode: Text.Wrap
                 }

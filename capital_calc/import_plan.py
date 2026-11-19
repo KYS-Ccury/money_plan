@@ -17,17 +17,28 @@ from pathlib import Path
 
 from .import_ledger import _clean, _decode, _rows_from_csv, parse_amount, parse_date_text, read_table
 from .model import (CATEGORY_ALIASES, CATEGORY_INFO, HOUSING_BUY, HOUSING_TYPE_LIST,
-                    Category)
+                    MONTHLY_SHAPES, REPAY_METHOD_LIST, REPAY_METHODS, Category)
 
 # 머리글 이름 짝짓기. 이름에 이 조각이 들어 있으면 그 칸으로 본다.
 # **순서가 중요하다**: '월 지원금' 이 '원금'(금액) 으로 잡히지 않도록 지원금을 먼저,
 # '종료 날짜' 가 '날짜'(시작일) 로 잡히지 않도록 종료일을 먼저 본다.
 HEADER_KEYS: list[tuple[str, tuple[str, ...]]] = [
+    ("ledger_category", ("가계부분류", "가계부", "ledger")),
     ("name", ("이름", "항목명", "항목", "name", "item")),
     ("category", ("분류", "종류", "카테고리", "category")),
     ("support", ("지원금", "보조금", "support")),
     ("monthly", ("월세", "월납", "monthly", "rent")),
     ("growth", ("상승률", "인상률", "growth")),
+    # '원금 자본 포함' 이 '원금'(금액) 으로, '만기까지 묶임' 이 '만기'(종료일) 로
+    # 잡히지 않도록 이들을 금액·종료일보다 먼저 본다.
+    ("include_principal", ("원금자본포함", "원금포함", "자본포함")),
+    ("locked", ("묶임", "묶기", "locked")),
+    ("pay_day", ("받는날", "나가는날", "결제일", "납입일", "payday")),
+    ("compound", ("복리", "compound")),
+    ("after_tax", ("세후", "이자소득세", "aftertax")),
+    ("repayments", ("중도상환", "중도", "repayments")),
+    ("repay_method", ("상환방식", "상환방법", "repaymethod")),
+    ("active", ("켜짐", "사용", "active")),
     ("rate", ("연이율", "이자율", "이율", "금리", "rate")),
     ("end", ("종료일", "만기일", "반환일", "종료", "만기", "end")),
     ("start", ("시작일", "입주일", "지출일", "수입일", "시작", "날짜", "일자", "date", "start")),
@@ -101,6 +112,67 @@ def parse_count(text: str) -> int:
     return int(m.group()) if m else 0
 
 
+_YES = ("예", "네", "y", "yes", "o", "true", "1", "포함", "켜짐", "사용", "묶음", "묶임")
+_NO = ("아니오", "아뇨", "n", "no", "x", "false", "0", "미포함", "꺼짐", "안함", "없음")
+
+
+def parse_yesno(text: str) -> bool | None:
+    """'예'/'아니오' → True/False. 비었거나 못 알아보면 None (= 건드리지 않음).
+
+    None 과 False 를 가르는 것이 중요하다 — 칸이 아예 없는 표(사람이 손으로 적은
+    표)에서는 Item 의 기본값을 써야 하고, '아니오' 라고 적혀 있으면 그대로 꺼야 한다.
+    """
+    t = _norm(text)
+    if not t:
+        return None
+    for w in _NO:                       # '아니오' 를 '예' 보다 먼저 본다
+        if t.startswith(w):
+            return False
+    for w in _YES:
+        if t.startswith(w):
+            return True
+    return None
+
+
+def parse_day(text: str) -> int:
+    """'25일' '매달 25일' '25' → 25. 1~31 밖이거나 못 읽으면 0."""
+    m = re.search(r"\d+", _norm(text))
+    if not m:
+        return 0
+    d = int(m.group())
+    return d if 1 <= d <= 31 else 0
+
+
+def parse_repay_method(text: str) -> tuple[str, float]:
+    """'원리금 균등' '매달 원금의 % (1.5%)' → (방식 키, 매달 상환율 %).
+
+    내보낼 때 쓴 이름('만기 일시 상환' …) 을 그대로 되읽는다. 못 알아보면
+    ("", 0.0) 을 돌려주고 Item 이 알아서 정하게 둔다.
+    """
+    t = _norm(text)
+    if not t:
+        return "", 0.0
+    pct = parse_percent(text)
+    for key, label in REPAY_METHOD_LIST:
+        if _norm(label) in t or key in t:
+            return key, (pct if key == "rate" else 0.0)
+    return ("rate", pct) if pct > 0 else ("", 0.0)
+
+
+def parse_repayments(text: str, default_year: int | None = None) -> list[dict]:
+    """'2027-01-01 5,000,000원, 2028-01-01 3,000,000원' → [{date, amount}, …].
+
+    금액 안에도 쉼표가 있어서 쉼표로 자를 수 없다. 날짜+금액 짝을 찾아 읽는다.
+    """
+    out: list[dict] = []
+    for d, a in re.findall(r"(\d{4}[-./]\d{1,2}[-./]\d{1,2})\s*([\d,]+)", _clean(text)):
+        day = parse_date_text(d, default_year)
+        amt = parse_amount(a)
+        if day and amt:
+            out.append({"date": day, "amount": abs(float(amt))})
+    return out
+
+
 def match_category(text: str) -> tuple[Category | None, str]:
     """적힌 분류 이름 → (분류, 주거 형태). 못 알아보면 (None, "").
 
@@ -153,10 +225,28 @@ def _date_or_blank(text: str, default_year: int | None = None) -> str:
 def _row_dict(name: str, cat: Category, housing: str, amount: float, *, rate: float = 0.0,
               start: str = "", end: str = "", monthly: float = 0.0, growth: float = 0.0,
               support: float = 0.0, every: int = 0, note: str = "",
-              category_text: str = "") -> dict:
-    """미리보기 한 줄. 분류에 뜻이 없는 값은 여기서 털어 낸다."""
+              category_text: str = "", include_principal: bool | None = None,
+              locked: bool | None = None, pay_day: int = 0, compound: bool | None = None,
+              after_tax: bool | None = None, repay_method: str = "", repay_rate: float = 0.0,
+              repayments: list[dict] | None = None, active: bool | None = None,
+              ledger_category: str = "") -> dict:
+    """미리보기 한 줄. 분류에 뜻이 없는 값은 여기서 털어 낸다.
+
+    예/아니오 설정은 **None 이면 '안 적혀 있다'** 는 뜻이라 Item 의 기본값을 쓴다
+    (사람이 손으로 적은 표에는 이런 칸이 아예 없다).
+    """
     info = CATEGORY_INFO[cat]
     mode = info["date_mode"]
+    if cat != Category.LOAN:              # 대출에서만 뜻이 있는 것들
+        include_principal, repay_method, repay_rate, repayments = None, "", 0.0, None
+    elif repay_method not in REPAY_METHODS:
+        repay_method = ""
+    if cat != Category.SAVING:
+        locked = None
+    if not info["uses_rate"]:
+        compound, after_tax = None, None
+    if info["shape"] not in MONTHLY_SHAPES:
+        pay_day = 0
     if not info["uses_rate"]:
         rate = 0.0
     if not info.get("uses_growth"):
@@ -184,6 +274,17 @@ def _row_dict(name: str, cat: Category, housing: str, amount: float, *, rate: fl
         "support": float(max(0.0, support)),
         "every": max(0, every),
         "note": (note or "").strip(),
+        # 아래는 '적혀 있으면 그대로, 없으면 기본값' 인 설정들이다
+        "includePrincipal": True if include_principal is None else bool(include_principal),
+        "locked": bool(locked),
+        "payDay": min(31, max(0, int(pay_day or 0))),
+        "compound": bool(compound),
+        "afterTax": bool(after_tax),
+        "repayMethod": repay_method,
+        "repayRate": max(0.0, repay_rate),
+        "repayments": list(repayments or []),
+        "active": True if active is None else bool(active),
+        "ledgerCategory": (ledger_category or "").strip(),
     }
 
 
@@ -240,8 +341,15 @@ def rows_from_table(rows: list[list[str]], default_year: int | None = None) -> t
             problems.append(f"{n}번째 줄: 금액을 못 읽었습니다 ('{cell(row, 'amount')[:20]}')")
             continue
 
-        # 이름이 비면 '(꺼짐)' 같은 꼬리를 뗀 분류 이름을 쓴다
-        name = re.sub(r"\s*[(（]\s*꺼짐\s*[)）]\s*$", "", name).strip()
+        # 이름 뒤의 '(꺼짐)' 은 꺼진 항목을 나타내던 꼬리다. 이제는 '켜짐' 칸에
+        # 적지만, 꼬리만 있는 파일도 알아보고 떼어 낸다.
+        plain = re.sub(r"\s*[(（]\s*꺼짐\s*[)）]\s*$", "", name).strip()
+        off_in_name = plain != name
+        name = plain
+        active = parse_yesno(cell(row, "active"))
+        if active is None and off_in_name:
+            active = False
+        method, repay_rate = parse_repay_method(cell(row, "repay_method"))
         out.append(_row_dict(
             name, cat, housing, abs(amount),
             rate=parse_percent(cell(row, "rate")),
@@ -253,6 +361,16 @@ def rows_from_table(rows: list[list[str]], default_year: int | None = None) -> t
             every=parse_count(cell(row, "every")),
             note=_clean(cell(row, "note")),
             category_text=cat_text,
+            include_principal=parse_yesno(cell(row, "include_principal")),
+            locked=parse_yesno(cell(row, "locked")),
+            pay_day=parse_day(cell(row, "pay_day")),
+            compound=parse_yesno(cell(row, "compound")),
+            after_tax=parse_yesno(cell(row, "after_tax")),
+            repay_method=method,
+            repay_rate=repay_rate,
+            repayments=parse_repayments(cell(row, "repayments"), default_year),
+            active=active,
+            ledger_category=_clean(cell(row, "ledger_category")),
         ))
     return split_rent_rows(out), problems
 

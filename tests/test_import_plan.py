@@ -162,3 +162,78 @@ def test_housing_row_with_rent_becomes_two_rows():
     assert dep["monthly"] == 0 and dep["housing"] == "banjeonse"
     assert (rent["start"], rent["end"]) == ("2026-04-01", "2028-04-01")
     assert rent["housing"] == ""
+
+
+def test_excel_round_trip_keeps_every_setting(tmp_path):
+    """내보낸 뒤 그대로 가져오면 **설정이 하나도 안 날아가야** 한다.
+
+    엑셀 시트는 보고서이기도 해서, 예전에는 받는 날·복리·세후·가계부 분류가
+    아예 안 적혔고 원금 자본 포함·묶임·상환 방식·꺼짐은 적히기만 하고 되읽지
+    못했다. 그래서 '모두 지우고 새로 채우기' 로 되돌리면 기본값으로 돌아갔다.
+    """
+    from capital_calc.backend import Backend
+    from capital_calc.export_excel import export_plan
+    from capital_calc.model import Item, Plan
+
+    plan = Plan(months=36, start_date="2026-01-01")
+    plan.add(Item("월급", Category.INCOME, 3_200_000, pay_day=25, growth=3.0))
+    plan.add(Item("청년도약계좌", Category.SAVING, 200_000, rate=5.0, support=300_000,
+                  locked=True, compound=True, after_tax=False,
+                  start_date="2026-01-01", end_date="2029-01-01",
+                  ledger_category="저축"))
+    plan.add(Item("전세자금대출", Category.LOAN, 90_000_000, rate=2.5,
+                  include_principal=False, repay_method="rate", monthly_repay_rate=1.5,
+                  start_date="2026-02-01", end_date="2029-02-01",
+                  repayments=[{"date": "2027-03-01", "amount": 5_000_000}]))
+    plan.add(Item("안 쓰는 적금", Category.SAVING, 100_000, active=False))
+
+    rows, problems, how = parse_file(export_plan(plan, tmp_path / "plan.xlsx"))
+    assert not problems and "항목" in how
+    got = {r["name"]: r for r in rows}
+
+    assert got["월급"]["payDay"] == 25
+    assert got["청년도약계좌"]["locked"] is True
+    assert got["청년도약계좌"]["compound"] is True
+    assert got["청년도약계좌"]["afterTax"] is False
+    assert got["청년도약계좌"]["ledgerCategory"] == "저축"
+    assert got["전세자금대출"]["includePrincipal"] is False
+    assert got["전세자금대출"]["repayMethod"] == "rate"
+    assert got["전세자금대출"]["repayRate"] == 1.5
+    assert got["전세자금대출"]["repayments"] == [{"date": "2027-03-01", "amount": 5_000_000}]
+    assert got["안 쓰는 적금"]["active"] is False
+    assert got["월급"]["active"] is True
+
+    # 계획에 넣었을 때도 그대로여야 한다 (미리보기까지만 맞아도 소용이 없다)
+    b = Backend(Plan(months=36, start_date="2026-01-01"))
+    b._plan_import = rows                            # 읽어 온 줄을 그대로 넣는다
+    assert b.applyPlanImport(False) == len(rows)
+    back = {it.name: it for it in b._plan.items}
+    assert back["월급"].pay_day == 25
+    assert back["청년도약계좌"].locked is True and back["청년도약계좌"].compound is True
+    assert back["전세자금대출"].include_principal is False
+    assert back["전세자금대출"].repay_method == "rate"
+    assert back["전세자금대출"].monthly_repay_rate == 1.5
+    assert back["안 쓰는 적금"].active is False
+
+
+def test_a_hand_written_table_still_uses_the_defaults():
+    """설정 칸이 없는 표(사람이 손으로 적은 것)는 예전처럼 기본값으로 들어온다."""
+    rows, problems, _how = parse_text(SHEET)
+    assert not problems
+    got = {r["name"]: r for r in rows}
+    assert got["청약"]["locked"] is False            # '묶임' 칸이 없으니 묶지 않는다
+    assert got["현금"]["active"] is True
+    assert got["월급"]["payDay"] == 0
+    assert all(r["includePrincipal"] is True for r in rows)   # 대출이 없으면 기본값
+
+
+def test_yesno_and_repay_method_are_read_loosely():
+    from capital_calc.import_plan import parse_day, parse_repay_method, parse_yesno
+
+    assert parse_yesno("예") is True and parse_yesno("Y") is True
+    assert parse_yesno("아니오") is False and parse_yesno("x") is False
+    assert parse_yesno("") is None and parse_yesno("글쎄") is None
+    assert parse_day("매달 25일") == 25 and parse_day("32일") == 0 and parse_day("") == 0
+    assert parse_repay_method("원리금 균등") == ("equal_payment", 0.0)
+    assert parse_repay_method("매달 원금의 % (1.5%)") == ("rate", 1.5)
+    assert parse_repay_method("") == ("", 0.0)
