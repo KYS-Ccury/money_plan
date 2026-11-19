@@ -37,6 +37,16 @@ Get-Process bash,sh,python,git -ErrorAction SilentlyContinue | Group-Object Proc
 Get-Counter '\Memory\Committed Bytes','\Memory\Available MBytes'
 ```
 
+## 푸시할 때는 판 번호와 '바뀐 것' 을 같이 올린다
+
+사람이 "커밋하고 푸시해" 라고 하면 **그 전에**:
+
+1. `capital_calc/__init__.py` 의 `__version__` 을 올린다
+   (기능이 늘었으면 가운데 자리, 버그만 고쳤으면 끝자리).
+2. `CHANGELOG.md` 맨 위에 그 판을 한 칸 더한다 — 날짜, `더한 것`, `고친 것`.
+   고친 버그는 **무엇이 어떻게 잘못됐었는지**까지 한 줄로 적는다
+   (예: "두 번 가져오면 쌓이던 것 — 이름·분류·금액이 다 같을 때만 알아봤다").
+
 ## 데이터 파일을 건드리지 말 것
 
 `capital_data.json` 은 사용자의 실제 재무 데이터다.

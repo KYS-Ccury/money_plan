@@ -949,6 +949,13 @@ class Backend(QObject):
             return Path(u.toLocalFile())
         return Path(url_or_path)
 
+    @Property(str, constant=True)
+    def version(self) -> str:
+        """판 번호 (화면 위쪽에 작게 보여 준다)."""
+        from . import __version__
+
+        return __version__
+
     @Property("QVariantList", constant=True)
     def categories(self) -> list[str]:
         """2차 분류 이름들 — **번호(cat_index) 순서**다 (사람이 보는 순서가 아니다)."""
@@ -1679,6 +1686,10 @@ class Backend(QObject):
     # 무엇을 넣을지 사용자가 정한 다음에야 계획에 들어간다.
     PLAN_IMPORT_PREVIEW = 200
 
+    def _plan_names(self) -> set:
+        """지금 계획에 있는 항목 이름들 (앞뒤 공백·대소문자 무시)."""
+        return {i.name.strip().casefold() for i in self._plan.items if i.name.strip()}
+
     def _plan_dupe_keys(self) -> set:
         return {(it.name.strip(), it.category.value, round(it.amount)) for it in self._plan.items}
 
@@ -1689,14 +1700,22 @@ class Backend(QObject):
         if not rows and not problems:
             problems = ["이름·분류·금액을 찾지 못했습니다 (머리글이 있는 파일인지 보세요)"]
         seen = self._plan_dupe_keys()
+        names = self._plan_names()
         self._plan_import = []
         for r in rows:
             r = dict(r)
             key = (r["name"].strip(), r["category"], round(r["amount"]))
+            name = r["name"].strip().casefold()
             r["dupe"] = key in seen
+            # 똑같지는 않아도 **이름이 같으면** 이미 있는 항목으로 본다.
+            # 가져온 뒤에 분류나 금액을 고쳐 두었다면 키가 어긋나서, 다시 가져올 때
+            # 같은 항목이 하나 더 생긴다 (두 번 가져오면 쌓이던 까닭이 이것이다).
+            r["sameName"] = (not r["dupe"]) and name in names
             seen.add(key)                 # 파일 안에서 같은 항목이 두 번 나오는 것도 중복으로 본다
+            if name:
+                names.add(name)
             self._plan_import.append(r)
-        dupes = sum(1 for r in self._plan_import if r["dupe"])
+        dupes = sum(1 for r in self._plan_import if r["dupe"] or r["sameName"])
         # 1차가 다섯이 되었으니 묶음 이름으로 더하지 않는다.
         # '자본으로 잡히는가 / 들어오는가 / 나가는가' 로 모은다
         sides = {SIDE_CAPITAL: 0.0, SIDE_INCOME: 0.0, SIDE_COST: 0.0}
@@ -1791,7 +1810,8 @@ class Backend(QObject):
         if not self._plan_import:
             return 0
         rows = self._plan_import if (replace or not skip_dupes) else \
-            [r for r in self._plan_import if not r.get("dupe")]
+            [r for r in self._plan_import
+             if not (r.get("dupe") or r.get("sameName"))]
         if not rows:
             self._set_status("넣을 항목이 없습니다 (모두 이미 있는 항목).")
             return 0

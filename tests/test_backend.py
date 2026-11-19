@@ -2444,3 +2444,57 @@ def test_salary_goes_into_the_ledger_on_its_pay_day():
     b2.addItem("급여", 4, 2_000_000, 0, True)
     assert b2.importPlanToLedger() == 1
     assert b2._ws.ledger.entries[0].date.startswith("2026-02-")
+
+
+def test_importing_the_same_list_twice_does_not_pile_up():
+    """두 번 가져와도 쌓이지 않는다 — 가져온 뒤 분류·금액을 고쳐 두었더라도.
+
+    키(이름+분류+금액)만 보면 고쳐 둔 항목이 어긋나서 같은 이름이 하나 더 생겼다.
+    """
+    b = Backend(Plan(months=12, start_date="2026-01-01"))
+    text = "\n".join(["이름,분류,금액",
+                       "자동차 보험료,일시 지출,1000000",
+                       "급여,월 수입,2400000"])
+
+    assert b.previewPlanImportText(text)["count"] == 2
+    assert b.applyPlanImport() == 2
+    assert b.itemCount == 2
+
+    # 그대로 또 가져오기 → 하나도 안 들어온다
+    info = b.previewPlanImportText(text)
+    assert info["dupes"] == 2 and info["fresh"] == 0
+    assert b.applyPlanImport() == 0
+    assert b.itemCount == 2
+
+    # 가져온 뒤에 분류와 금액을 고쳐 두었다면? 이름이 같으니 역시 안 들어온다
+    row = [i for i, it in enumerate(b._plan.items) if it.name == "자동차 보험료"][0]
+    b.updateItem(row, "자동차 보험료", 8, 1_200_000, 0, True)      # 8 = 고정 지출
+    info = b.previewPlanImportText(text)
+    assert info["dupes"] == 2, "고쳐 둔 항목을 못 알아봤다"
+    rows = {r["name"]: r for r in b.planImportRows()}
+    assert rows["자동차 보험료"]["sameName"] is True        # 똑같지는 않지만 이름이 같다
+    assert rows["급여"]["dupe"] is True                     # 이쪽은 아주 똑같다
+    assert b.applyPlanImport() == 0
+    assert b.itemCount == 2
+
+    # 건너뛰기를 끄면 그때는 사람 뜻대로 들어온다
+    b.previewPlanImportText(text)
+    assert b.applyPlanImport(False) == 2
+    assert b.itemCount == 4
+
+
+def test_version_and_changelog_agree():
+    """판 번호와 CHANGELOG 맨 위 칸이 같은지. 올리는 걸 잊으면 여기서 걸린다."""
+    import re
+
+    from capital_calc import __version__
+
+    b = Backend(Plan(months=12))
+    assert b.version == __version__
+
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "CHANGELOG.md").read_text(encoding="utf-8")
+    heads = re.findall(r"^## (\d+\.\d+\.\d+) — (\d{4}-\d{2}-\d{2})$", text, re.M)
+    assert heads, "CHANGELOG.md 에 '## 판번호 — 날짜' 칸이 없습니다"
+    assert heads[0][0] == __version__, (
+        f"CHANGELOG 맨 위는 {heads[0][0]} 인데 __version__ 은 {__version__} 입니다")

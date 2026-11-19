@@ -196,12 +196,14 @@ Popup {
                 ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                 delegate: Rectangle {
+                    id: prow
                     required property var modelData
                     width: previewList.width - 8
                     height: 28
                     radius: 6
-                    color: modelData.dupe ? "transparent" : Theme.rowHover
-                    opacity: modelData.dupe && dlg.skipDupes && !dlg.replaceAll ? 0.45 : 1
+                    color: modelData.dupe === true ? "transparent" : Theme.rowHover
+                    readonly property bool known: modelData.dupe === true || modelData.sameName === true
+                    opacity: known && dlg.skipDupes && !dlg.replaceAll ? 0.45 : 1
 
                     RowLayout {
                         anchors.fill: parent
@@ -224,8 +226,11 @@ Popup {
                             Layout.fillWidth: true; elide: Text.ElideRight
                         }
                         Text {
-                            visible: modelData.dupe
-                            text: "이미 있음"; color: Theme.yellow; font.pixelSize: 10
+                            visible: prow.known
+                            // 똑같은 것과 '이름만 같은 것' 을 갈라 보여 준다 —
+                            // 뒤엣것은 가져온 뒤에 금액·분류를 고쳐 둔 항목이다
+                            text: modelData.dupe ? "이미 있음" : "이름이 같음"
+                            color: Theme.yellow; font.pixelSize: 10
                         }
                         Text {
                             text: modelData.amountText

@@ -1069,3 +1069,30 @@ def test_pay_day_is_kept_only_where_it_means_something():
     # 저장했다 불러도 남는다
     assert Item.from_dict(pay.to_dict()).pay_day == 25
     assert Item.from_dict({"name": "옛날", "category": "월 수입", "amount": 1}).pay_day == 0
+
+
+def test_lump_repayment_shows_as_a_once_cost_not_a_monthly_one():
+    """만기에 한 번 갚는 원금이 '월 지출 평균' 에 녹지 않는지.
+
+    순 자본과 필요 자금 총액은 그대로여야 한다 — 보여 주는 자리만 바뀐다.
+    """
+    p = Plan(months=36, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 200_000_000))
+    p.add(Item("월세", Category.RENT, 500_000))
+    loan = p.add(Item("전세자금대출", Category.LOAN, 90_000_000, rate=2.0,
+                      include_principal=False, repay_method="bullet",
+                      start_date="2026-04-01", end_date="2028-04-01"))
+
+    s = p.summary()
+    # 만기(27개월)에 갚는 9천만원은 일시 지출로 선다
+    assert s.once_cost == 90_000_000
+    # 월 지출 평균에는 월세와 이자만 (9천만 ÷ 36 = 250만원이 섞이면 안 된다)
+    assert s.avg_cost < 1_000_000
+    assert abs(s.required - (s.once_cost + s.avg_cost * 36)) < 1.0
+
+    # 아무것도 잃거나 두 번 세지 않았다 — 갈라 놓기 전의 합과 같아야 한다
+    raw = p.once_cost_at(36) + sum(p.monthly_cost_at(m) for m in range(36))
+    assert abs(s.required - raw) < 1.0
+    # 원금을 자본에 넣으면 상환은 자본이 줄어드는 것으로 반영되므로 여기 안 선다
+    loan.include_principal = True
+    assert p.summary().once_cost == 0

@@ -137,7 +137,8 @@ CATEGORY_INFO: dict[Category, dict] = {
                      "hint": "적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
     Category.FIXED: {"shape": SHAPE_MONTHLY_COST, "amount_label": "월 고정 지출", "uses_rate": False,
                      "uses_growth": True, "date_mode": "range", "flow": "cost",
-                     "hint": "보험료·통신비·식비·교통비처럼 적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
+                     "hint": "보험료·통신비·식비·교통비처럼 적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속). "
+                            "1년에 한 번 내는 자동차 보험·자동차세는 '일시 지출' 로 넣고 되풀이를 '해마다' 로 하세요"},
     Category.DEPOSIT: {"shape": SHAPE_ONCE_COST, "amount_label": "보증금", "uses_rate": False,
                        "date_mode": "once", "flow": "cost", "returnable": True, "housing": True,
                        "hint": "전세·반전세·월세·매매 중에서 고릅니다. 입주일에 보증금(매매가)이 나가고, 만기에 돌려받습니다"},
@@ -744,6 +745,25 @@ class Item:
                 got += self.saving_balance_at(mat, basis)
         return got
 
+    def once_repay_at(self, m: int, basis: date) -> float:
+        """대출에서 **한 번에** 빠져나가는 상환액 (중도 상환 + 만기 일시 상환).
+
+        원금을 자본에 넣지 않은 대출만 해당한다 (넣은 경우는 자본이 줄어드는
+        것으로 이미 반영된다). 이 돈은 monthly_cost_at 안에도 들어 있다 —
+        순 자본 계산이 거기를 보기 때문이다. 다만 **요약에서는 월 지출 평균에서
+        빼고 일시 지출로 옮겨 보여 준다.** 그러지 않으면 만기에 한 번 갚는
+        9천만원이 월 평균에 녹아들어 달마다 그만큼 나가는 것처럼 읽힌다.
+        """
+        if self.category != Category.LOAN or self.include_principal:
+            return 0.0
+        start_m, end_m = self.active_range(basis)
+        out = 0.0
+        if m >= start_m and (end_m is None or m < end_m):
+            out += self.repayment_at(m, basis)
+        if end_m is not None and m == end_m:
+            out += self.remaining_at(m, basis)
+        return out
+
     def monthly_cost_at(self, m: int, basis: date) -> float:
         if self.category == Category.SAVING:
             return self.amount if self.is_active(m, basis) else 0.0
@@ -857,7 +877,7 @@ class Summary:
     months: int
     target: float
     capital: float          # 0개월 시점 보유 자금
-    once_cost: float        # 기간 안에 나가는 일시 지출 합계
+    once_cost: float        # 기간 안에 나가는 일시 지출 합계 (대출 일시 상환 포함)
     once_income: float      # 기간 안에 들어오는 일시 수입 합계
     monthly_cost: float     # 0개월 시점 월 지출
     monthly_income: float   # 0개월 시점 월 수입
@@ -1042,6 +1062,11 @@ class Plan:
         b = self.basis
         return sum(i.monthly_cost_at(m, b) for i in self.live)
 
+    def once_repay_at(self, m: int) -> float:
+        """m개월째에 한 번에 빠져나가는 대출 상환액 (요약에서 갈라 보여 주려고)."""
+        b = self.basis
+        return sum(i.once_repay_at(m, b) for i in self.live)
+
     def monthly_income_at(self, m: int) -> float:
         b = self.basis
         return sum(i.monthly_income_at(m, b) for i in self.live)
@@ -1178,17 +1203,22 @@ class Plan:
     def summary(self) -> Summary:
         n = max(0, self.months)
         k = n if n > 0 else 1                       # 기간이 0이면 이번 달 하나만 본다
-        costs = [self.monthly_cost_at(m) for m in range(k)]
+        # 대출을 '한 번에' 갚는 돈은 월 지출에서 빼고 일시 지출로 옮긴다.
+        # 숫자의 합(required)과 순 자본은 그대로고, 보여 주는 자리만 바뀐다 —
+        # 만기에 한 번 갚는 원금이 월 평균에 녹으면 달마다 나가는 것처럼 읽힌다.
+        repays = [self.once_repay_at(m) for m in range(k)]
+        costs = [self.monthly_cost_at(m) - repays[m] for m in range(k)]
         incomes = [self.monthly_income_at(m) for m in range(k)]
+        once_cost = self.once_cost_at(n) + sum(repays[:n])
         return Summary(
             months=n,
             target=self.target,
             capital=self.capital_at(0),
-            once_cost=self.once_cost_at(n),
+            once_cost=once_cost,
             once_income=self.once_income_at(n),
             monthly_cost=costs[0],
             monthly_income=incomes[0],
-            required=self.once_cost_at(n) + sum(costs[:n]),
+            required=once_cost + sum(costs[:n]),
             period_income=self.once_income_at(n) + sum(incomes[:n]),
             avg_cost=sum(costs) / k,
             avg_income=sum(incomes) / k,

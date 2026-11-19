@@ -431,6 +431,15 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 8
                     Text { text: "자본금 계산기"; color: Theme.text; font.pixelSize: 20; font.bold: true }
+                    Text {
+                        text: "v" + backend.version
+                        color: Theme.textDim; font.pixelSize: 11
+                        Layout.alignment: Qt.AlignBottom
+                        Layout.bottomMargin: 3
+                        ToolTip.visible: verHover.hovered; ToolTip.delay: 500
+                        ToolTip.text: "무엇이 바뀌었는지는 CHANGELOG.md 에 적혀 있습니다"
+                        HoverHandler { id: verHover }
+                    }
 
                     // 계획 / 가계부 전환
                     Row {
@@ -785,9 +794,13 @@ ApplicationWindow {
                         Text { text: "이름"; color: Theme.textDim; font.pixelSize: 12; Layout.preferredWidth: 180 }
                         Text { text: "분류"; color: Theme.textDim; font.pixelSize: 12; Layout.preferredWidth: 110 }
                         Text { text: "금액"; color: Theme.textDim; font.pixelSize: 12; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
-                        Text { text: "연이율"; color: Theme.textDim; font.pixelSize: 12; Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight }
+                        Text {
+                            text: "연이율"; color: Theme.textDim; font.pixelSize: 12
+                            visible: list.width > 614          // 줄과 같은 눈금 (줄 폭 = 목록 폭 − 14)
+                            Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight
+                        }
                         Text { text: "월 환산"; color: Theme.textDim; font.pixelSize: 12; Layout.preferredWidth: 150; horizontalAlignment: Text.AlignRight }
-                        Item { Layout.preferredWidth: 104 }
+                        Item { Layout.preferredWidth: list.width > 614 ? 104 : 56 }
                     }
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
 
@@ -929,6 +942,7 @@ ApplicationWindow {
                             required property string ledgerCategory   // 가계부에서 볼 분류
                             required property bool afterTax    // 이자에서 세금을 떼는가
                             required property bool compound    // 복리인가
+                            required property int payDay       // 매달 며칠에 오가는지
 
                             // 접힌 분류의 줄은 목록에서 빼지 않고 높이만 0 으로 접는다
                             // (빼 버리면 그 분류의 섹션 헤더까지 사라져 다시 펼 수가 없다)
@@ -942,6 +956,9 @@ ApplicationWindow {
                             }
 
                             width: ListView.view.width - 14
+                            // 좁아지면 덜 급한 칸(연이율·▲▼)을 접는다. 안 접으면 칸들이
+                            // 줄보다 넓어져 **오른쪽 끝의 ✕ 가 잘려 나간다** (줄은 clip 이다).
+                            readonly property bool roomy: width > 600
                             height: folded ? 0 : (subText !== "" ? 54 : 44)
                             opacity: folded ? 0 : (rowItem.active ? 1 : 0.45)
                             enabled: !folded
@@ -971,7 +988,8 @@ ApplicationWindow {
                                                                        rowItem.growth, rowItem.support,
                                                                        rowItem.locked, rowItem.every,
                                                                        rowItem.ledgerCategory,
-                                                                       rowItem.afterTax, rowItem.compound)
+                                                                       rowItem.afterTax, rowItem.compound,
+                                                                       rowItem.payDay)
                             }
 
                             // 이름 아래 작은 글씨 — 줄 전체 폭을 쓴다
@@ -996,7 +1014,7 @@ ApplicationWindow {
                                     // 칸이 모자라면 이름이 먼저 줄어든다 (금액이 잘리면 쓸모가 없다)
                                     Layout.fillWidth: true
                                     Layout.maximumWidth: 170
-                                    Layout.minimumWidth: 90
+                                    Layout.minimumWidth: 70
                                     text: rowItem.name
                                     color: Theme.text; font.pixelSize: 14
                                     font.strikeout: !rowItem.active      // 계산에서 빠져 있다
@@ -1021,12 +1039,13 @@ ApplicationWindow {
                                 Text {
                                     text: rowItem.amountText; color: Theme.text; font.pixelSize: 14
                                     Layout.preferredWidth: 120
-                                    Layout.minimumWidth: 104
+                                    Layout.minimumWidth: 92
                                     horizontalAlignment: Text.AlignRight
                                     elide: Text.ElideLeft          // 금액은 뒷자리가 중요하다
                                 }
                                 Text {
                                     text: rowItem.rateText; color: Theme.textDim; font.pixelSize: 13
+                                    visible: rowItem.roomy             // 좁으면 접는다 (줄 아래 작은 글씨에도 있다)
                                     Layout.preferredWidth: 60
                                     Layout.minimumWidth: 34
                                     horizontalAlignment: Text.AlignRight
@@ -1036,7 +1055,7 @@ ApplicationWindow {
                                     text: rowItem.monthlyText
                                     font.pixelSize: 13
                                     Layout.preferredWidth: 150
-                                    Layout.minimumWidth: 80
+                                    Layout.minimumWidth: 70
                                     horizontalAlignment: Text.AlignRight
                                     elide: Text.ElideLeft
                                     color: rowItem.monthlyKind === "income" ? Theme.green
@@ -1045,7 +1064,9 @@ ApplicationWindow {
                                 }
                                 RowLayout {
                                     spacing: 0
-                                    Layout.preferredWidth: 168
+                                    // 단추 칸은 줄어들지 않는다 — 줄어들면 ✕ 가 밖으로 밀린다
+                                    Layout.preferredWidth: rowItem.roomy ? 160 : 96
+                                    Layout.minimumWidth: rowItem.roomy ? 160 : 96
                                     ToolButton {
                                         text: rowItem.active ? "⏸" : "▶"
                                         font.pixelSize: 11; implicitWidth: 32
@@ -1066,6 +1087,7 @@ ApplicationWindow {
                                     // 묶어 보면 보이는 차례와 원본 차례가 달라서, 같은 분류 안에서만 옮긴다
                                     ToolButton {
                                         text: "▲"; font.pixelSize: 11; implicitWidth: 32
+                                        visible: rowItem.roomy
                                         enabled: backend.groupByCategory ? rowItem.groupPos > 0
                                                                          : rowItem.index > 0
                                         ToolTip.visible: hovered; ToolTip.delay: 700
@@ -1078,6 +1100,7 @@ ApplicationWindow {
                                     }
                                     ToolButton {
                                         text: "▼"; font.pixelSize: 11; implicitWidth: 32
+                                        visible: rowItem.roomy
                                         enabled: backend.groupByCategory ? rowItem.groupPos < rowItem.groupCount - 1
                                                                          : rowItem.index < backend.itemCount - 1
                                         ToolTip.visible: hovered; ToolTip.delay: 700

@@ -17,6 +17,22 @@ Popup {
     function setCategory(ci) {
         catBox.currentIndex = Math.max(0, catBox.indexOfValue(ci))
     }
+    // 분류 이름으로 고르기 (목록의 줄 번호가 아니라 분류 번호를 찾아 쓴다)
+    function setCategoryNamed(name) {
+        var i = backend.categories.indexOf(name)
+        if (i >= 0) setCategory(i)
+        return i >= 0
+    }
+    // 1년에 한 번 오가는 돈으로 바꾼다 — 자동차 보험·자동차세·재산세처럼.
+    // 매달 나가는 분류로는 적을 수 없어서(달마다 나가는 셈이 된다) 일시 지출·수입
+    // 으로 옮기고 되풀이를 해마다로 세운다. 금액·날짜는 적던 것을 그대로 둔다.
+    function makeYearly() {
+        if (!setCategoryNamed(dlg.info.flow === "income" ? "일시 수입" : "일시 지출"))
+            return
+        dlg.every = 12
+        if (dlg.onceDate === "")
+            dlg.onceDate = dlg.startDate || backend.basisDate
+    }
     property real amount: 0
     property real rate: 0
     property string startDate: ""
@@ -225,6 +241,32 @@ Popup {
                 color: Theme.textDim; font.pixelSize: 12
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
+            }
+
+            // ── 1년에 한 번 나가는 돈이면 ──
+            // 매달 나가는 분류(고정 지출·관리비…)로 적으면 달마다 나가는 셈이 된다.
+            // 여기서 한 번에 '일시 지출 + 해마다' 로 옮겨 준다.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                // 매달 오가는 분류에서만 (적금은 빼고 — 1년에 한 번 붓는 적금은 없다)
+                visible: dlg.info.usesPayDay === true && dlg.info.canLock !== true
+                Text {
+                    Layout.fillWidth: true
+                    text: dlg.info.flow === "income"
+                          ? "1년에 한 번 들어오는 돈인가요?"
+                          : "자동차 보험·자동차세처럼 1년에 한 번 내는 돈인가요?"
+                    color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap
+                }
+                Button {
+                    objectName: "makeYearlyButton"
+                    text: "해마다로 바꾸기"
+                    flat: true; leftPadding: 10; rightPadding: 10
+                    Material.foreground: Theme.accent
+                    onClicked: dlg.makeYearly()
+                    ToolTip.visible: hovered; ToolTip.delay: 500
+                    ToolTip.text: "분류를 '일시 지출' 로 옮기고 되풀이를 '해마다' 로 맞춥니다"
+                }
             }
 
             // ── 가계부에서는 어느 분류로 볼지 ──
@@ -478,6 +520,10 @@ Popup {
                         Layout.fillWidth: true
                         spacing: 6
                         Text { text: "되풀이"; color: Theme.text; font.pixelSize: 13; font.bold: true }
+                        Text {
+                            text: "(자동차 보험처럼 1년에 한 번)"
+                            color: Theme.textDim; font.pixelSize: 11
+                        }
                         Item { width: 6 }
                         Repeater {
                             model: [{ v: 0, t: "한 번만" }, { v: 3, t: "분기" },

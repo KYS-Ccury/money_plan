@@ -13,6 +13,9 @@ QML 은 Qt Quick 씬그래프가 GPU(OpenGL/Direct3D)로 렌더링합니다.
 항목 추가/삭제 슬라이드, 숫자 롤링, 진행 바 보간과 하이라이트, 그래프가 그려지는 애니메이션, 팝업 등장 효과가 들어 있습니다.
 예전 OpenGL(GLFW + Dear ImGui) 버전은 `main_imgui.py` 로 남겨 두었습니다.
 
+무엇이 언제 바뀌었는지는 [CHANGELOG.md](CHANGELOG.md) 에 적어 둡니다.
+판 번호는 `capital_calc/__init__.py` 의 `__version__` 이고, 앱 제목 옆에도 보입니다.
+
 ## 실행
 
 ```bash

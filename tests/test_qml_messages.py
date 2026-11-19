@@ -289,3 +289,50 @@ def test_header_keeps_its_room_and_rearranges_when_the_window_is_small():
 
     bad = [m for m in msgs if any(w in m for w in BAD)]
     assert not bad, "QML 이 투덜댑니다:\n" + "\n".join(bad)
+
+
+def test_item_row_folds_its_narrow_columns_instead_of_pushing_the_delete_button_out():
+    """줄이 좁아지면 연이율·▲▼ 가 접히고, ✕(삭제) 는 줄 안에 남는지.
+
+    예전에는 칸들이 줄보다 넓어져 오른쪽 끝의 ✕ 가 잘려 나갔다 (줄은 clip 이다).
+    """
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    msgs: list[str] = []
+    qInstallMessageHandler(lambda mode, ctx, text: msgs.append(text))
+    try:
+        backend = Backend()
+        backend.loadSample()
+        engine = QQmlApplicationEngine()
+        engine.addImportPath(str(ROOT))
+        engine.rootContext().setContextProperty("backend", backend)
+        engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+        assert engine.rootObjects(), "QML 로드 실패"
+        win = engine.rootObjects()[0]
+        app.processEvents()
+
+        def a_row():
+            """항목 줄 하나 (roomy 를 가진 것이 줄이다)."""
+            for obj in win.findChildren(QObject):
+                if obj.property("roomy") is not None and obj.property("name") is not None:
+                    return obj
+            return None
+
+        for w, roomy in ((1500, True), (820, False)):
+            win.setProperty("width", w)
+            app.processEvents()
+            row = a_row()
+            assert row is not None, "항목 줄을 못 찾음"
+            assert row.property("roomy") is roomy, f"{w}px 에서 roomy={roomy} 가 아니다"
+            # 칸들이 줄보다 넓으면 ✕ 가 밖으로 밀린다
+            inner = row.findChildren(QObject)
+            wide = [c for c in inner
+                    if c.property("x") is not None and c.property("width") is not None
+                    and c.property("visible") is True
+                    and c.property("x") + c.property("width") > row.property("width") + 1]
+            assert not wide, f"{w}px 에서 줄 밖으로 삐져나온 것이 있다 ({len(wide)}개)"
+    finally:
+        qInstallMessageHandler(None)
+
+    bad = [m for m in msgs if any(w in m for w in BAD)]
+    assert not bad, "QML 이 투덜댑니다:\n" + "\n".join(bad)

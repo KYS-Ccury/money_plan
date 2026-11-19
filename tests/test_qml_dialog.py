@@ -746,3 +746,37 @@ def test_calendar_view_toggle():
     view.setProperty("viewMode", "calendar")
     app.processEvents()
     assert view.property("calendarOn") is False and cal.property("visible") is False
+
+
+def test_yearly_button_moves_a_monthly_item_to_a_once_a_year_one():
+    """'해마다로 바꾸기' 가 분류를 일시 지출로 옮기고 되풀이를 12개월로 세우는지.
+
+    자동차 보험처럼 1년에 한 번 내는 돈을 고정 지출로 적으면 달마다 나가는
+    셈이 된다. 그 길을 한 번에 건너게 해 주는 단추다.
+    """
+    app, engine, backend, win = _load()
+    dlg = win.findChild(QObject, "itemDialog")
+    assert dlg is not None
+    QMetaObject.invokeMethod(win, "openAddDialog")
+    app.processEvents()
+
+    cat = dlg.findChild(QObject, "itemCategory")
+    cat.setProperty("currentIndex", _cat_row(backend, "고정 지출"))
+    app.processEvents()
+    assert dlg.property("canRepeat") is False          # 매달 나가는 분류에는 되풀이가 없다
+    assert win.findChild(QObject, "makeYearlyButton") is not None
+
+    dlg.setProperty("amount", 1_200_000)
+    QMetaObject.invokeMethod(dlg, "makeYearly")
+    app.processEvents()
+
+    assert dlg.property("every") == 12
+    assert dlg.property("canRepeat") is True
+
+    before = backend.itemCount
+    QMetaObject.invokeMethod(dlg, "submit")
+    app.processEvents()
+    assert backend.itemCount == before + 1
+    it = backend._ws.plan.items[-1]
+    assert it.category.value == "일시 지출" and it.every == 12 and it.repeats
+    assert it.amount == 1_200_000
