@@ -22,6 +22,8 @@ ColumnLayout {
     // 화면에 보이는 값. 기다리는 동안에는 슬라이더를 따라가고, 반영되면 value 와 같아진다
     property real shown: value
     property alias inputField: field     // 테스트에서 입력칸을 직접 건드릴 때
+    // 아주 좁아지면 ＋/− 를 숨긴다 (슬라이더와 직접 입력으로 충분하다)
+    readonly property bool roomy: root.width > 300
     signal edited(real newValue)
 
     spacing: 2
@@ -81,60 +83,28 @@ ColumnLayout {
         if (!isNaN(v)) root.commit(v)
     }
 
+    // 숫자 칸을 **라벨 줄에** 둔다.
+    // 예전에는 슬라이더와 같은 줄이어서, 좁아지면 뒤쪽(＋·단위)이 잘려 나갔다.
+    // 게다가 같은 숫자를 두 군데(오른쪽 글씨 · 입력칸)에서 보여 주고 있었다.
     RowLayout {
         Layout.fillWidth: true
-        Text { text: root.label; color: Theme.textDim; font.pixelSize: 12; visible: root.label !== "" }
-        Item { Layout.fillWidth: true }
+        spacing: 6
+
         Text {
-            text: root.fmt(root.shown)
-            color: Theme.text; font.pixelSize: 12; font.bold: true
-            // 아직 반영 전이면 살짝 흐리게 — 기다리는 중이라는 표시
-            opacity: dragTimer.running ? 0.65 : 1
-            Behavior on opacity { NumberAnimation { duration: Theme.fast } }
-        }
-    }
-
-    RowLayout {
-        Layout.fillWidth: true
-        spacing: 10
-
-        Slider {
-            id: slider
+            text: root.label
+            visible: root.label !== ""
+            color: Theme.textDim; font.pixelSize: 12
+            elide: Text.ElideRight
             Layout.fillWidth: true
-            from: root.from
-            to: root.to
-            stepSize: root.stepSize
-            value: root.value
-            snapMode: Slider.SnapAlways
-            onMoved: {
-                root.shown = value
-                if (root.dragDelay > 0) dragTimer.restart()   // 멈출 때까지 기다린다
-                else root.commit(value)
-            }
-            // 손을 떼면 기다리지 않고 바로 반영한다
-            onPressedChanged: {
-                if (pressed) return
-                dragTimer.stop()
-                root.commit(value)
-            }
-
-            // 값 라벨이 핸들 위에 따라다닌다 (드래그 중에만)
-            Rectangle {
-                visible: slider.pressed || dragTimer.running
-                x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width)
-                y: -height - 4
-                width: tip.implicitWidth + 12; height: tip.implicitHeight + 6
-                radius: 6; color: Theme.accent
-                opacity: slider.pressed ? 1 : 0
-                Behavior on opacity { NumberAnimation { duration: Theme.fast } }
-                Text { id: tip; anchors.centerIn: parent; text: root.fmt(slider.value); color: "white"; font.pixelSize: 11 }
-            }
+            Layout.minimumWidth: 0
         }
+        Item { Layout.fillWidth: true; visible: root.label === "" }
 
         ToolButton {
             text: "−"
             font.pixelSize: 16
             implicitWidth: 34; implicitHeight: 34
+            visible: root.roomy
             enabled: root.value > root.from
             autoRepeat: true                     // 누르고 있으면 계속 줄어든다
             onClicked: root.stepBy(-1)
@@ -145,9 +115,14 @@ ColumnLayout {
         TextField {
             id: field
             Layout.preferredWidth: root.fieldWidth
+            Layout.maximumWidth: root.fieldWidth
+            Layout.minimumWidth: 70              // 좁아져도 숫자는 보이게
             implicitHeight: 40
             topPadding: 8; bottomPadding: 8
             horizontalAlignment: Text.AlignRight
+            // 아직 반영 전이면 살짝 흐리게 — 기다리는 중이라는 표시
+            opacity: dragTimer.running ? 0.7 : 1
+            Behavior on opacity { NumberAnimation { duration: Theme.fast } }
             validator: RegularExpressionValidator { regularExpression: root.decimals > 0 ? /[0-9,]*\.?[0-9]*/ : /[0-9,]*/ }
             inputMethodHints: Qt.ImhFormattedNumbersOnly
             font.pixelSize: 14
@@ -174,6 +149,7 @@ ColumnLayout {
             text: "＋"
             font.pixelSize: 14
             implicitWidth: 34; implicitHeight: 34
+            visible: root.roomy
             autoRepeat: true                     // 누르고 있으면 계속 늘어난다
             onClicked: root.stepBy(1)
             ToolTip.visible: hovered; ToolTip.delay: 700
@@ -181,5 +157,39 @@ ColumnLayout {
         }
 
         Text { text: root.suffix; color: Theme.textDim; visible: root.suffix !== "" }
+    }
+
+    // 슬라이더는 제 줄을 통째로 쓴다 (좁아져도 잘릴 것이 없다)
+    Slider {
+        id: slider
+        Layout.fillWidth: true
+        from: root.from
+        to: root.to
+        stepSize: root.stepSize
+        value: root.value
+        snapMode: Slider.SnapAlways
+        onMoved: {
+            root.shown = value
+            if (root.dragDelay > 0) dragTimer.restart()   // 멈출 때까지 기다린다
+            else root.commit(value)
+        }
+        // 손을 떼면 기다리지 않고 바로 반영한다
+        onPressedChanged: {
+            if (pressed) return
+            dragTimer.stop()
+            root.commit(value)
+        }
+
+        // 값 라벨이 핸들 위에 따라다닌다 (드래그 중에만)
+        Rectangle {
+            visible: slider.pressed || dragTimer.running
+            x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width)
+            y: -height - 4
+            width: tip.implicitWidth + 12; height: tip.implicitHeight + 6
+            radius: 6; color: Theme.accent
+            opacity: slider.pressed ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: Theme.fast } }
+            Text { id: tip; anchors.centerIn: parent; text: root.fmt(slider.value); color: "white"; font.pixelSize: 11 }
+        }
     }
 }

@@ -16,7 +16,8 @@ import re
 from pathlib import Path
 
 from .import_ledger import _clean, _decode, _rows_from_csv, parse_amount, parse_date_text, read_table
-from .model import CATEGORY_ALIASES, CATEGORY_INFO, HOUSING_TYPE_LIST, Category
+from .model import (CATEGORY_ALIASES, CATEGORY_INFO, HOUSING_BUY, HOUSING_TYPE_LIST,
+                    Category)
 
 # 머리글 이름 짝짓기. 이름에 이 조각이 들어 있으면 그 칸으로 본다.
 # **순서가 중요하다**: '월 지원금' 이 '원금'(금액) 으로 잡히지 않도록 지원금을 먼저,
@@ -253,7 +254,30 @@ def rows_from_table(rows: list[list[str]], default_year: int | None = None) -> t
             note=_clean(cell(row, "note")),
             category_text=cat_text,
         ))
-    return out, problems
+    return split_rent_rows(out), problems
+
+
+def split_rent_rows(rows: list[dict]) -> list[dict]:
+    """'주거' 줄에 월세가 함께 적혀 있으면 월세 줄을 따로 만든다.
+
+    주거 항목에는 월세 칸이 없다 (월세는 '월세' 분류로 선다). 가져온 것도 같은
+    모양이 되게 한 줄을 보증금 줄 + 월세 줄 둘로 갈라 놓는다. 미리보기도 둘로
+    보이므로 '몇 개를 넣습니다' 와 실제로 들어가는 수가 어긋나지 않는다.
+    """
+    out: list[dict] = []
+    for r in rows:
+        rent = r.get("monthly") or 0.0
+        if (r["category"] == Category.DEPOSIT.value and rent > 0
+                and r.get("housing") != HOUSING_BUY):
+            r = dict(r)
+            r["monthly"] = 0.0
+            out.append(r)
+            out.append(_row_dict(f"{r['name']} 월세".strip(), Category.RENT, "", rent,
+                                 start=r.get("start", ""), end=r.get("end", ""),
+                                 category_text="월세"))
+            continue
+        out.append(r)
+    return out
 
 
 # ───────────────────────── 머리글이 없는 글 (메모장)

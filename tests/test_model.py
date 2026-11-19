@@ -433,18 +433,21 @@ def test_housing_types():
     assert p.monthly_cost_at(6) == 0
     assert p.net_at(3) == 200_000_000 and p.net_at(27) == 300_000_000
 
-    # 반전세: 보증금 + 월세. 월세는 입주~만기 구간에만
-    j.housing_type, j.monthly = "banjeonse", 600_000
-    assert j.housing_rent() == 600_000
+    # 반전세: 보증금은 주거 항목, 월세는 '월세' 분류로 따로 선다.
+    # (주거 항목에도 월세 칸이 있으면 넣는 길이 둘이어서 어디가 맞는지 알 수 없다)
+    j.housing_type = "banjeonse"
+    rent = p.add(Item("전셋집 월세", Category.RENT, 600_000,
+                      start_date="2026-04-01", end_date="2028-04-01"))
     assert p.monthly_cost_at(2) == 0           # 입주 전
     assert p.monthly_cost_at(3) == 600_000
     assert p.monthly_cost_at(26) == 600_000
     assert p.monthly_cost_at(27) == 0          # 만기 이후
     assert p.net_at(27) == 300_000_000 - 600_000 * 24
 
-    # 매매: 돌려받지 않고 월세도 없다
+    # 매매: 돌려받지 않는다
+    p.items.remove(rent)
     j.housing_type = "buy"
-    assert j.is_purchase and not j.returnable and j.housing_rent() == 0
+    assert j.is_purchase and not j.returnable
     assert j.return_month(p.basis) is None     # 만기가 있어도 무시
     assert p.net_at(27) == 200_000_000
 
@@ -534,7 +537,8 @@ def test_past_once_costs_are_not_counted_again():
     p.add(Item("현금", Category.CASH, 5_000_000))
     # 2023-12 에 들어간 반전세 보증금, 만기 없음
     old = p.add(Item("전셋집", Category.DEPOSIT, 25_000_000, housing_type="banjeonse",
-                     monthly=300_000, start_date="2023-12-01"))
+                     start_date="2023-12-01"))
+    rent = p.add(Item("전셋집 월세", Category.RENT, 300_000, start_date="2023-12-01"))
     assert old.once_month(p.basis) < 0
     assert p.once_cost_at(0) == 0 and p.net_at(0) == 5_000_000
     assert p.summary().once_cost == 0
@@ -542,7 +546,7 @@ def test_past_once_costs_are_not_counted_again():
     assert p.monthly_cost_at(0) == 300_000
 
     # 만기를 넣으면 그 달에 돌려받는 것만 들어온다
-    old.end_date = "2027-04-01"
+    old.end_date = rent.end_date = "2027-04-01"
     assert old.return_month(p.basis) == 6      # 기준일이 28일이라 4월 1일은 아직 5개월째
     assert p.once_cost_at(6) == 0                       # 낸 적 없는 돈처럼 취급
     assert p.once_income_at(5) == 0 and p.once_income_at(6) == 25_000_000
@@ -551,6 +555,7 @@ def test_past_once_costs_are_not_counted_again():
 
     # 이미 돌려받은 보증금은 아무 영향이 없다
     old.start_date, old.end_date = "2023-12-01", "2025-12-01"
+    rent.start_date, rent.end_date = "2023-12-01", "2025-12-01"
     assert p.once_cost_at(0) == 0 and p.once_income_at(12) == 0
     assert p.net_at(0) == 5_000_000
 
@@ -561,7 +566,7 @@ def test_pending_inflows():
     p.add(Item("현금", Category.CASH, 1_000_000))
     late = p.add(Item("전셋집", Category.DEPOSIT, 20_000_000, housing_type="jeonse",
                       start_date="2025-01-01", end_date="2027-01-01"))     # 12개월 뒤 반환
-    soon = p.add(Item("원룸", Category.DEPOSIT, 5_000_000, housing_type="wolse", monthly=300_000,
+    soon = p.add(Item("원룸", Category.DEPOSIT, 5_000_000, housing_type="wolse",
                       start_date="2025-06-01", end_date="2026-04-01"))     # 3개월 뒤 반환 (기간 안)
     loan = p.add(Item("전세자금대출", Category.LOAN, 90_000_000, rate=2.0,
                       start_date="2026-11-01"))                            # 10개월 뒤 실행
@@ -798,7 +803,9 @@ def test_net_series_matches_net_at():
     p.add(Item("현금", Category.CASH, 30_000_000))
     p.add(Item("급여", Category.INCOME, 2_000_000, growth=5.0, start_date="2026-03-01"))
     p.add(Item("생활비", Category.FIXED, 900_000))
-    p.add(Item("전셋집", Category.DEPOSIT, 20_000_000, housing_type="banjeonse", monthly=400_000,
+    p.add(Item("전셋집", Category.DEPOSIT, 20_000_000, housing_type="banjeonse",
+               start_date="2026-05-01", end_date="2028-05-01"))
+    p.add(Item("전셋집 월세", Category.RENT, 400_000,
                start_date="2026-05-01", end_date="2028-05-01"))
     p.add(Item("대출", Category.LOAN, 50_000_000, rate=3.5, start_date="2026-05-01",
                end_date="2031-05-01", repay_method="equal_principal"))
@@ -989,3 +996,76 @@ def test_numbers_do_not_move_when_categories_are_regrouped():
     assert CATEGORY_LIST == list(Category)
     assert CATEGORY_LIST.index(Category.CASH) == 0
     assert CATEGORY_LIST.index(Category.EXPENSE) == len(CATEGORY_LIST) - 1
+
+
+def test_old_housing_rent_becomes_its_own_item_when_loaded():
+    """예전 파일의 '주거에 딸린 월세' 는 불러올 때 월세 항목으로 갈라진다.
+
+    숫자가 그대로여야 한다 — 주거의 월세가 나가던 구간과 월세 항목의 적용
+    구간이 같은 식이기 때문이다.
+    """
+    old = {"months": 36, "start_date": "2026-01-01", "items": [
+        {"name": "현금", "category": "현금/자산", "amount": 300_000_000},
+        {"name": "전셋집", "category": "주거", "amount": 100_000_000,
+         "housing_type": "banjeonse", "monthly": 600_000,
+         "start_date": "2026-04-01", "end_date": "2028-04-01"},
+    ]}
+    p = Plan.from_dict(old)
+    assert [i.name for i in p.items] == ["현금", "전셋집", "전셋집 월세"]
+    dep, rent = p.items[1], p.items[2]
+    assert dep.category == Category.DEPOSIT and dep.monthly == 0
+    assert rent.category == Category.RENT and rent.amount == 600_000
+    assert (rent.start_date, rent.end_date) == ("2026-04-01", "2028-04-01")
+
+    # 손으로 두 항목을 넣은 것과 숫자가 같다
+    same = Plan(months=36, start_date="2026-01-01")
+    same.add(Item("현금", Category.CASH, 300_000_000))
+    same.add(Item("전셋집", Category.DEPOSIT, 100_000_000, housing_type="banjeonse",
+                  start_date="2026-04-01", end_date="2028-04-01"))
+    same.add(Item("전셋집 월세", Category.RENT, 600_000,
+                  start_date="2026-04-01", end_date="2028-04-01"))
+    assert p.net_series(40) == same.net_series(40)
+
+    # 다시 저장했다 불러도 또 갈라지지 않는다
+    assert len(Plan.from_dict(p.to_dict()).items) == 3
+
+    # 매매는 예전에도 월세가 안 나갔으므로 갈라지지 않는다 (죽은 값만 지운다)
+    buy = Plan.from_dict({"months": 12, "start_date": "2026-01-01", "items": [
+        {"name": "집", "category": "주거", "amount": 1, "housing_type": "buy",
+         "monthly": 9}]})
+    assert len(buy.items) == 1 and buy.items[0].monthly == 0
+
+    # 꺼 둔 주거의 월세도 꺼진 채로 갈라진다
+    off = Plan.from_dict({"months": 12, "start_date": "2026-01-01", "items": [
+        {"name": "원룸", "category": "주거", "amount": 5_000_000, "housing_type": "wolse",
+         "monthly": 400_000, "active": False}]})
+    assert len(off.items) == 2 and off.items[1].active is False
+    assert off.monthly_cost_at(0) == 0
+
+
+def test_pay_day_is_kept_only_where_it_means_something():
+    """'매달 며칠' 은 매달 오가는 돈에서만 쓴다. 숫자는 바꾸지 않는다."""
+    pay = Item("급여", Category.INCOME, 2_000_000, pay_day=25)
+    assert pay.pay_day == 25
+    rent = Item("월세", Category.RENT, 600_000, pay_day=1)
+    assert rent.pay_day == 1
+    saving = Item("청약", Category.SAVING, 200_000, pay_day=5)
+    assert saving.pay_day == 5
+
+    # 한 번만 오가는 돈·자본에는 뜻이 없다
+    assert Item("성과급", Category.INCOME_ONCE, 1, pay_day=25).pay_day == 0
+    assert Item("현금", Category.CASH, 1, pay_day=25).pay_day == 0
+    # 말도 안 되는 값은 다듬는다
+    assert Item("급여", Category.INCOME, 1, pay_day=99).pay_day == 31
+    assert Item("급여", Category.INCOME, 1, pay_day=-3).pay_day == 0
+
+    # 계산은 달 단위라 그대로다
+    p = Plan(months=12, start_date="2026-01-01")
+    p.add(Item("급여", Category.INCOME, 2_000_000, pay_day=25))
+    q = Plan(months=12, start_date="2026-01-01")
+    q.add(Item("급여", Category.INCOME, 2_000_000))
+    assert p.net_series(12) == q.net_series(12)
+
+    # 저장했다 불러도 남는다
+    assert Item.from_dict(pay.to_dict()).pay_day == 25
+    assert Item.from_dict({"name": "옛날", "category": "월 수입", "amount": 1}).pay_day == 0

@@ -366,25 +366,29 @@ def test_backend_housing():
     assert b.categoryInfo(9)["isHousing"] and not b.categoryInfo(10)["isHousing"]
 
     hi = b.housingInfo("buy")
-    assert hi["amountLabel"] == "매매가" and not hi["returnable"] and not hi["usesRent"]
-    assert b.housingInfo("banjeonse")["usesRent"] and b.housingInfo("")["label"] == "전세"
+    assert hi["amountLabel"] == "매매가" and not hi["returnable"]
+    assert b.housingInfo("")["label"] == "전세"
+    assert "월세" in b.housingInfo("banjeonse")["hint"]     # 월세는 따로 넣으라고 알려 준다
 
     b.addItem("현금", 0, 300_000_000, 0, True)
-    # 9 = 주거, 반전세 보증금 1억 + 월세 60만, 2026-04 입주 ~ 2028-04 만기
-    b.addItem("신혼집", 9, 100_000_000, 0, True, "2026-04-01", "2028-04-01", "[]", 0, "", "banjeonse", 600_000)
+    # 9 = 주거(보증금). 반전세 보증금 1억, 2026-04 입주 ~ 2028-04 만기
+    b.addItem("신혼집", 9, 100_000_000, 0, True, "2026-04-01", "2028-04-01", "[]", 0, "", "banjeonse")
     idx = b.items.index(1, 0)
     assert b.items.data(idx, b.items.HousingTypeRole) == "banjeonse"
-    assert b.items.data(idx, b.items.MonthlyRole) == 600_000
+    assert b.items.data(idx, b.items.MonthlyRole) == 0            # 월세 칸은 없앴다
     sub = b.items.data(idx, b.items.SubTextRole)
-    assert "반전세 · 2026-04 입주" in sub and "월세 600,000원" in sub and "2028-04 반환" in sub
-    assert b.netAt(3) == 200_000_000 and b.netAt(27) == 300_000_000 - 600_000 * 24
+    assert "반전세 · 2026-04 입주" in sub and "2028-04 반환" in sub
+    assert "월세" not in sub
+    assert b.netAt(3) == 200_000_000 and b.netAt(27) == 300_000_000
 
-    # 매매로 바꾸면 월세가 사라지고 돌려받지 않는다
-    b.updateItem(1, "신혼집", 9, 100_000_000, 0, True, "2026-04-01", "2028-04-01", "[]", 0, "", "buy", 600_000)
-    idx = b.items.index(1, 0)
-    assert b.items.data(idx, b.items.MonthlyRole) == 600_000      # 값은 남아 있지만
-    assert b.netAt(6) == 200_000_000                               # 월세로 나가지 않고
-    assert b.netAt(27) == 200_000_000                              # 돌려받지도 않는다
+    # 월세는 '월세' 분류로 따로 선다 (6 = 월세)
+    b.addItem("신혼집 월세", 6, 600_000, 0, True, "2026-04-01", "2028-04-01")
+    assert b.netAt(3) == 200_000_000
+    assert b.netAt(27) == 300_000_000 - 600_000 * 24
+
+    # 매매로 바꾸면 돌려받지 않는다 (월세 항목은 그대로 나간다)
+    b.updateItem(1, "신혼집", 9, 100_000_000, 0, True, "2026-04-01", "2028-04-01", "[]", 0, "", "buy")
+    assert b.netAt(27) == 200_000_000 - 600_000 * 24
 
 
 def test_backend_saving():
@@ -884,7 +888,8 @@ def test_import_plan_to_ledger():
     b.failed.connect(fails.append)
 
     added = b.importPlanToLedger()
-    assert added == 7 and b.ledgerSummary["count"] == 7      # 현금·예금은 빠진다
+    # 현금·예금은 빠진다. 전셋집은 보증금과 월세 두 항목이다
+    assert added == 8 and b.ledgerSummary["count"] == 8
     names = {b.ledgerItems.data(b.ledgerItems.index(r, 0), b.ledgerItems.NameRole)
              for r in range(b.ledgerItems.rowCount())}
     assert "보유 현금" not in names and "급여" in names
@@ -892,12 +897,12 @@ def test_import_plan_to_ledger():
     # 두 번째는 전부 건너뛴다
     assert b.importPlanToLedger() == 0
     assert "이미 가계부에 있습니다" in fails[-1]
-    assert b.ledgerSummary["count"] == 7
+    assert b.ledgerSummary["count"] == 8
 
     # 하나를 지우면 그것만 다시 들어온다
     b.removeEntry(0)
     assert b.importPlanToLedger() == 1
-    assert b.ledgerSummary["count"] == 7
+    assert b.ledgerSummary["count"] == 8
 
     # 기록할 게 없으면 알린다
     b3 = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
@@ -2414,3 +2419,28 @@ def test_plan_and_ledger_now_share_the_same_names():
     # 항목 팝업의 '자동' 안내도 새 이름을 말한다
     head = b.ledgerCategoryChoices(CATEGORY_LIST.index(Category.RENT))[0]["label"]
     assert "월세" in head
+
+
+def test_salary_goes_into_the_ledger_on_its_pay_day():
+    """'매달 며칠' 을 정해 두면 가계부에 그 날짜로 적힌다."""
+    b = Backend(Plan(months=12, start_date="2026-01-01"))
+    b.ledgerYear, b.ledgerMonth = "2026", 2
+    # 4 = 월 수입, 6 = 월세
+    b.addItem("급여", 4, 2_000_000, 0, True, "", "", "[]", 0, "", "", 0, 0, 0, False, 0, "", False,
+              False, 25)
+    b.addItem("월세", 6, 600_000, 0, True, "", "", "[]", 0, "", "", 0, 0, 0, False, 0, "", False,
+              False, 1)
+    idx = b.items.index(0, 0)
+    assert b.items.data(idx, b.items.PayDayRole) == 25
+    assert "매달 25일" in b.items.data(idx, b.items.SubTextRole)
+
+    assert b.importPlanToLedger() == 2
+    got = {e.name: e.date for e in b._ws.ledger.entries}
+    assert got["급여"] == "2026-02-25" and got["월세"] == "2026-02-01"
+
+    # 정하지 않으면 예전처럼 오늘 날짜
+    b2 = Backend(Plan(months=12, start_date="2026-01-01"))
+    b2.ledgerYear, b2.ledgerMonth = "2026", 2
+    b2.addItem("급여", 4, 2_000_000, 0, True)
+    assert b2.importPlanToLedger() == 1
+    assert b2._ws.ledger.entries[0].date.startswith("2026-02-")

@@ -239,3 +239,53 @@ def test_overview_is_kept_alive_but_goes_quiet_while_hidden():
 
     bad = [m for m in msgs if any(w in m for w in BAD)]
     assert not bad, "QML 이 투덜댑니다:\n" + "\n".join(bad)
+
+
+def test_header_keeps_its_room_and_rearranges_when_the_window_is_small():
+    """창을 줄여도 상단 바가 눌려 잘리지 않고, 설정 줄이 나뉘어 내려앉는지.
+
+    목표 자본금 칸이 창 아래쪽에서 잘려 보이던 일이 있었다 — 상단 카드에
+    최소 높이가 없어서 세로로 눌렸기 때문이다.
+    """
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    msgs: list[str] = []
+    qInstallMessageHandler(lambda mode, ctx, text: msgs.append(text))
+    try:
+        backend = Backend()
+        backend.loadSample()
+        engine = QQmlApplicationEngine()
+        engine.addImportPath(str(ROOT))
+        engine.rootContext().setContextProperty("backend", backend)
+        engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+        assert engine.rootObjects(), "QML 로드 실패"
+        win = engine.rootObjects()[0]
+        app.processEvents()
+
+        card = win.findChild(QObject, "headerCard")
+        grid = win.findChild(QObject, "settingsGrid")
+        bar = win.findChild(QObject, "toolbarFlow")
+        assert card is not None and grid is not None and bar is not None
+
+        win.setProperty("width", 1400)
+        app.processEvents()
+        wide_bar = bar.property("height")
+        win.setProperty("width", 700)
+        app.processEvents()
+        # 단추 줄은 좁아지면 아래로 접힌다 (창 밖으로 밀려 나가지 않는다)
+        assert bar.property("height") > wide_bar, "단추 줄이 줄바꿈되지 않았다"
+        assert bar.property("width") <= card.property("width")
+
+        for w, h, cols in ((1400, 900, 4), (1000, 700, 2), (760, 560, 1)):
+            win.setProperty("width", w)
+            win.setProperty("height", h)
+            app.processEvents()
+            assert grid.property("columns") == cols, f"{w}px 에서 {cols}줄이 아니다"
+            # 눌려서 안의 내용보다 작아지면 아랫줄이 잘린다
+            inner = grid.property("y") + grid.property("height")
+            assert card.property("height") >= inner, f"{w}x{h} 에서 상단 바가 눌렸다"
+    finally:
+        qInstallMessageHandler(None)
+
+    bad = [m for m in msgs if any(w in m for w in BAD)]
+    assert not bad, "QML 이 투덜댑니다:\n" + "\n".join(bad)

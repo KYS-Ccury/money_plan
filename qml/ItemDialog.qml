@@ -22,6 +22,7 @@ Popup {
     property string startDate: ""
     property string onceDate: ""        // 일시 지출·일시 수입의 지출일/수입일
     property int every: 0               // 일시 지출·수입이 몇 개월마다 되풀이되는지 (0 = 한 번만)
+    property int payDay: 0              // 매달 며칠에 오가는지 (0 = 정하지 않음)
     property string ledgerCategory: ""  // 가계부에서 볼 분류 ("" = 분류표대로 자동)
     property bool afterTax: false       // 이자에서 이자소득세를 뗄지
     property bool compound: false       // 이자를 복리로 굴릴지
@@ -32,7 +33,7 @@ Popup {
     property real monthlyRepayRate: 0
     property string repayMethod: "bullet"
     property string housingType: "jeonse"   // 전세 / 반전세 / 월세 / 매매
-    property real monthly: 0                // 주거의 월세
+    property real monthly: 0                // 예전 파일에서 온 값. 보여 주지 않는다
     property real growth: 0                 // 연 상승률 % (급여 인상, 물가·월세 인상)
     property real support: 0                // 적금 월 지원금 (청년도약계좌처럼 보태 주는 돈)
     property bool locked: false             // 만기 전까지 못 쓰는 돈으로 볼지 (적금)
@@ -91,6 +92,7 @@ Popup {
         endDate = ""
         onceDate = ""
         every = 0
+        payDay = 0
         setLedgerCategory("")
         afterTax = dlg.info.hasInterest === true   // 분류를 바꾸면 그때 다시 잡는다
         compound = false
@@ -115,7 +117,7 @@ Popup {
     }
     function openForEdit(row, name, catIndex, amount, rate, includePrincipal, startDate, endDate, repayments,
                          monthlyRepayRate, repayMethod, housingType, monthly, growth, support, locked, every,
-                         ledgerCategory, afterTax, compound) {
+                         ledgerCategory, afterTax, compound, payDay) {
         editRow = row
         nameField.text = name
         setCategory(catIndex)
@@ -133,6 +135,7 @@ Popup {
         dlg.support = support || 0
         dlg.locked = locked === true
         dlg.every = every || 0
+        dlg.payDay = payDay || 0
         setLedgerCategory(ledgerCategory || "")
         dlg.afterTax = afterTax === true
         dlg.compound = compound === true
@@ -160,16 +163,18 @@ Popup {
         var repeating = dlg.canRepeat && dlg.every > 0
         var ed = (dlg.info.dateMode === "range" || returnable || repeating) ? endDate : ""
         var ht = dlg.info.isHousing ? dlg.housingType : ""
-        var mo = (dlg.info.isHousing && dlg.houseInfo.usesRent) ? dlg.monthly : 0
+        var mo = 0            // 주거의 월세 칸은 없앴다 (월세 분류로 따로 넣는다)
         var gr = dlg.info.usesGrowth ? dlg.growth : 0
         var sp = dlg.info.usesSupport ? dlg.support : 0
         var lk = dlg.info.canLock ? dlg.locked : false
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
         if (editRow < 0)
-            backend.addItem(nameField.text, dlg.catIndexNow(), amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound)
+            backend.addItem(nameField.text, dlg.catIndexNow(), amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound,
+                           dlg.info.usesPayDay ? dlg.payDay : 0)
         else
-            backend.updateItem(editRow, nameField.text, dlg.catIndexNow(), amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound)
+            backend.updateItem(editRow, nameField.text, dlg.catIndexNow(), amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound,
+                               dlg.info.usesPayDay ? dlg.payDay : 0)
         close()
     }
 
@@ -309,15 +314,36 @@ Popup {
                 onEdited: (v) => dlg.amount = v
             }
 
-            SliderInput {
-                objectName: "rentInput"
-                visible: dlg.info.isHousing && dlg.houseInfo.usesRent
-                label: "월세"
-                value: dlg.monthly
-                from: 0; to: 5000000; stepSize: 10000
-                money: true
-                suffix: "원"
-                onEdited: (v) => dlg.monthly = v
+            // ── 매달 며칠에 오가는가 ──
+            // 자본금 계산은 달 단위라 숫자는 안 바뀐다. 가계부에 적을 때 이 날짜를 쓴다.
+            RowLayout {
+                Layout.fillWidth: true
+                visible: dlg.info.usesPayDay === true
+                spacing: 8
+                Text {
+                    text: dlg.info.flow === "income" ? "받는 날" : "나가는 날"
+                    color: Theme.textDim; font.pixelSize: 12
+                }
+                ComboBox {
+                    id: payDayBox
+                    objectName: "itemPayDay"
+                    Layout.preferredWidth: 130
+                    model: {
+                        var out = [{ v: 0, t: "정하지 않음" }]
+                        for (var d = 1; d <= 31; d++) out.push({ v: d, t: d + "일" })
+                        return out
+                    }
+                    textRole: "t"
+                    valueRole: "v"
+                    currentIndex: dlg.payDay
+                    onActivated: dlg.payDay = payDayBox.currentValue
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "가계부에 적을 때 이 날짜로 들어갑니다 (계산은 달 단위라 그대로입니다)"
+                    color: Theme.textDim; font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                }
             }
 
             // ── 월 지원금 (청년도약계좌처럼 남이 보태 주는 돈) ──

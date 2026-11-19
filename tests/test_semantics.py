@@ -93,9 +93,11 @@ def test_jeonse_deposit_comes_back_whole():
 
 
 def test_banjeonse_takes_deposit_and_rent():
+    """반전세는 보증금 항목 + 월세 항목 둘이다 (주거 항목에 월세 칸은 없다)."""
     p = mk(12, Item("현금", Category.CASH, 50_000_000),
-               Item("반전세", Category.DEPOSIT, 20_000_000, housing_type="banjeonse",
-                    monthly=500_000, start_date=BASIS))
+               Item("반전세 보증금", Category.DEPOSIT, 20_000_000, housing_type="banjeonse",
+                    start_date=BASIS),
+               Item("반전세 월세", Category.RENT, 500_000, start_date=BASIS))
     assert near(p.net_at(6), 50_000_000 - 20_000_000 - 500_000 * 6)
 
 

@@ -62,17 +62,20 @@ HOUSING_TYPE_LIST: list[tuple[str, str]] = [
 ]
 HOUSING_TYPES: dict[str, str] = dict(HOUSING_TYPE_LIST)
 HOUSING_WITH_RENT = ("banjeonse", "wolse")   # 월세를 함께 내는 형태
+# (월세 금액 자체는 '월세' 분류로 따로 선다 — 주거 항목에는 월세 칸이 없다)
 HOUSING_BUY = "buy"
 
 # 주거 형태별 입력 안내
 HOUSING_INFO: dict[str, dict] = {
-    "jeonse": {"amount_label": "보증금", "uses_rent": False, "returnable": True,
+    "jeonse": {"amount_label": "보증금", "returnable": True,
                "hint": "보증금만 내고 월세가 없습니다. 만기에 보증금을 돌려받습니다"},
-    "banjeonse": {"amount_label": "보증금", "uses_rent": True, "returnable": True,
-                  "hint": "보증금과 월세를 함께 냅니다. 만기에 보증금을 돌려받습니다"},
-    "wolse": {"amount_label": "보증금", "uses_rent": True, "returnable": True,
-              "hint": "보증금은 적고 월세가 큽니다. 만기에 보증금을 돌려받습니다"},
-    "buy": {"amount_label": "매매가", "uses_rent": False, "returnable": False,
+    "banjeonse": {"amount_label": "보증금", "returnable": True,
+                  "hint": "보증금과 월세를 함께 냅니다. 여기에는 보증금만 넣고, "
+                          "월세는 '월세' 분류로 따로 넣으세요. 만기에 보증금을 돌려받습니다"},
+    "wolse": {"amount_label": "보증금", "returnable": True,
+              "hint": "보증금은 적고 월세가 큽니다. 여기에는 보증금만 넣고, "
+                      "월세는 '월세' 분류로 따로 넣으세요. 만기에 보증금을 돌려받습니다"},
+    "buy": {"amount_label": "매매가", "returnable": False,
             "hint": "집값이 그대로 나가고 돌려받지 않습니다. 취득세·중개수수료는 일시 지출로 따로 넣으세요"},
 }
 
@@ -92,6 +95,9 @@ SHAPE_MONTHLY_COST = "monthly_cost"    # 적용 기간 동안 매달 나간다
 SHAPE_MONTHLY_INCOME = "monthly_income"  # 적용 기간 동안 매달 들어온다
 SHAPE_ONCE_COST = "once_cost"          # 한 번 나간다 (되풀이 가능)
 SHAPE_ONCE_INCOME = "once_income"      # 한 번 들어온다 (되풀이 가능)
+
+# 매달 같은 날 오가는 성격 (받는 날·내는 날을 정할 수 있다)
+MONTHLY_SHAPES = (SHAPE_MONTHLY_COST, SHAPE_MONTHLY_INCOME, SHAPE_SAVE)
 
 # 분류별 특성
 #   amount_label : 금액 입력칸 이름
@@ -271,7 +277,9 @@ class Item:
     monthly_repay_rate: float = 0.0  # 매달 원금의 몇 % 씩 정기 상환 ("rate" 방식에서만)
     repay_method: str = ""           # 상환 방식. "" 이면 자동 (상환율이 있으면 rate, 없으면 bullet)
     housing_type: str = ""           # 주거 형태 (전세/반전세/월세/매매). 주거 항목에서만 사용
-    monthly: float = 0.0             # 주거의 월세 (반전세·월세에서만)
+    # 예전 파일의 '주거에 딸린 월세'. 이제 계산에 쓰지 않는다 — 불러올 때
+    # split_housing_rent() 가 '월세' 항목으로 갈라내고 이 칸을 0 으로 만든다.
+    monthly: float = 0.0
     growth: float = 0.0              # 연 상승률 % (급여 인상, 물가·월세 인상). 해마다 한 번 오른다
     support: float = 0.0             # 월 지원금 (청년도약계좌처럼 남이 보태 주는 돈). 내 돈은 안 나가고 잔액만 는다
     locked: bool = False             # 만기 전까지 못 쓰는 돈으로 볼지 (적금). 만기가 있어야 적용된다
@@ -280,6 +288,10 @@ class Item:
     ledger_category: str = ""        # 가계부에서는 어느 분류로 볼지 (비우면 분류표대로 자동)
     after_tax: bool = False          # 이자에서 이자소득세 15.4% 를 뗄지 (비과세 상품이면 끈다)
     compound: bool = False           # 이자를 복리로 굴릴지 (끄면 단리)
+    # 매달 며칠에 오가는 돈인지 (1~31, 0 = 정하지 않음).
+    # 자본금 계산은 **달 단위**라 이 값이 숫자를 바꾸지는 않는다. 가계부에 적을 때
+    # 그 날짜를 쓰고, 화면에 '매달 25일' 로 보여 준다.
+    pay_day: int = 0
 
     def __post_init__(self) -> None:
         if self.repay_method not in REPAY_METHODS:
@@ -295,6 +307,11 @@ class Item:
             self.support = 0.0
         if self.category != Category.SAVING:
             self.locked = False
+        # 날짜는 매달 오가는 돈에서만 뜻이 있다
+        if CATEGORY_INFO[self.category]["shape"] not in MONTHLY_SHAPES:
+            self.pay_day = 0
+        else:
+            self.pay_day = min(31, max(0, int(self.pay_day or 0)))
 
     # ---- 기본 파생 값 ----
     def monthly_interest(self) -> float:
@@ -415,7 +432,11 @@ class Item:
         return HOUSING_TYPES.get(self.housing_type, "")
 
     def housing_rent(self) -> float:
-        """주거 항목의 월세. 전세·매매면 0."""
+        """예전 파일에 딸려 온 월세. 전세·매매면 0.
+
+        계산은 이 값을 보지 않는다 (월세는 제 항목으로 선다). 불러올 때
+        갈라내는 split_housing_rent() 만 이 값을 읽는다.
+        """
         if self.is_housing and self.housing_type in HOUSING_WITH_RENT:
             return max(0.0, self.monthly)
         return 0.0
@@ -726,9 +747,6 @@ class Item:
     def monthly_cost_at(self, m: int, basis: date) -> float:
         if self.category == Category.SAVING:
             return self.amount if self.is_active(m, basis) else 0.0
-        if self.is_housing:
-            rent = self.housing_rent()
-            return rent if rent > 0 and self.housing_active(m, basis) else 0.0
         if self.category in MONTHLY_COST_CATEGORIES:
             return self.amount_at(m, basis) if self.is_active(m, basis) else 0.0
         if self.category == Category.LOAN:
@@ -826,6 +844,7 @@ class Item:
             locked=bool(d.get("locked", False)),
             active=bool(d.get("active", True)),
             every=int(d.get("every", 0) or 0),
+            pay_day=int(d.get("pay_day", 0) or 0),
             ledger_category=str(d.get("ledger_category") or ""),
             after_tax=bool(d.get("after_tax", False)),
             compound=bool(d.get("compound", False)),
@@ -924,6 +943,30 @@ class Summary:
             if self.net_at(self.months + extra) >= self.target:
                 return extra
         return None
+
+
+def split_housing_rent(items: list[Item]) -> list[Item]:
+    """예전 파일의 '주거 항목에 딸린 월세' 를 따로 선 월세 항목으로 갈라낸다.
+
+    월세를 넣는 길이 둘이면 (주거 항목의 월세 칸, '월세' 분류) 어디에 넣는 게
+    맞는지 알 수 없다. 그래서 칸을 없애고 길을 하나로 줄였다.
+
+    **숫자는 그대로다.** 주거의 월세가 나가던 구간(입주~만기)과 월세 항목의
+    적용 구간이 똑같은 식이기 때문이다 (housing_active 와 is_active).
+    매매는 예전에도 월세가 안 나갔으므로 갈라지지 않는다.
+    """
+    out: list[Item] = []
+    for it in items:
+        out.append(it)
+        if not it.is_housing:
+            continue
+        rent = it.housing_rent()
+        it.monthly = 0.0                 # 갈라냈으니 죽은 값을 남기지 않는다
+        if rent > 0:
+            out.append(Item(f"{it.name} 월세".strip(), Category.RENT, rent,
+                            start_date=it.start_date, end_date=it.end_date,
+                            active=it.active))
+    return out
 
 
 @dataclass
@@ -1171,7 +1214,8 @@ class Plan:
     @classmethod
     def from_dict(cls, d: dict) -> "Plan":
         return cls(
-            items=[Item.from_dict(x) for x in d.get("items", [])],
+            # 예전 파일의 '주거에 딸린 월세' 는 여기서 월세 항목으로 갈라진다
+            items=split_housing_rent([Item.from_dict(x) for x in d.get("items", [])]),
             months=int(d.get("months", 12)),
             target=float(d.get("target", 0.0)),
             inflation=float(d.get("inflation", 0.0) or 0.0),
@@ -1320,7 +1364,9 @@ def sample_plan() -> Plan:
     p.add(Item("예금 (3.5%)", Category.BANK, 10_000_000, rate=3.5))
     p.add(Item("청년도약계좌", Category.SAVING, 200_000, rate=3.0, support=300_000, locked=True,
                start_date=p.start_date, end_date=add_months(p.basis, 60).isoformat()))
-    p.add(Item("전셋집", Category.DEPOSIT, 10_000_000, housing_type="banjeonse", monthly=500_000,
+    p.add(Item("전셋집", Category.DEPOSIT, 10_000_000, housing_type="banjeonse",
+               end_date=add_months(p.basis, 24).isoformat()))
+    p.add(Item("전셋집 월세", Category.RENT, 500_000,
                end_date=add_months(p.basis, 24).isoformat()))
     p.add(Item("관리비", Category.MAINT, 100_000))
     p.add(Item("생활비 (식비·통신)", Category.FIXED, 800_000))

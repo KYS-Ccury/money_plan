@@ -141,3 +141,24 @@ def test_csv_file_is_read_from_disk(tmp_path):
     rows, problems, how = parse_file(p)
     assert len(rows) == 5 and not problems
     assert "머리글" in how
+
+
+def test_housing_row_with_rent_becomes_two_rows():
+    """'주거' 줄에 월세가 함께 적혀 있으면 보증금 줄 + 월세 줄로 갈라진다."""
+    from capital_calc.import_plan import parse_text
+
+    rows, problems, how = parse_text("\n".join([
+        "이름,분류,금액,월세,시작일,종료일",
+        "전셋집,주거 (반전세),100000000,600000,2026-04-01,2028-04-01",
+        "내집,주거 (매매),300000000,0,2026-04-01,",
+    ]))
+    assert not problems
+    assert [(r["name"], r["category"], r["amount"]) for r in rows] == [
+        ("전셋집", Category.DEPOSIT.value, 100_000_000),
+        ("전셋집 월세", Category.RENT.value, 600_000),
+        ("내집", Category.DEPOSIT.value, 300_000_000),
+    ]
+    dep, rent = rows[0], rows[1]
+    assert dep["monthly"] == 0 and dep["housing"] == "banjeonse"
+    assert (rent["start"], rent["end"]) == ("2026-04-01", "2028-04-01")
+    assert rent["housing"] == ""

@@ -36,7 +36,7 @@ from .ledger import sort_key
 from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Fixed,
                      Ledger, kind_of, month_key, prev_period, same_day_in, sample_ledger,
                      shift_month)
-from .model import (CATEGORY_TREE, INTEREST_CATEGORIES, INTEREST_TAX, ORDER_OF,
+from .model import (CATEGORY_TREE, INTEREST_CATEGORIES, INTEREST_TAX, MONTHLY_SHAPES, ORDER_OF,
                      SIDE_CAPITAL, SIDE_COST, SIDE_INCOME, group_of, side_of)
 from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
                      REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS, month_offset,
@@ -87,6 +87,7 @@ class ItemListModel(QAbstractListModel):
     LedgerCategoryRole = Qt.ItemDataRole.UserRole + 28   # 가계부에서 볼 분류 ("" = 자동)
     AfterTaxRole = Qt.ItemDataRole.UserRole + 29    # 이자에서 세금을 떼는가
     CompoundRole = Qt.ItemDataRole.UserRole + 30    # 복리인가
+    PayDayRole = Qt.ItemDataRole.UserRole + 31      # 매달 며칠에 오가는지 (0 = 정하지 않음)
 
     _ROLES = {
         NameRole: b"name",
@@ -119,6 +120,7 @@ class ItemListModel(QAbstractListModel):
         LedgerCategoryRole: b"ledgerCategory",
         AfterTaxRole: b"afterTax",
         CompoundRole: b"compound",
+        PayDayRole: b"payDay",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -185,6 +187,8 @@ class ItemListModel(QAbstractListModel):
             return it.housing_type
         if role == self.MonthlyRole:
             return it.monthly
+        if role == self.PayDayRole:
+            return it.pay_day
         if role == self.GrowthRole:
             return it.growth
         if role == self.SupportRole:
@@ -209,8 +213,6 @@ class ItemListModel(QAbstractListModel):
                     if it.end_date:
                         tail += f" · {it.end_date[:7]} 까지"
                     parts.append(tail)
-                if it.housing_rent() > 0:
-                    parts.append(f"월세 {won(it.housing_rent())}")
                 rm = it.return_month(self._plan.basis)
                 if rm is not None:
                     parts.append(f"{it.end_date[:7]} 반환" + (f" ({rm}개월 뒤)" if rm > 0 else ""))
@@ -225,6 +227,8 @@ class ItemListModel(QAbstractListModel):
             start = (it.start_date or self._plan.start_date)[:7]
             end = it.end_date[:7] if it.end_date else "계속"
             parts = [f"{start} ~ {end}"]
+            if it.pay_day > 0:
+                parts.append(f"매달 {it.pay_day}일")
             if interest_note:
                 parts.append(interest_note)
             if it.category == Category.SAVING:
@@ -1399,6 +1403,7 @@ class Backend(QObject):
             "isHousing": bool(info.get("housing")),
             "usesGrowth": bool(info.get("uses_growth")),
             "usesSupport": bool(info.get("uses_support")),
+            "usesPayDay": info["shape"] in MONTHLY_SHAPES,
             "canLock": cat == Category.SAVING,
             "hasInterest": cat in INTEREST_CATEGORIES,
             "taxRate": INTEREST_TAX,
@@ -1413,13 +1418,12 @@ class Backend(QObject):
 
     @Slot(str, result="QVariantMap")
     def housingInfo(self, housing_type: str) -> dict:
-        """주거 형태별 입력 안내. {label, amountLabel, usesRent, returnable, hint}"""
+        """주거 형태별 입력 안내. {label, amountLabel, returnable, hint}"""
         t = housing_type if housing_type in HOUSING_TYPES else "jeonse"
         info = HOUSING_INFO[t]
         return {
             "label": HOUSING_TYPES[t],
             "amountLabel": info["amount_label"],
-            "usesRent": info["uses_rent"],
             "returnable": info["returnable"],
             "hint": info["hint"],
         }
@@ -1539,7 +1543,7 @@ class Backend(QObject):
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
                    support: float = 0.0, locked: bool = False, every: int = 0,
                    ledger_category: str = "", after_tax: bool = False,
-                   compound: bool = False) -> Item:
+                   compound: bool = False, pay_day: int = 0) -> Item:
         cat = CATEGORY_LIST[max(0, min(cat_index, len(CATEGORY_LIST) - 1))]
         mode = CATEGORY_INFO[cat]["date_mode"]
         sd = parse_date(start_date) if mode in ("range", "once") else None   # once 면 지출일·수입일
@@ -1553,18 +1557,21 @@ class Backend(QObject):
             monthly_repay_rate=max(0.0, float(monthly_repay_rate)) if cat == Category.LOAN else 0.0,
             repay_method=(repay_method if cat == Category.LOAN and repay_method in REPAY_METHODS else ""),
             housing_type=(housing_type if cat == Category.DEPOSIT else ""),
-            monthly=(max(0.0, float(monthly)) if cat == Category.DEPOSIT else 0.0),
+            # 주거의 월세 칸은 없앴다 (월세는 '월세' 분류로 선다). 자리만 남겨 둔다
+            monthly=0.0,
             growth=max(0.0, float(growth)),
             support=max(0.0, float(support)),
             locked=bool(locked),
             # 되풀이는 일시 지출·수입에서만 (다른 분류는 이미 매달 오간다)
             every=max(0, int(every)) if cat in (Category.EXPENSE, Category.INCOME_ONCE) else 0,
+            pay_day=max(0, min(31, int(pay_day))),
             ledger_category=(ledger_category or "").strip(),
             # 세금·복리는 이자가 붙는 분류에서만 뜻이 있다
             after_tax=bool(after_tax) and cat in INTEREST_CATEGORIES,
             compound=bool(compound) and cat in INTEREST_CATEGORIES,
         )
 
+    @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool, int)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int)
@@ -1583,13 +1590,15 @@ class Backend(QObject):
                 housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
                 support: float = 0.0, locked: bool = False, every: int = 0,
                 ledger_category: str = "", after_tax: bool = False,
-                compound: bool = False) -> None:
+                compound: bool = False, pay_day: int = 0) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
-                               growth, support, locked, every, ledger_category, after_tax, compound)
+                               growth, support, locked, every, ledger_category, after_tax, compound,
+                               pay_day)
         self._items.add(item)
         self._set_status(f"추가: {item.name}")
 
+    @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool, int)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int)
@@ -1608,10 +1617,11 @@ class Backend(QObject):
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
                    support: float = 0.0, locked: bool = False, every: int = 0,
                    ledger_category: str = "", after_tax: bool = False,
-                   compound: bool = False) -> None:
+                   compound: bool = False, pay_day: int = 0) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
-                               growth, support, locked, every, ledger_category, after_tax, compound)
+                               growth, support, locked, every, ledger_category, after_tax, compound,
+                               pay_day)
         old = self._plan.items[row] if 0 <= row < len(self._plan.items) else None
         item.active = old.active if old else True      # 꺼 둔 항목은 고쳐도 꺼진 채로
         self._items.update(row, item)
@@ -1794,7 +1804,6 @@ class Backend(QObject):
                 start_date=r["start"] or None,
                 end_date=r["end"] or None,
                 housing_type=r["housing"],
-                monthly=r["monthly"],
                 growth=r["growth"],
                 support=r["support"],
                 every=r["every"],
@@ -2513,12 +2522,17 @@ class Backend(QObject):
         return [{"value": "", "label": head}] + [
             {"value": c, "label": c} for c in self._ws.ledger.categories()]
 
-    def _ledger_date(self) -> str:
-        """가계부에 넣을 날짜. 달을 골라 놨으면 그 달의 오늘 날짜, 아니면 오늘."""
+    def _ledger_date(self, it: Item | None = None) -> str:
+        """가계부에 넣을 날짜.
+
+        항목에 '매달 며칠' 이 정해져 있으면 그 날, 아니면 오늘. 달을 골라 놨으면
+        그 달의 같은 날이다 (그 달에 없는 날이면 말일로 당겨진다).
+        """
         today = date.today()
+        day = it.pay_day if (it is not None and it.pay_day > 0) else today.day
         if self._ledger_year and self._ledger_month > 0:
-            return same_day_in(f"{self._ledger_year}-{self._ledger_month:02d}", today.day)
-        return today.isoformat()
+            return same_day_in(f"{self._ledger_year}-{self._ledger_month:02d}", day)
+        return same_day_in(month_key(today), day)
 
     def _ledger_amount(self, it: Item) -> float:
         """그 항목이 한 달에 실제로 오고 가는 돈."""
@@ -2546,7 +2560,7 @@ class Backend(QObject):
             self.failed.emit(f"'{it.name}' 은(는) 이번 달에 오고 가는 돈이 없습니다.")
             return False
 
-        day = self._ledger_date()
+        day = self._ledger_date(it)
         period = day[:7]
         if self._ws.ledger.has_name(period, it.name):
             self.failed.emit(f"'{it.name}' 은(는) 이미 {period[:4]}년 {int(period[5:7])}월 가계부에 있습니다.")
@@ -2564,8 +2578,7 @@ class Backend(QObject):
     @undoable("계획에서 가져오기")
     def importPlanToLedger(self) -> int:
         """계획 항목을 한꺼번에 가계부에 기록한다. 이름이 겹치는 것은 건너뛴다."""
-        day = self._ledger_date()
-        period = day[:7]
+        period = self._ledger_date()[:7]
         added = skipped = 0
         for it in list(self._plan.items):
             cat = self._ledger_cat(it)
@@ -2574,7 +2587,9 @@ class Backend(QObject):
             if self._ws.ledger.has_name(period, it.name):
                 skipped += 1
                 continue
-            self._ws.ledger.add(Entry(day, cat, self._ledger_amount(it), it.name, note="계획에서 가져옴"))
+            # 항목마다 제 날짜로 (월급 25일, 월세 1일 …)
+            self._ws.ledger.add(Entry(self._ledger_date(it), cat, self._ledger_amount(it),
+                                      it.name, note="계획에서 가져옴"))
             added += 1
 
         if not added and not skipped:

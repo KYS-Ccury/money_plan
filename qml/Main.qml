@@ -150,7 +150,7 @@ ApplicationWindow {
                                m.data(idx, Qt.UserRole + 21), m.data(idx, Qt.UserRole + 22),
                                m.data(idx, Qt.UserRole + 23), m.data(idx, Qt.UserRole + 27),
                                m.data(idx, Qt.UserRole + 28), m.data(idx, Qt.UserRole + 29),
-                               m.data(idx, Qt.UserRole + 30))
+                               m.data(idx, Qt.UserRole + 30), m.data(idx, Qt.UserRole + 31))
     }
 
     function openEntryDialog() {                            // 테스트/외부 호출용
@@ -416,8 +416,12 @@ ApplicationWindow {
 
         // ───────────── 상단 바: 제목 + 버튼, 그 아래 슬라이더 입력
         Card {
+            objectName: "headerCard"
             Layout.fillWidth: true
             Layout.preferredHeight: headerCol.implicitHeight + Theme.pad * 2
+            // 창이 낮아지면 이 카드가 눌려서 **맨 아랫줄(목표 자본금)이 잘렸다.**
+            // 최소 높이를 정해 두면 대신 아래쪽(목록·그래프)이 줄어든다.
+            Layout.minimumHeight: headerCol.implicitHeight + Theme.pad * 2
             ColumnLayout {
                 id: headerCol
                 anchors.fill: parent
@@ -479,8 +483,14 @@ ApplicationWindow {
                             ? "가계부를 본 창 안으로 다시 넣습니다 (Ctrl+Shift+2)"
                             : "가계부만 다른 창으로 떼어 냅니다 — 계획과 나란히 놓고 볼 때 (Ctrl+Shift+2)"
                     }
+                }
 
-                    Item { Layout.fillWidth: true }
+                // 단추 줄. Flow 라서 창이 좁아지면 **다음 줄로 내려간다** —
+                // RowLayout 이던 때는 줄바꿈이 없어 오른쪽 단추가 창 밖으로 밀려 잘렸다.
+                Flow {
+                    objectName: "toolbarFlow"
+                    Layout.fillWidth: true
+                    spacing: 4
                     Button {
                         text: "＋ 항목 추가"; highlighted: true
                         visible: win.mode === "plan"
@@ -514,6 +524,9 @@ ApplicationWindow {
                                                : "")
                         color: backend.dirty ? Theme.yellow : Theme.textDim
                         font.pixelSize: 11
+                        height: 40                     // 단추들과 줄을 맞춘다
+                        verticalAlignment: Text.AlignVCenter
+                        leftPadding: 6; rightPadding: 6
                         ToolTip.visible: saveStateHover.hovered
                         ToolTip.text: backend.autosaveOn
                                       ? "고치고 몇 초 지나면 저절로 저장합니다 (" + backend.dataPath + ")"
@@ -575,7 +588,8 @@ ApplicationWindow {
                 }
 
                 // 시나리오 탭: 클릭 = 전환, 더블클릭 = 이름 변경
-                RowLayout {
+                // 여기도 Flow — 시나리오가 늘어나면 단추가 창 밖으로 밀려 나간다
+                Flow {
                     Layout.fillWidth: true
                     visible: win.mode === "plan"
                     spacing: 6
@@ -628,18 +642,25 @@ ApplicationWindow {
                         enabled: backend.scenarioCount > 1
                         onClicked: removeScenarioDialog.open()
                     }
-                    Item { Layout.fillWidth: true }
                     Text {
                         visible: backend.scenarioCount > 1
                         text: "그래프에서 다른 시나리오는 점선으로 겹쳐 보입니다"
                         color: Theme.textDim; font.pixelSize: 11
+                        height: 30; verticalAlignment: Text.AlignVCenter
+                        leftPadding: 8
                     }
                 }
 
-                RowLayout {
+                // 기준일 · 종료일 · 기간 · 목표 자본금.
+                // 창이 좁아지면 넷 → 둘 → 하나로 줄을 나눠 내려앉는다
+                // (GridLayout 은 columns 가 바뀌면 알아서 다시 배치한다).
+                GridLayout {
+                    objectName: "settingsGrid"
                     Layout.fillWidth: true
                     visible: win.mode === "plan"
-                    spacing: 24
+                    columns: win.width >= 1180 ? 4 : (win.width >= 820 ? 2 : 1)
+                    columnSpacing: 24
+                    rowSpacing: 10
                     DateField {
                         label: "기준일 (0개월)"
                         objectName: "basisField"
