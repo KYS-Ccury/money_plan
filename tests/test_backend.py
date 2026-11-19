@@ -391,7 +391,7 @@ def test_backend_saving():
     b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
     assert b.categories[2] == "적금/저축(월)"
     info = b.categoryInfo(2)
-    assert info["group"] == "자본" and info["usesDates"] and info["usesRate"]
+    assert info["group"] == "금융" and info["usesDates"] and info["usesRate"]
     assert info["amountLabel"] == "월 납입액"
 
     b.addItem("현금", 0, 10_000_000, 0, True)
@@ -578,7 +578,7 @@ def test_export_ledger_plan_columns(tmp_path):
 def test_backend_budgets(tmp_path):
     b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
     assert not b.hasBudgets and b.ledgerBudgets == []
-    assert [r["category"] for r in b.budgetEditRows][:2] == ["식비", "주거/관리비"]
+    assert [r["category"] for r in b.budgetEditRows][:2] == ["월세", "관리비"]   # 주거부터
 
     b.addEntry("2026-01-05", "식비", 300_000)
     b.addEntry("2026-01-10", "교통", 120_000)
@@ -1775,16 +1775,16 @@ def test_plan_vs_actual_by_category():
     plan.add(Item("급여", Category.INCOME, 2_000_000, start_date="2026-11-02"))
     ws = Workspace(plans=[plan])
     ws.ledger = Ledger()
-    for d, c, a in (("2026-11-05", "주거/관리비", 650_000), ("2026-11-07", "식비", 420_000),
+    for d, c, a in (("2026-11-05", "월세", 650_000), ("2026-11-07", "식비", 420_000),
                     ("2026-11-25", "급여", 2_000_000)):
         ws.ledger.add(Entry(d, c, a))
     b = Backend(ws)
     b.ledgerYear, b.ledgerMonth = "2026", 11
 
     rows = {r["category"]: r for r in b.planVsActualByCategory()}
-    assert rows["주거/관리비"]["plan"] == 600_000
-    assert rows["주거/관리비"]["actual"] == 650_000
-    assert rows["주거/관리비"]["diff"] == 50_000 and rows["주거/관리비"]["inPlan"] is True
+    assert rows["월세"]["plan"] == 600_000          # 계획의 '월세' 가 가계부 '월세' 와 짝
+    assert rows["월세"]["actual"] == 650_000
+    assert rows["월세"]["diff"] == 50_000 and rows["월세"]["inPlan"] is True
     assert rows["기타 지출"]["plan"] == 800_000 and rows["기타 지출"]["actual"] == 0
     assert rows["식비"]["plan"] == 0 and rows["식비"]["inPlan"] is False   # 계획에 없던 지출
     assert rows["급여"]["kind"] == "income" and rows["급여"]["diff"] == 0
@@ -2200,3 +2200,217 @@ def test_default_urls_follow_the_data_file(tmp_path):
     assert b.pdfDefaultUrl.endswith("data.pdf")
     assert b.pngDefaultUrl.endswith("data.png")
     assert b.toLocalPath(b.pdfDefaultUrl).endswith("data.pdf")
+
+
+# ───────────────────────── 계획 가져오기
+
+PLAN_CSV = """이름,분류,금액,연이율(%),시작일,종료일,월 지원금
+현금,현금/자산,2000000,,,,
+청약,적금/저축(월),200000,2.1,2026-12-01,2029-12-01,40000
+월급,월 수입,3200000,,,,
+"""
+
+
+def test_plan_import_preview_does_not_touch_the_plan():
+    b = Backend(Plan(months=12))
+    info = b.previewPlanImportText(PLAN_CSV)
+    assert info["ok"] and info["count"] == 3 and info["fresh"] == 3
+    assert info["capital"] == 2_200_000 and info["income"] == 3_200_000
+    assert b.itemCount == 0                      # 아직 아무것도 안 들어갔다
+
+    rows = b.planImportRows
+    assert [r["name"] for r in rows] == ["현금", "청약", "월급"]
+    assert "연 2.1%" in rows[1]["tail"] and "지원" in rows[1]["tail"]
+
+    b.cancelPlanImport()
+    assert b.planImportInfo == {} and b.planImportRows == []
+
+
+def test_plan_import_adds_items_and_can_be_undone():
+    b = Backend(Plan(months=12))
+    b.previewPlanImportText(PLAN_CSV)
+    assert b.applyPlanImport() == 3
+    assert b.itemCount == 3
+    assert b.capital == 2_000_000
+    assert b.monthlyIncome == 3_200_000
+    assert b.planImportInfo == {}                # 넣고 나면 미리보기는 비운다
+
+    b.undo()
+    assert b.itemCount == 0
+
+
+def test_plan_import_marks_and_skips_items_already_there():
+    b = Backend(Plan(months=12))
+    b.addItem("현금", 0, 2_000_000, 0, True)
+    info = b.previewPlanImportText(PLAN_CSV)
+    assert info["dupes"] == 1 and info["fresh"] == 2
+    assert b.planImportRows[0]["dupe"] is True
+
+    assert b.applyPlanImport(True) == 2
+    assert b.itemCount == 3                      # 1 + 2 (현금은 건너뛰었다)
+
+
+def test_plan_import_can_replace_everything():
+    b = Backend(Plan(months=12))
+    b.addItem("예전 항목", 0, 1, 0, True)
+    b.previewPlanImportText(PLAN_CSV)
+    assert b.applyPlanImport(True, True) == 3
+    assert b.itemCount == 3
+    assert "예전 항목" not in [it.name for it in b._plan.items]
+
+    b.undo()
+    assert b.itemCount == 1
+
+
+def test_plan_import_of_an_unreadable_file_says_so(tmp_path):
+    b = Backend(Plan(months=12))
+    info = b.previewPlanImportFile(str(tmp_path / "없는파일.xlsx"))
+    assert info["ok"] is False and info["problemCount"] == 1
+    assert b.itemCount == 0
+
+
+def test_plan_import_with_nothing_read_adds_nothing():
+    b = Backend(Plan(months=12))
+    b.previewPlanImportText("아무 말이나 적어 둔 글")
+    assert b.applyPlanImport() == 0
+    assert b.itemCount == 0
+
+
+def test_plan_import_always_says_something_when_it_found_nothing():
+    """한 줄도 못 건졌는데 까닭도 없으면 창에 아무 말도 안 뜬다 — 그래서 한마디 넣어 둔다."""
+    b = Backend(Plan(months=12))
+    info = b.previewPlanImportText("")
+    assert info["count"] == 0
+    assert info["problemCount"] == 1 and "찾지 못했습니다" in info["problems"][0]
+
+
+def test_ledger_window_state_round_trip():
+    """가계부를 따로 띄워 두었는지, 그 창 자리까지 기억한다."""
+    b = Backend()
+    st = b.ledgerWindowState()
+    assert set(st) == {"x", "y", "width", "height", "popped", "has"}
+
+    b.saveLedgerWindowState(200, 150, 1000, 700, True)
+    got = b.ledgerWindowState()
+    assert (got["x"], got["y"], got["width"], got["height"]) == (200, 150, 1000, 700)
+    assert got["popped"] is True and got["has"] is True
+
+    b.saveLedgerWindowState(-1, -1, -1, -1, False)         # 자리 없이 '닫았다' 만 적기
+    got = b.ledgerWindowState()
+    assert got["popped"] is False
+    assert (got["width"], got["height"]) == (1000, 700)    # 크기는 그대로 남는다
+
+
+def test_ledger_window_state_is_kept_apart_from_the_main_window():
+    b = Backend()
+    b.saveWindowState(10, 20, 1300, 800, False, "plan")
+    b.saveLedgerWindowState(500, 400, 900, 600, True)
+    assert (b.windowState()["width"], b.windowState()["height"]) == (1300, 800)
+    assert (b.ledgerWindowState()["width"], b.ledgerWindowState()["height"]) == (900, 600)
+    assert b.windowState()["mode"] == "plan"
+
+    # 띄워 둔 채로 남기면 다음 테스트가 띄운 창으로 시작한다 (같은 ini 를 쓴다)
+    b.saveLedgerWindowState(-1, -1, -1, -1, False)
+
+
+def test_category_choices_are_two_levels():
+    """분류 고르는 목록이 1차 머리줄 + 2차로 오는지, 번호가 맞는지."""
+    from capital_calc.model import CATEGORY_LIST, GROUP_LIST, Category
+
+    b = Backend(Plan(months=12))
+    rows = b.categoryChoices()
+    assert len(rows) == len(CATEGORY_LIST)
+    assert [r["group"] for r in rows if r["first"]] == GROUP_LIST     # 1차 다섯 줄
+    for r in rows:                                                   # index 는 분류 번호
+        assert b.categories[r["index"]] == r["label"]
+
+    # 주거 묶음은 보증금 → 월세 → 관리비 순으로 나란히
+    housing = [r["label"] for r in rows if r["group"] == "주거"]
+    assert housing == ["보증금/매매가", "월세", "관리비"]
+    assert rows[[r["label"] for r in rows].index("보증금/매매가")]["index"] == \
+        CATEGORY_LIST.index(Category.DEPOSIT)
+
+
+def test_group_header_shows_the_first_level():
+    b = Backend(Plan(months=12))
+    b.addItem("관리비", 7, 100_000, 0, True)          # 7 = 관리비
+    info = b.groupSummary("관리비")
+    assert info["group"] == "주거" and info["count"] == 1
+    assert b.groupSummary("없는 분류")["group"] == ""
+
+
+def test_plan_import_preview_sums_by_side():
+    """1차가 다섯이 되어도 미리보기 합계는 자본·수입·지출 셋으로 모인다."""
+    b = Backend(Plan(months=12))
+    text = "\n".join(["이름,분류,금액",
+                       "현금,현금/자산,1000",
+                       "급여,월 수입,200",
+                       "전셋집,주거,500",
+                       "관리비,관리비,10"])
+    info = b.previewPlanImportText(text)
+    assert info["count"] == 4
+    assert info["capital"] == 1000
+    assert info["income"] == 200
+    assert info["cost"] == 510                       # 보증금 + 관리비
+    rows = {r["name"]: r["side"] for r in b.planImportRows()}
+    assert rows == {"현금": "capital", "급여": "income",
+                    "전셋집": "cost", "관리비": "cost"}
+    b.cancelPlanImport()
+
+
+def test_ledger_categories_come_in_two_levels():
+    from capital_calc.ledger import LEDGER_GROUP_LIST
+
+    b = Backend(Plan(months=12))
+    rows = b.ledgerCategories
+    assert [r["group"] for r in rows if r["first"]] == LEDGER_GROUP_LIST
+    assert [r["value"] for r in rows if r["group"] == "주거"] == \
+        ["월세", "관리비", "공과금", "보증금"]          # 안 쓰는 예전 이름은 빠진다
+
+    # 1차를 골라 만들면 그 묶음에 붙는다
+    assert b.addLedgerCategory("정수기", "cost", "주거") == ""
+    assert [r["value"] for r in b.ledgerCategories if r["group"] == "주거"][-1] == "정수기"
+    assert b.removeLedgerCategory("정수기") == ""
+
+    # 1차를 안 고르면 기타
+    assert b.addLedgerCategory("반려동물", "cost") == ""
+    rows = {r["value"]: r for r in b.ledgerCategories}
+    assert rows["반려동물"]["group"] == "기타" and rows["반려동물"]["custom"] is True
+
+
+def test_old_ledger_entries_still_work_after_the_housing_split():
+    """예전 이름으로 적어 둔 내역은 그대로 돌고, 목록에도 다시 나온다."""
+    from capital_calc.ledger import Entry, Ledger
+    from capital_calc.model import Workspace
+
+    ws = Workspace(plans=[Plan(months=12, start_date="2026-11-02")])
+    ws.ledger = Ledger([Entry("2026-11-05", "주거/관리비", 600_000, "월세")])
+    b = Backend(ws)
+    b.ledgerYear, b.ledgerMonth = "2026", 11
+    assert b.ledgerSummary["cost"] == 600_000
+    assert "주거/관리비" in [r["value"] for r in b.ledgerCategories]
+    assert b.ledgerKindOf("주거/관리비") == "cost"
+
+
+def test_plan_and_ledger_now_share_the_same_names():
+    """계획 2차 → 가계부 2차 짝이 새 이름을 가리키는지.
+
+    예전에는 월세·관리비·보증금이 모두 '주거/관리비' 하나로 갔다. 그 이름은
+    이제 안 쓰면 목록에 안 나오므로, 짝이 그대로였다면 계획이 보이지 않는
+    분류를 가리키게 된다.
+    """
+    from capital_calc.model import CATEGORY_LIST, Category
+
+    b = Backend(Plan(months=12))
+    seen = [r["value"] for r in b.ledgerCategories]
+    for cat in (Category.RENT, Category.MAINT, Category.DEPOSIT):
+        name = Backend.PLAN_TO_LEDGER[cat]
+        assert name in seen, f"{cat.value} → {name} 이 목록에 없다"
+        assert b.ledgerKindOf(name) == "cost"
+    assert Backend.PLAN_TO_LEDGER[Category.RENT] == "월세"
+    assert Backend.PLAN_TO_LEDGER[Category.MAINT] == "관리비"
+    assert Backend.PLAN_TO_LEDGER[Category.DEPOSIT] == "보증금"
+
+    # 항목 팝업의 '자동' 안내도 새 이름을 말한다
+    head = b.ledgerCategoryChoices(CATEGORY_LIST.index(Category.RENT))[0]["label"]
+    assert "월세" in head

@@ -15,6 +15,94 @@ ApplicationWindow {
 
     // 화면 전환: "plan"(계획) | "ledger"(가계부) | "overview"(한눈에)
     property string mode: "plan"
+    // 한눈에 보기를 한 번이라도 만들었는가. 한 번 만들면 안 지운다 (아래 Loader)
+    property bool overviewReady: false
+
+    // 어느 길로 들어와도 (탭·단축키·저장해 둔 화면) 그때 만들어진다
+    onModeChanged: if (win.mode === "overview") win.overviewReady = true
+
+    // ───────────── 가계부를 따로 띄우기
+    // 계획을 고치면서 가계부를 같이 봐야 할 때가 있다. 그래서 가계부만 떼어
+    // 다른 창으로 내보낸다. 같은 backend 를 보므로 양쪽 숫자가 저절로 맞는다.
+    // 띄워 둔 동안에는 본 창 안의 가계부를 숨긴다 (같은 것이 두 군데 보이면 헷갈린다).
+    property bool ledgerPopped: false
+    property var ledgerWindow: null
+    Component { id: ledgerWindowComp; LedgerWindow { } }
+
+    // 가계부가 지금 어디에 있든 그것을 가리킨다 (단축키·외부 호출은 이것만 쓴다)
+    function ledgerPane() {
+        if (win.ledgerPopped && win.ledgerWindow)
+            return win.ledgerWindow.view
+        return ledgerView
+    }
+
+    function showLedger() {
+        if (win.ledgerPopped && win.ledgerWindow)
+            win.ledgerWindow.focusHere()
+        else
+            win.mode = "ledger"
+    }
+
+    function popLedgerOut() {
+        if (win.ledgerPopped)
+            return
+        if (!win.ledgerWindow) {
+            win.ledgerWindow = ledgerWindowComp.createObject(win)
+            if (!win.ledgerWindow) {           // 못 만들면 그냥 본 창에 둔다
+                toast.show("가계부 창을 띄우지 못했습니다.", "error")
+                win.mode = "ledger"
+                return
+            }
+            win.ledgerWindow.putBack.connect(win.popLedgerIn)
+            var st = backend.ledgerWindowState()
+            if (st.has) {
+                win.ledgerWindow.width = Math.max(win.ledgerWindow.minimumWidth, st.width)
+                win.ledgerWindow.height = Math.max(win.ledgerWindow.minimumHeight, st.height)
+                var scr = win.screen
+                if (st.x > -10000 && st.y > -10000 && scr
+                    && st.x + 100 < scr.virtualX + scr.desktopAvailableWidth
+                    && st.y + 60 < scr.virtualY + scr.desktopAvailableHeight
+                    && st.x + st.width > scr.virtualX && st.y + st.height > scr.virtualY) {
+                    win.ledgerWindow.x = st.x
+                    win.ledgerWindow.y = st.y
+                }
+            }
+        }
+        win.ledgerPopped = true
+        if (win.mode === "ledger")             // 본 창은 빈 자리가 되지 않게 계획으로
+            win.mode = "plan"
+        win.ledgerWindow.focusHere()
+        win.rememberLedgerWindow(true)
+    }
+
+    function popLedgerIn() {
+        if (!win.ledgerPopped && !win.ledgerWindow)
+            return
+        win.rememberLedgerWindow(false)
+        win.ledgerPopped = false
+        win.mode = "ledger"
+        if (win.ledgerWindow) {
+            var old = win.ledgerWindow
+            win.ledgerWindow = null
+            old.hide()
+            old.destroy(1)      // 제 신호(putBack) 안에서 불릴 수 있어 한 박자 뒤에 지운다
+        }
+    }
+
+    function toggleLedgerWindow() {
+        if (win.ledgerPopped)
+            win.popLedgerIn()
+        else
+            win.popLedgerOut()
+    }
+
+    function rememberLedgerWindow(popped) {
+        var it = win.ledgerWindow
+        if (it)
+            backend.saveLedgerWindowState(it.x, it.y, it.width, it.height, popped)
+        else
+            backend.saveLedgerWindowState(-1, -1, -1, -1, popped)
+    }
 
     // 지난번 창 크기·위치·화면을 그대로 띄운다.
     // 모니터를 바꿨을 수도 있으니 화면 밖으로 나가면 가운데로 되돌린다.
@@ -35,11 +123,14 @@ ApplicationWindow {
         if (st.maximized)
             win.visibility = Window.Maximized
         win.mode = st.mode
+        if (backend.ledgerWindowState().popped)   // 지난번에 띄워 두었으면 그대로 띄운다
+            win.popLedgerOut()
     }
 
     function rememberWindow() {
         var maxed = win.visibility === Window.Maximized || win.visibility === Window.FullScreen
         backend.saveWindowState(win.x, win.y, win.width, win.height, maxed, win.mode)
+        win.rememberLedgerWindow(win.ledgerPopped)
     }
 
     Material.theme: Material.Dark
@@ -63,14 +154,15 @@ ApplicationWindow {
     }
 
     function openEntryDialog() {                            // 테스트/외부 호출용
-        win.mode = "ledger"
-        ledgerView.openAdd()
+        win.showLedger()
+        win.ledgerPane().openAdd()
     }
     function openBudgetDialog() {                           // 테스트/외부 호출용
-        win.mode = "ledger"
-        ledgerView.openBudget()
+        win.showLedger()
+        win.ledgerPane().openBudget()
     }
     function openOverview() {                               // 테스트/외부 호출용
+        win.overviewReady = true
         win.mode = "overview"
     }
 
@@ -83,22 +175,32 @@ ApplicationWindow {
     Shortcut { sequences: ["Ctrl+S"]; onActivated: backend.save() }
     Shortcut { sequences: ["Ctrl+Shift+S"]; onActivated: saveDialog.open() }
     Shortcut { sequences: ["Ctrl+O"]; onActivated: openDialog.open() }
+    // 가져오기: 계획 화면에서는 항목을, 가계부 화면에서는 내역을 가져온다
+    Shortcut {
+        sequences: ["Ctrl+I"]
+        onActivated: {
+            if (win.mode === "ledger") win.ledgerPane().openImport()
+            else planImportDialog.start()
+        }
+    }
     // 지금 보고 있는 화면에 맞는 '새로 추가'
     Shortcut {
         sequences: ["Ctrl+N"]
         onActivated: {
-            if (win.mode === "ledger") ledgerView.openAdd()
+            if (win.mode === "ledger") win.ledgerPane().openAdd()
             else if (win.mode === "plan") itemDialog.openForAdd()
         }
     }
     // 가계부 검색칸으로 (다른 화면이면 가계부로 넘어가면서)
     Shortcut {
         sequences: ["Ctrl+F"]
-        onActivated: { win.mode = "ledger"; ledgerView.focusSearch() }
+        onActivated: { win.showLedger(); win.ledgerPane().focusSearch() }
     }
     Shortcut { sequences: ["Ctrl+1"]; onActivated: win.mode = "plan" }
-    Shortcut { sequences: ["Ctrl+2"]; onActivated: win.mode = "ledger" }
-    Shortcut { sequences: ["Ctrl+3"]; onActivated: win.mode = "overview" }
+    Shortcut { sequences: ["Ctrl+2"]; onActivated: win.showLedger() }
+    Shortcut { sequences: ["Ctrl+3"]; onActivated: win.openOverview() }
+    // 가계부를 따로 띄우기 / 본 창으로 되돌리기
+    Shortcut { sequences: ["Ctrl+Shift+2"]; onActivated: win.toggleLedgerWindow() }
 
     // 저장 안 된 채로 닫으려 할 때. forceClose 를 세워 두고 다시 닫는다
     property bool forceClose: false
@@ -107,6 +209,14 @@ ApplicationWindow {
         if (backend.dirty && !win.forceClose) {
             close.accepted = false
             exitDialog.open()
+            return
+        }
+        // 따로 띄운 가계부 창이 남아 있으면 프로그램이 끝나지 않는다
+        if (win.ledgerWindow) {
+            var old = win.ledgerWindow
+            win.ledgerWindow = null
+            old.hide()
+            old.destroy(1)
         }
     }
 
@@ -290,6 +400,7 @@ ApplicationWindow {
             }
         }
     }
+    PlanImportDialog { id: planImportDialog }
     ConfirmDialog {
         id: clearDialog
         title: "전체 삭제"
@@ -326,23 +437,47 @@ ApplicationWindow {
                                     { m: "overview", t: "한눈에" }]
                             delegate: Rectangle {
                                 required property var modelData
-                                readonly property bool on: win.mode === modelData.m
+                                // 따로 띄워 둔 가계부는 본 창의 '화면' 이 아니지만,
+                                // 켜져 있다는 것은 보여 줘야 한다 (⧉ 를 붙인다)
+                                readonly property bool popped: modelData.m === "ledger" && win.ledgerPopped
+                                readonly property bool on: win.mode === modelData.m || popped
                                 width: 72; height: 32
                                 radius: 8
-                                color: on ? Theme.accent : (tabHover.hovered ? Theme.rowHover : "transparent")
+                                color: on ? (popped ? Theme.accentSoft : Theme.accent)
+                                          : (tabHover.hovered ? Theme.rowHover : "transparent")
                                 border.color: on ? Theme.accent : Theme.cardBorder
                                 Behavior on color { ColorAnimation { duration: Theme.fast } }
                                 HoverHandler { id: tabHover }
-                                TapHandler { onTapped: win.mode = modelData.m }
+                                TapHandler {
+                                    onTapped: {
+                                        if (modelData.m === "ledger") win.showLedger()
+                                        else win.mode = modelData.m
+                                    }
+                                }
                                 Text {
                                     anchors.centerIn: parent
-                                    text: modelData.t
-                                    color: parent.on ? "#ffffff" : Theme.textDim
+                                    text: modelData.t + (parent.popped ? " ⧉" : "")
+                                    color: parent.popped ? Theme.text
+                                         : (parent.on ? "#ffffff" : Theme.textDim)
                                     font.pixelSize: 13
                                     font.bold: parent.on
                                 }
+                                ToolTip.visible: tabHover.hovered && popped
+                                ToolTip.text: "가계부는 따로 띄운 창에 있습니다 (눌러 그 창으로)"
                             }
                         }
+                    }
+
+                    Button {
+                        objectName: "ledgerWindowButton"
+                        text: win.ledgerPopped ? "가계부 본 창으로" : "가계부 따로 띄우기"
+                        flat: true; leftPadding: 10; rightPadding: 10
+                        Material.foreground: win.ledgerPopped ? Theme.accent : Theme.textDim
+                        onClicked: win.toggleLedgerWindow()
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: win.ledgerPopped
+                            ? "가계부를 본 창 안으로 다시 넣습니다 (Ctrl+Shift+2)"
+                            : "가계부만 다른 창으로 떼어 냅니다 — 계획과 나란히 놓고 볼 때 (Ctrl+Shift+2)"
                     }
 
                     Item { Layout.fillWidth: true }
@@ -403,6 +538,14 @@ ApplicationWindow {
                         text: "불러오기"; flat: true; leftPadding: 10; rightPadding: 10
                         onClicked: openDialog.open()
                         ToolTip.visible: hovered; ToolTip.delay: 500; ToolTip.text: "JSON 파일 선택해서 불러오기"
+                    }
+                    Button {
+                        objectName: "planImportButton"
+                        text: "가져오기"; flat: true; leftPadding: 10; rightPadding: 10
+                        visible: win.mode !== "ledger"
+                        onClicked: planImportDialog.start()
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: "엑셀·CSV·메모장에 적어 둔 항목을 계획으로 읽어 옵니다 (Ctrl+I)"
                     }
                     Button {
                         text: "엑셀"; flat: true; leftPadding: 10; rightPadding: 10
@@ -679,6 +822,11 @@ ApplicationWindow {
                                     color: Theme.accent; font.pixelSize: 13
                                     rotation: secHeader.collapsed ? -90 : 0
                                     Behavior on rotation { NumberAnimation { duration: Theme.fast } }
+                                }
+                                Text {                       // 1차 분류 (주거·생활·금융…)
+                                    text: secHeader.info.group || ""
+                                    visible: text !== ""
+                                    color: Theme.textDim; font.pixelSize: 10
                                 }
                                 Text {
                                     text: secHeader.section; color: Theme.text; font.pixelSize: 13; font.bold: true
@@ -1630,15 +1778,41 @@ ApplicationWindow {
         }
 
         // ───────────── 본문 (한눈에 보기)
-        // 보지 않을 때는 아예 만들지 않는다. 숨겨만 두면 그 안의 바인딩이
-        // 계획·가계부가 바뀔 때마다 모두 다시 계산되어 창 전체가 느려진다.
+        //
+        // 예전에는 보지 않을 때 아예 지웠다 (active: mode === "overview").
+        // 그러면 들어갈 때마다 카드 열몇 개와 그래프 세 개를 **한 프레임에** 다
+        // 만들고 백엔드를 열두 번 부르느라 창이 멈춘다.
+        //
+        // 그래서 지우지 않고, 대신 OverviewView 가 **안 보이는 동안에는 값을
+        // 새로 뜨지 않는다**. 숨겨만 두면 느려졌던 까닭이 그 '다시 계산' 이었으므로
+        // 둘을 같이 해야 뜻이 있다.
         Loader {
             id: overviewLoader
             Layout.fillWidth: true
             Layout.fillHeight: true
-            active: win.mode === "overview"
-            visible: active
+            asynchronous: true                 // 한 프레임에 몰아 만들지 않는다
+            active: win.overviewReady
+            visible: win.mode === "overview"
             sourceComponent: OverviewView { }
+        }
+
+        // 아직 만들어지는 중일 때 (거의 첫 실행 한 번뿐이다)
+        Text {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: win.mode === "overview" && overviewLoader.status !== Loader.Ready
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            text: "한눈에 보기를 준비하는 중…"
+            color: Theme.textDim; font.pixelSize: 13
+        }
+
+        // 시작하고 조금 뒤에 조용히 미리 만들어 둔다. 안 보이는 동안에는 값을
+        // 새로 뜨지 않으니 셈하는 값은 없고, 처음 들어갈 때도 바로 뜬다.
+        Timer {
+            interval: 1500
+            running: !win.overviewReady
+            onTriggered: win.overviewReady = true
         }
 
         // ───────────── 본문 (가계부)
@@ -1647,7 +1821,28 @@ ApplicationWindow {
             id: ledgerView
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: win.mode === "ledger"
+            // 따로 띄워 두었으면 본 창 안에서는 숨는다 (같은 것이 두 군데 보이면 헷갈린다)
+            visible: win.mode === "ledger" && !win.ledgerPopped
+        }
+
+        // 가계부를 따로 띄운 동안 '가계부' 자리에 뜨는 안내
+        ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: win.mode === "ledger" && win.ledgerPopped
+            Item { Layout.fillHeight: true }
+            Text {
+                Layout.alignment: Qt.AlignHCenter
+                text: "가계부는 따로 띄운 창에 있습니다"
+                color: Theme.textDim; font.pixelSize: 14
+            }
+            Button {
+                Layout.alignment: Qt.AlignHCenter
+                text: "본 창으로 다시 넣기"
+                flat: true
+                onClicked: win.popLedgerIn()
+            }
+            Item { Layout.fillHeight: true }
         }
 
         // ───────────── 상태 표시줄 (메시지가 바뀔 때 살짝 깜빡)

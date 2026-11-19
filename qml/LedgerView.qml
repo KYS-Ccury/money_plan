@@ -506,6 +506,7 @@ RowLayout {
                         model: backend.ledgerCategories
                         textRole: "value"
                         valueRole: "value"
+                        delegate: CategoryItem { box: bulkCatBox }
                         displayText: "분류 바꾸기"
                         onActivated: view.applyBulkCategory(bulkCatBox.currentValue)
                         ToolTip.visible: hovered; ToolTip.delay: 500

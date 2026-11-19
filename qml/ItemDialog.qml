@@ -8,6 +8,15 @@ Popup {
     objectName: "itemDialog"
     property int editRow: -1                 // -1 이면 추가, 아니면 수정
     property var info: backend.categoryInfo(0)
+    // 분류 고르기가 1차 → 2차 두 단이라 콤보의 **줄 번호**와 **분류 번호**가 다르다.
+    // 밖(백엔드)과는 늘 분류 번호로 말한다.
+    function catIndexNow() {
+        var v = catBox.valueAt(catBox.currentIndex)
+        return v === undefined ? 0 : v
+    }
+    function setCategory(ci) {
+        catBox.currentIndex = Math.max(0, catBox.indexOfValue(ci))
+    }
     property real amount: 0
     property real rate: 0
     property string startDate: ""
@@ -75,7 +84,7 @@ Popup {
     function openForAdd() {
         editRow = -1
         nameField.text = ""
-        catBox.currentIndex = 0   // 현금/자산
+        setCategory(0)            // 현금/자산
         amount = 0
         rate = 0
         startDate = backend.basisDate
@@ -109,7 +118,7 @@ Popup {
                          ledgerCategory, afterTax, compound) {
         editRow = row
         nameField.text = name
-        catBox.currentIndex = catIndex
+        setCategory(catIndex)
         dlg.amount = amount
         dlg.rate = rate
         dlg.startDate = startDate || backend.basisDate
@@ -158,9 +167,9 @@ Popup {
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
         if (editRow < 0)
-            backend.addItem(nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound)
+            backend.addItem(nameField.text, dlg.catIndexNow(), amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound)
         else
-            backend.updateItem(editRow, nameField.text, catBox.currentIndex, amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound)
+            backend.updateItem(editRow, nameField.text, dlg.catIndexNow(), amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound)
         close()
     }
 
@@ -193,9 +202,13 @@ Popup {
                 id: catBox
                 objectName: "itemCategory"
                 Layout.fillWidth: true
-                model: backend.categories
+                // 1차(주거·생활…) 머리줄을 얹은 두 단 목록. valueRole 이 분류 번호다
+                model: backend.categoryChoices()
+                textRole: "label"
+                valueRole: "index"
+                delegate: CategoryItem { box: catBox }
                 onCurrentIndexChanged: {
-                    dlg.info = backend.categoryInfo(currentIndex)
+                    dlg.info = backend.categoryInfo(dlg.catIndexNow())
                     // 새로 넣는 예금·적금은 세후가 기본 (대부분 세금을 뗀다).
                     // 고치는 중일 때는 사람이 정해 둔 값을 건드리지 않는다.
                     if (dlg.editRow < 0)
@@ -221,7 +234,8 @@ Popup {
                     id: ledgerCatBox
                     objectName: "itemLedgerCategory"
                     Layout.fillWidth: true
-                    model: (backend.itemCount, backend.ledgerCategoryChoices(catBox.currentIndex))
+                    model: (backend.itemCount, catBox.currentIndex,
+                            backend.ledgerCategoryChoices(dlg.catIndexNow()))
                     textRole: "label"
                     valueRole: "value"
                     onActivated: dlg.ledgerCategory = String(currentValue)

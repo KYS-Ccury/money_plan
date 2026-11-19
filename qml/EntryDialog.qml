@@ -144,6 +144,7 @@ Popup {
                 model: backend.ledgerCategories
                 textRole: "value"
                 valueRole: "value"
+                delegate: CategoryItem { box: catBox }
                 onActivated: dlg.category = catBox.currentValue
                 // 목록이 늘어나도 고른 분류를 계속 가리키게
                 Connections {

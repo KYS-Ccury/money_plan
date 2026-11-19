@@ -12,14 +12,37 @@ from datetime import date
 
 from .model import parse_date
 
-# 가계부 분류 (계획의 분류와 별개다 — 가계부는 실제 씀씀이 기준으로 나눈다)
-LEDGER_INCOME_CATEGORIES: list[str] = [
-    "급여", "부업", "상여금", "이자/배당", "용돈", "기타 수입",
-]
-LEDGER_COST_CATEGORIES: list[str] = [
-    "식비", "주거/관리비", "교통", "통신", "보험", "의료", "생활용품",
-    "문화/여가", "경조사", "교육", "저축/투자", "대출 상환", "기타 지출",
-]
+# 가계부 분류 (계획의 분류와 별개다 — 가계부는 실제 씀씀이 기준으로 나눈다).
+#
+# 1차(묶음) → 2차. 1차 이름은 계획 쪽(model.CATEGORY_TREE)과 일부러 맞춰 두었다 —
+# 그래야 '계획 대비 실적' 을 1차로 나란히 놓을 수 있다. 계획의 '자본' 은 오가는
+# 돈이 아니어서 여기에는 없고, 대신 어디에도 안 붙는 것을 담을 '기타' 가 있다.
+LEDGER_GROUP_INCOME = "수입"
+LEDGER_GROUP_HOUSING = "주거"
+LEDGER_GROUP_LIVING = "생활"
+LEDGER_GROUP_FINANCE = "금융"
+LEDGER_GROUP_ETC = "기타"
+
+LEDGER_TREE: dict[str, list[str]] = {
+    LEDGER_GROUP_INCOME: ["급여", "부업", "상여금", "이자/배당", "용돈", "기타 수입"],
+    LEDGER_GROUP_HOUSING: ["월세", "관리비", "공과금", "보증금", "주거/관리비"],
+    LEDGER_GROUP_LIVING: ["식비", "교통", "통신", "보험", "의료", "생활용품",
+                          "문화/여가", "경조사", "교육"],
+    LEDGER_GROUP_FINANCE: ["저축/투자", "대출 상환"],
+    LEDGER_GROUP_ETC: ["기타 지출"],
+}
+LEDGER_GROUP_LIST: list[str] = list(LEDGER_TREE)
+LEDGER_GROUP_OF: dict[str, str] = {c: g for g, cs in LEDGER_TREE.items() for c in cs}
+
+# 예전에 쓰던 이름. 지우지 않는다 — 이미 적어 둔 내역이 이 이름을 들고 있고,
+# 이름을 없애면 그 내역이 분류를 잃는다. 쓰는 데가 없으면 **고르는 목록에만**
+# 안 보인다 (새로 들어온 월세·관리비와 헷갈리지 않게).
+LEDGER_LEGACY_CATEGORIES: tuple[str, ...] = ("주거/관리비",)
+
+# 1차가 '수입' 인 것만 수입, 나머지는 지출. 여기서 끌어내므로 표가 하나다.
+LEDGER_INCOME_CATEGORIES: list[str] = list(LEDGER_TREE[LEDGER_GROUP_INCOME])
+LEDGER_COST_CATEGORIES: list[str] = [c for g, cs in LEDGER_TREE.items()
+                                     if g != LEDGER_GROUP_INCOME for c in cs]
 LEDGER_CATEGORIES: list[str] = LEDGER_INCOME_CATEGORIES + LEDGER_COST_CATEGORIES
 
 INCOME, COST = "income", "cost"
@@ -240,6 +263,9 @@ class Ledger:
     budgets: dict[str, float] = field(default_factory=dict)   # 분류 → 한 달 예산(원)
     custom: dict[str, str] = field(default_factory=dict)      # 직접 만든 분류 → "income" | "cost"
     fixed: list[Fixed] = field(default_factory=list)          # 고정 지출·수입 규칙
+    # 직접 만든 분류 → 1차 분류. 예전 파일에는 이 키가 없어서 빈 칸으로 읽히고,
+    # 그러면 '기타'(수입이면 '수입')로 본다 — 그래서 파일을 바꿀 필요가 없었다.
+    custom_groups: dict[str, str] = field(default_factory=dict)
 
     # ---- 분류 (기본 + 직접 만든 것) ----
     def kind_of(self, category: str) -> str:
@@ -247,17 +273,58 @@ class Ledger:
         k = self.custom.get(category)
         return k if k in (INCOME, COST) else kind_of(category)
 
+    def group_of(self, category: str) -> str:
+        """2차 분류 → 1차 분류. 직접 만든 분류는 정해 둔 1차, 없으면 수입/기타."""
+        g = LEDGER_GROUP_OF.get(category)
+        if g:
+            return g
+        g = (self.custom_groups.get(category) or "").strip()
+        if g in LEDGER_TREE:
+            return g
+        return LEDGER_GROUP_INCOME if self.kind_of(category) == INCOME else LEDGER_GROUP_ETC
+
+    def legacy_in_use(self, name: str) -> bool:
+        """예전 이름을 아직 쓰고 있는가 (내역·예산·고정 규칙 가운데 하나라도)."""
+        return (self.category_in_use(name) > 0
+                or self.budget_of(name) > 0
+                or any(f.category == name for f in self.fixed))
+
+    def _listed(self, name: str) -> bool:
+        """고르는 목록에 내놓을 이름인가. 안 쓰는 예전 이름만 뺀다."""
+        return name not in LEDGER_LEGACY_CATEGORIES or self.legacy_in_use(name)
+
     def income_categories(self) -> list[str]:
-        return LEDGER_INCOME_CATEGORIES + [c for c, k in self.custom.items() if k == INCOME]
+        return ([c for c in LEDGER_INCOME_CATEGORIES if self._listed(c)]
+                + [c for c, k in self.custom.items() if k == INCOME])
 
     def cost_categories(self) -> list[str]:
-        return LEDGER_COST_CATEGORIES + [c for c, k in self.custom.items() if k == COST]
+        return ([c for c in LEDGER_COST_CATEGORIES if self._listed(c)]
+                + [c for c, k in self.custom.items() if k == COST])
 
     def categories(self) -> list[str]:
         return self.income_categories() + self.cost_categories()
 
-    def add_category(self, name: str, kind: str = COST) -> str:
-        """분류를 하나 만든다. 만들었으면 빈 문자열, 못 만들었으면 까닭을 돌려준다."""
+    def category_rows(self) -> list[dict]:
+        """분류를 1차 → 2차 두 단으로. [{value, kind, custom, group, first}]
+
+        줄 순서는 LEDGER_TREE 가 정하고, 직접 만든 분류는 제 1차의 끝에 붙는다.
+        first 가 켜진 줄 위에 1차 이름을 얹으면 두 단으로 보인다.
+        """
+        rows: list[dict] = []
+        for group, cats in LEDGER_TREE.items():
+            names = [c for c in cats if self._listed(c)]
+            names += [c for c in self.custom if self.group_of(c) == group]
+            for n, name in enumerate(names):
+                rows.append({"value": name, "kind": self.kind_of(name),
+                             "custom": name in self.custom,
+                             "group": group, "first": n == 0})
+        return rows
+
+    def add_category(self, name: str, kind: str = COST, group: str = "") -> str:
+        """분류를 하나 만든다. 만들었으면 빈 문자열, 못 만들었으면 까닭을 돌려준다.
+
+        group 을 비우면 1차는 '기타'(수입이면 '수입')로 본다.
+        """
         name = (name or "").strip()
         if not name:
             return "이름을 적어 주세요."
@@ -268,6 +335,10 @@ class Ledger:
         if name in self.custom:
             return f"'{name}' 은 이미 만들어 둔 분류입니다."
         self.custom[name] = INCOME if kind == INCOME else COST
+        g = (group or "").strip()
+        # 수입 1차에는 수입 분류만, 나머지 1차에는 지출 분류만 넣는다
+        if g in LEDGER_TREE and (g == LEDGER_GROUP_INCOME) == (self.custom[name] == INCOME):
+            self.custom_groups[name] = g
         return ""
 
     def category_in_use(self, name: str) -> int:
@@ -282,6 +353,7 @@ class Ledger:
         if used:
             return f"'{name}' 으로 적어 둔 내역이 {used}건 있습니다."
         self.custom.pop(name, None)
+        self.custom_groups.pop(name, None)
         self.budgets.pop(name, None)
         return ""
 
@@ -706,6 +778,7 @@ class Ledger:
         return {"entries": [e.to_dict() for e in self.entries],
                 "budgets": {k: v for k, v in self.budgets.items() if v > 0},
                 "custom": dict(self.custom),
+                "custom_groups": dict(self.custom_groups),
                 "fixed": [f.to_dict() for f in self.fixed]}
 
     @classmethod
@@ -724,9 +797,15 @@ class Ledger:
             name = str(k).strip()
             if name and name not in LEDGER_CATEGORIES:
                 custom[name] = INCOME if str(v) == INCOME else COST
+        groups = {}
+        for k, v in (d.get("custom_groups") or {}).items():
+            name, g = str(k).strip(), str(v).strip()
+            if name in custom and g in LEDGER_TREE:
+                groups[name] = g
         fixed = [Fixed.from_dict(x) for x in d.get("fixed") or [] if isinstance(x, dict)]
-        return cls([Entry.from_dict(x) for x in d.get("entries", []) if isinstance(x, dict)],
-                   budgets, custom, fixed)
+        return cls(entries=[Entry.from_dict(x) for x in d.get("entries", [])
+                            if isinstance(x, dict)],
+                   budgets=budgets, custom=custom, fixed=fixed, custom_groups=groups)
 
 
 def sample_ledger(basis: date | None = None) -> Ledger:
@@ -737,13 +816,14 @@ def sample_ledger(basis: date | None = None) -> Ledger:
     lg = Ledger()
     for yy, mm in ((prev_y, prev_m), (y, m)):
         lg.add(Entry(f"{yy:04d}-{mm:02d}-25", "급여", 2_000_000, "회사", pay="계좌이체"))
-        lg.add(Entry(f"{yy:04d}-{mm:02d}-05", "주거/관리비", 600_000, "월세·관리비", pay="자동이체"))
+        lg.add(Entry(f"{yy:04d}-{mm:02d}-05", "월세", 500_000, "월세", pay="자동이체"))
+        lg.add(Entry(f"{yy:04d}-{mm:02d}-05", "관리비", 100_000, "관리비", pay="자동이체"))
         lg.add(Entry(f"{yy:04d}-{mm:02d}-07", "식비", 420_000, "장보기·외식", pay="카드"))
         lg.add(Entry(f"{yy:04d}-{mm:02d}-12", "통신", 88_000, "휴대폰", pay="자동이체"))
         lg.add(Entry(f"{yy:04d}-{mm:02d}-15", "교통", 110_000, "대중교통", pay="카드"))
         lg.add(Entry(f"{yy:04d}-{mm:02d}-20", "문화/여가", 95_000, "영화·구독", pay="간편결제"))
     lg.add(Entry(f"{y:04d}-{m:02d}-10", "상여금", 500_000, "성과급"))
-    for c, v in (("식비", 400_000), ("주거/관리비", 600_000), ("교통", 100_000),
+    for c, v in (("식비", 400_000), ("월세", 500_000), ("관리비", 100_000), ("교통", 100_000),
                  ("통신", 90_000), ("문화/여가", 80_000)):
         lg.set_budget(c, v)
     return lg

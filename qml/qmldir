@@ -1,5 +1,6 @@
 singleton Theme 1.0 Theme.qml
 Card 1.0 Card.qml
+CategoryItem 1.0 CategoryItem.qml
 StatRow 1.0 StatRow.qml
 AnimatedMoney 1.0 AnimatedMoney.qml
 ItemDialog 1.0 ItemDialog.qml
@@ -17,3 +18,5 @@ BarChart 1.0 BarChart.qml
 OverviewView 1.0 OverviewView.qml
 ImportDialog 1.0 ImportDialog.qml
 GoalsDialog 1.0 GoalsDialog.qml
+PlanImportDialog 1.0 PlanImportDialog.qml
+LedgerWindow 1.0 LedgerWindow.qml

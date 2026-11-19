@@ -332,6 +332,7 @@ Popup {
                     model: backend.ledgerCategories
                     textRole: "value"
                     valueRole: "value"
+                    delegate: CategoryItem { box: catBox }
                     onActivated: dlg.formKind = backend.ledgerKindOf(String(currentValue))
                 }
             }

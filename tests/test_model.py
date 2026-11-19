@@ -914,3 +914,78 @@ def test_a_failed_save_leaves_the_old_file_alone(tmp_path, monkeypatch):
     except OSError:
         pass
     assert p.read_text(encoding="utf-8") == before           # 원본 그대로
+
+
+# ───────────────────────────────── 1차 / 2차 분류
+def test_every_category_sits_in_exactly_one_group():
+    """트리에 빠진 분류도, 두 번 들어간 분류도 없어야 한다."""
+    from capital_calc.model import CATEGORY_LIST, CATEGORY_ORDER, CATEGORY_TREE
+
+    flat = [c for cs in CATEGORY_TREE.values() for c in cs]
+    assert len(flat) == len(set(flat)) == len(CATEGORY_LIST)
+    assert set(flat) == set(CATEGORY_LIST)
+    assert CATEGORY_ORDER == flat                 # 화면 순서는 트리 순서
+
+
+def test_housing_group_holds_only_housing():
+    """주거 1차에는 주거에 관련된 것만 있다 (이것 때문에 나눈 것이다)."""
+    from capital_calc.model import GROUP_HOUSING, CATEGORY_TREE
+
+    assert CATEGORY_TREE[GROUP_HOUSING] == [Category.DEPOSIT, Category.RENT, Category.MAINT]
+
+
+def test_group_is_filled_from_the_tree_only():
+    """분류표의 group 은 트리가 채운다 — 손으로 적힌 값이 남아 있으면 안 된다."""
+    from capital_calc.model import CATEGORY_INFO, GROUP_OF, group_of
+
+    for cat, info in CATEGORY_INFO.items():
+        assert info["group"] == GROUP_OF[cat] == group_of(cat)
+
+
+def test_calculation_groups_come_from_the_shape_column():
+    """계산이 보는 묶음이 분류표(shape)에서 끌어낸 그대로인지.
+
+    예전에는 이 튜플을 손으로 적었다. 분류를 더하면서 튜플을 잊으면
+    계산에서 조용히 빠지기 때문에 값을 못 박아 둔다.
+    """
+    from capital_calc.model import (INTEREST_CATEGORIES, MONTHLY_COST_CATEGORIES,
+                                    MONTHLY_INCOME_CATEGORIES, ONCE_COST_CATEGORIES,
+                                    ONCE_INCOME_CATEGORIES)
+
+    assert MONTHLY_COST_CATEGORIES == (Category.RENT, Category.MAINT, Category.FIXED)
+    assert ONCE_COST_CATEGORIES == (Category.DEPOSIT, Category.EXPENSE)
+    assert MONTHLY_INCOME_CATEGORIES == (Category.INCOME,)
+    assert ONCE_INCOME_CATEGORIES == (Category.INCOME_ONCE,)
+    assert INTEREST_CATEGORIES == (Category.BANK, Category.SAVING)
+
+
+def test_side_of_tells_capital_from_income_and_cost():
+    from capital_calc.model import SIDE_CAPITAL, SIDE_COST, SIDE_INCOME, side_of
+
+    assert side_of(Category.CASH) == side_of(Category.LOAN) == SIDE_CAPITAL
+    assert side_of(Category.SAVING) == SIDE_CAPITAL          # 나가지만 자본으로 쌓인다
+    assert side_of(Category.INCOME_ONCE) == SIDE_INCOME
+    assert side_of(Category.DEPOSIT) == side_of(Category.MAINT) == SIDE_COST
+
+
+def test_old_files_still_open_after_the_deposit_rename():
+    """'주거' 로 저장된 예전 파일이 보증금/매매가로 읽혀야 한다."""
+    assert Category.DEPOSIT.value == "보증금/매매가"
+    it = Item.from_dict({"name": "전셋집", "category": "주거", "amount": 100_000_000})
+    assert it.category == Category.DEPOSIT
+    old = Item.from_dict({"name": "옛 보증금", "category": "보증금", "amount": 1})
+    assert old.category == Category.DEPOSIT
+
+
+def test_numbers_do_not_move_when_categories_are_regrouped():
+    """1차를 다시 묶어도 분류 번호(cat_index)는 그대로다.
+
+    번호는 QML 이 분류를 가리키는 주소다. 저장 파일에는 이름이 들어가므로
+    번호가 밀려도 데이터는 안 깨지지만, 번호를 쓰는 자리가 백여 군데라
+    일부러 enum 순서로 못 박아 둔다.
+    """
+    from capital_calc.model import CATEGORY_LIST
+
+    assert CATEGORY_LIST == list(Category)
+    assert CATEGORY_LIST.index(Category.CASH) == 0
+    assert CATEGORY_LIST.index(Category.EXPENSE) == len(CATEGORY_LIST) - 1

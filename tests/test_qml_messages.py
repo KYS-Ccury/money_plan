@@ -24,6 +24,16 @@ BAD = ("TypeError", "ReferenceError", "is not a function",
        "Unable to assign", "overrides a member")
 
 
+def _settle(app, ms: int = 400):
+    """'잠깐 기다렸다 한 번만' 갱신하는 타이머가 지나가도록 기다린다."""
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    loop = QEventLoop()
+    QTimer.singleShot(ms, loop.quit)
+    loop.exec()
+    app.processEvents()
+
+
 def test_no_qml_complaints_while_opening_everything():
     QQuickStyle.setStyle("Material")
     app = QGuiApplication.instance() or QGuiApplication([])
@@ -70,6 +80,16 @@ def test_no_qml_complaints_while_opening_everything():
         child("itemDialog").setProperty("visible", False)
         child("goalsDialog").setProperty("visible", True)
         app.processEvents()
+        child("goalsDialog").setProperty("visible", False)
+
+        # 계획 가져오기: 아직 아무것도 안 읽은 채로 열어 본다 (info 가 {} 인 상태)
+        plan_import = child("planImportDialog")
+        QMetaObject.invokeMethod(plan_import, "start")
+        app.processEvents()
+        QMetaObject.invokeMethod(plan_import, "readPasted")
+        app.processEvents()
+        plan_import.setProperty("visible", False)
+        app.processEvents()
     finally:
         qInstallMessageHandler(None)
 
@@ -101,3 +121,121 @@ def test_export_buttons_exist():
     app.processEvents()
     assert png.property("visible") is False      # 그래프가 없는 화면에서는 숨긴다
     assert pdf.property("visible") is True       # PDF 는 어디서든 (요약은 늘 있다)
+
+
+def test_ledger_can_be_popped_out_into_its_own_window():
+    """가계부를 따로 띄우고 본 창으로 되돌리는 동안 QML 이 투덜대지 않는지."""
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    msgs: list[str] = []
+    qInstallMessageHandler(lambda mode, ctx, text: msgs.append(text))
+    try:
+        backend = Backend()
+        backend.loadSample()
+        backend.saveLedgerWindowState(-1, -1, -1, -1, False)   # 닫힌 상태에서 시작
+        engine = QQmlApplicationEngine()
+        engine.addImportPath(str(ROOT))
+        engine.rootContext().setContextProperty("backend", backend)
+        engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+        assert engine.rootObjects(), "QML 로드 실패"
+        win = engine.rootObjects()[0]
+        app.processEvents()
+
+        pane = win.findChild(QObject, "ledgerView")
+        assert pane is not None
+        assert win.property("ledgerPopped") is False
+        assert win.findChild(QObject, "ledgerWindow") is None
+
+        QMetaObject.invokeMethod(win, "popLedgerOut")
+        app.processEvents()
+        assert win.property("ledgerPopped") is True
+        popped = win.findChild(QObject, "ledgerWindow")
+        assert popped is not None, "따로 띄운 가계부 창을 못 찾음"
+        assert popped.findChild(QObject, "ledgerWindowView") is not None
+        assert pane.property("visible") is False          # 본 창 안에서는 숨는다
+        assert backend.ledgerWindowState()["popped"] is True
+
+        # 띄워 둔 채로 화면을 돌려 본다 (바인딩이 둘이 되는 자리다)
+        for mode in ("plan", "overview", "ledger"):
+            win.setProperty("mode", mode)
+            app.processEvents()
+
+        QMetaObject.invokeMethod(win, "popLedgerIn")
+        app.processEvents()
+        assert win.property("ledgerPopped") is False
+        assert win.property("mode") == "ledger"
+        assert pane.property("visible") is True
+        assert backend.ledgerWindowState()["popped"] is False
+
+        QMetaObject.invokeMethod(win, "toggleLedgerWindow")   # 단축키가 쓰는 길
+        app.processEvents()
+        assert win.property("ledgerPopped") is True
+        QMetaObject.invokeMethod(win, "toggleLedgerWindow")
+        app.processEvents()
+        assert win.property("ledgerPopped") is False
+    finally:
+        qInstallMessageHandler(None)
+        backend.saveLedgerWindowState(-1, -1, -1, -1, False)
+
+    bad = [m for m in msgs if any(w in m for w in BAD)]
+    assert not bad, "QML 이 투덜댑니다:\n" + "\n".join(bad)
+
+
+def test_overview_is_kept_alive_but_goes_quiet_while_hidden():
+    """한눈에 보기가 (1) 미리 만들어지고 (2) 안 보이는 동안 값을 새로 뜨지 않는지.
+
+    들어갈 때마다 다시 만들면 한 프레임에 카드·그래프를 다 만들어 창이 멈춘다.
+    그렇다고 숨겨만 두면 안 보이는 값이 계속 다시 계산돼 슬라이더가 느려진다.
+    둘 다 아니어야 한다 — 만들어는 두고, 안 보이면 셈하지 않는다.
+    """
+    QQuickStyle.setStyle("Material")
+    app = QGuiApplication.instance() or QGuiApplication([])
+    msgs: list[str] = []
+    qInstallMessageHandler(lambda mode, ctx, text: msgs.append(text))
+    try:
+        backend = Backend()
+        backend.loadSample()
+        engine = QQmlApplicationEngine()
+        engine.addImportPath(str(ROOT))
+        engine.rootContext().setContextProperty("backend", backend)
+        engine.load(QUrl.fromLocalFile(str(ROOT / "qml" / "Main.qml")))
+        assert engine.rootObjects(), "QML 로드 실패"
+        win = engine.rootObjects()[0]
+        app.processEvents()
+
+        def overview():
+            return win.findChild(QObject, "overviewView")
+
+        QMetaObject.invokeMethod(win, "openOverview")
+        for _ in range(60):                     # asynchronous 로 만들어지는 것을 기다린다
+            app.processEvents()
+            if overview() is not None:
+                break
+        view = overview()
+        assert view is not None, "한눈에 보기가 만들어지지 않음"
+        assert win.property("overviewReady") is True
+        assert view.property("visible") is True
+        assert view.property("stale") is False          # 보이는 동안에는 값이 새것이다
+
+        # 다른 화면으로 가도 **지워지지 않는다** (다시 들어갈 때 바로 떠야 한다)
+        win.setProperty("mode", "plan")
+        app.processEvents()
+        assert overview() is view
+        assert view.property("visible") is False
+
+        # 안 보이는 동안 계획이 바뀌어도 그 자리에서 셈하지 않고 '나중에' 로 둔다
+        backend.months = backend.months + 1
+        for _ in range(3):
+            app.processEvents()
+        _settle(app, 400)                               # 250ms 타이머가 지나가도록
+        assert view.property("stale") is True, "안 보이는데 값을 새로 떴다"
+
+        # 다시 들어가면 그때 한 번 새로 뜬다
+        win.setProperty("mode", "overview")
+        app.processEvents()
+        assert view.property("stale") is False
+    finally:
+        qInstallMessageHandler(None)
+
+    bad = [m for m in msgs if any(w in m for w in BAD)]
+    assert not bad, "QML 이 투덜댑니다:\n" + "\n".join(bad)

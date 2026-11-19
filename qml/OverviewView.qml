@@ -18,9 +18,24 @@ Flickable {
     // 백엔드에 바로 바인딩해 두면 슬라이더를 한 픽셀 끌 때마다 카드 열몇 개가
     // 통째로 다시 계산·배치된다. 그래서 값을 스냅샷으로 떠서 쓰고, 그 스냅샷은
     // 마지막 변화에서 잠깐 지난 뒤 한 번만 새로 뜬다.
-    property var plan: backend.overviewPlan
-    property var led: backend.overviewLedger
-    property var now: backend.overviewThisMonth
+    //
+    // **처음 값도 바인딩이 아니라 그냥 값이다.** 바인딩으로 두면 이 화면을 안 보는
+    // 동안에도 계획이 바뀔 때마다 백엔드를 다시 부른다 (이 화면은 만들어 둔 채로
+    // 숨어 있으므로 그게 바로 예전에 창을 느리게 만든 그 일이다).
+    property var plan: ({ scenario: "", months: 12, basis: "", end: "", capital: 0,
+                          net: 0, target: 0, gap: 0, progress: 0, goalMonth: -1,
+                          goalDateText: "", itemCount: 0,
+                          shortfallMonth: -1, shortfallText: "" })
+    property var led: ({ has: false, months: 0, income: 0, cost: 0, net: 0,
+                         avgNet: 0, bestLabel: "", worstLabel: "" })
+    property var now: ({ label: "", count: 0, income: 0, cost: 0, net: 0,
+                         vsPlan: { has: false } })
+    property var fixed: ({ count: 0, net: 0 })
+    property int scenarioCount: 1
+    property int scenarioIndex: 0
+
+    // 안 보이는 동안 값이 바뀌었는가. 다시 보일 때 한 번만 새로 뜨면 된다.
+    property bool stale: true
     property var trendValues: []
     property var trendSeries: []
     property var goalAmounts: []
@@ -33,6 +48,16 @@ Flickable {
     readonly property int horizon: Math.max(12, plan.months)
 
     function refresh() {
+        // 안 보이는 동안에는 셈하지 않는다 (이 화면은 숨어도 지워지지 않는다).
+        // 다시 보일 때 onVisibleChanged 가 한 번 불러 준다.
+        if (!view.visible) {
+            view.stale = true
+            return
+        }
+        view.stale = false
+        view.fixed = backend.fixedTotals
+        view.scenarioCount = backend.scenarioCount
+        view.scenarioIndex = backend.activeScenario
         view.plan = backend.overviewPlan
         view.led = backend.overviewLedger
         view.now = backend.overviewThisMonth
@@ -61,7 +86,12 @@ Flickable {
         function onSummaryChanged() { refreshTimer.restart() }
         function onLedgerChanged() { refreshTimer.restart() }
         function onBudgetsChanged() { refreshTimer.restart() }
+        function onScenariosChanged() { refreshTimer.restart() }
+        function onFixedChanged() { refreshTimer.restart() }
     }
+
+    // 숨어 있다가 다시 보일 때. 그동안 바뀐 것이 있으면 그때 한 번만 새로 뜬다
+    onVisibleChanged: if (view.visible && view.stale) view.refresh()
 
     Component.onCompleted: view.refresh()
 
@@ -176,7 +206,7 @@ Flickable {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     values: view.trendValues
-                    lineColor: Theme.scenarioColor(backend.activeScenario)
+                    lineColor: Theme.scenarioColor(view.scenarioIndex)
                     series: view.trendSeries
                     target: view.plan.target
                     goalMonth: view.plan.goalMonth
@@ -556,16 +586,16 @@ Flickable {
                         Layout.fillWidth: true
                         spacing: 8
                         Text {
-                            text: backend.fixedTotals.count > 0
-                                  ? "고정 " + backend.fixedTotals.count + "건 · 달마다"
+                            text: view.fixed.count > 0
+                                  ? "고정 " + view.fixed.count + "건 · 달마다"
                                   : "고정 항목 없음"
                             color: Theme.textDim; font.pixelSize: 12
                         }
                         Item { Layout.fillWidth: true }
                         Text {
-                            visible: backend.fixedTotals.count > 0
-                            text: (backend.fixedTotals.net >= 0 ? "+" : "") + backend.won(backend.fixedTotals.net)
-                            color: backend.fixedTotals.net >= 0 ? Theme.green : Theme.red
+                            visible: view.fixed.count > 0
+                            text: (view.fixed.net >= 0 ? "+" : "") + backend.won(view.fixed.net)
+                            color: view.fixed.net >= 0 ? Theme.green : Theme.red
                             font.pixelSize: 14; font.bold: true
                         }
                     }
@@ -577,7 +607,7 @@ Flickable {
         Card {
             Layout.fillWidth: true
             Layout.preferredHeight: scenCol.implicitHeight + Theme.pad * 2 + 30
-            visible: backend.scenarioCount > 1
+            visible: view.scenarioCount > 1
             title: "시나리오 비교  ·  " + view.plan.months + "개월 후"
 
             ColumnLayout {

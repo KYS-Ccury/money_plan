@@ -18,6 +18,17 @@ from capital_calc.backend import Backend  # noqa: E402
 from capital_calc.model import Category, Item, Plan  # noqa: E402
 
 
+def _cat_row(backend, name: str) -> int:
+    """분류 팝업 콤보에서 그 분류가 몇 번째 줄인지.
+
+    줄 번호는 1차 순서(CATEGORY_TREE)라서 분류 번호(cat_index)와 다르다.
+    테스트가 숫자를 외우지 않도록 이름으로 찾는다.
+    """
+    rows = [c["label"] for c in backend.categoryChoices()]
+    assert name in rows, f"{name} 이 목록에 없음: {rows}"
+    return rows.index(name)
+
+
 def _settle(app, ms: int = 400):
     """한눈에 화면의 '잠깐 기다렸다 한 번만' 갱신을 기다린다."""
     from PySide6.QtCore import QEventLoop, QTimer
@@ -501,7 +512,7 @@ def test_item_dialog_can_set_a_repeat():
     app.processEvents()
 
     cat = dlg.findChild(QObject, "itemCategory")
-    cat.setProperty("currentIndex", 10)            # 일시 지출
+    cat.setProperty("currentIndex", _cat_row(backend, "일시 지출"))
     app.processEvents()
     assert dlg.property("canRepeat") is True
 
@@ -539,7 +550,7 @@ def test_item_dialog_pins_a_ledger_category():
     assert dlg.property("ledgerCategory") == ""        # 기본은 자동
 
     cat = dlg.findChild(QObject, "itemCategory")
-    cat.setProperty("currentIndex", 8)                 # 고정 지출
+    cat.setProperty("currentIndex", _cat_row(backend, "고정 지출"))
     app.processEvents()
     dlg.setProperty("amount", 800_000)
     QMetaObject.invokeMethod(dlg, "setLedgerCategory", Q_ARG("QVariant", "식비"))
@@ -591,7 +602,7 @@ def test_item_dialog_tax_and_compound_checkboxes():
     app.processEvents()
 
     cat = dlg.findChild(QObject, "itemCategory")
-    cat.setProperty("currentIndex", 1)                 # 은행 예금
+    cat.setProperty("currentIndex", _cat_row(backend, "은행 예금"))
     app.processEvents()
 
     tax = dlg.findChild(QObject, "itemAfterTax")

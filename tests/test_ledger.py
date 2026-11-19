@@ -260,7 +260,9 @@ def test_custom_categories():
 
     # 기본 분류는 지울 수 없다
     assert lg.remove_category("식비") != ""
-    assert set(LEDGER_CATEGORIES) <= set(lg.categories())
+    # 안 쓰는 예전 이름만 빠지고 나머지는 다 고를 수 있다
+    from capital_calc.ledger import LEDGER_LEGACY_CATEGORIES
+    assert (set(LEDGER_CATEGORIES) - set(LEDGER_LEGACY_CATEGORIES)) <= set(lg.categories())
 
     # 쓰고 있으면 못 지운다
     lg.add(Entry("2026-11-11", "반려동물", 50_000, "사료", kind=lg.kind_of("반려동물")))
@@ -542,3 +544,83 @@ def test_month_days_fills_every_day_of_the_month():
     assert lg.month_days("2026-02")[0]["date"] == "2026-02-01"
     assert len(lg.month_days("2026-02")) == 28
     assert lg.month_days("2026") == []                  # 달이 아니면 빈 목록
+
+
+# ───────────────────────────────── 1차 / 2차 분류
+def test_ledger_tree_has_every_category_once():
+    from capital_calc.ledger import (LEDGER_CATEGORIES, LEDGER_COST_CATEGORIES,
+                                     LEDGER_GROUP_INCOME, LEDGER_INCOME_CATEGORIES,
+                                     LEDGER_TREE, kind_of)
+
+    flat = [c for cs in LEDGER_TREE.values() for c in cs]
+    assert len(flat) == len(set(flat)) == len(LEDGER_CATEGORIES)
+    # 수입/지출은 1차에서 끌어낸다
+    assert LEDGER_INCOME_CATEGORIES == LEDGER_TREE[LEDGER_GROUP_INCOME]
+    assert set(LEDGER_COST_CATEGORIES) == set(flat) - set(LEDGER_INCOME_CATEGORIES)
+    assert kind_of("급여") == "income" and kind_of("월세") == "cost"
+
+
+def test_housing_got_its_own_second_levels():
+    """주거 하나뿐이던 자리가 월세·관리비·공과금·보증금으로 갈라졌다."""
+    from capital_calc.ledger import LEDGER_GROUP_HOUSING, LEDGER_TREE
+
+    assert LEDGER_TREE[LEDGER_GROUP_HOUSING][:4] == ["월세", "관리비", "공과금", "보증금"]
+
+
+def test_old_name_is_hidden_until_it_is_actually_used():
+    """'주거/관리비' 는 쓰는 데가 있을 때만 고르는 목록에 나온다."""
+    from capital_calc.ledger import Entry, Ledger
+
+    lg = Ledger()
+    assert "주거/관리비" not in lg.categories()
+    assert lg.kind_of("주거/관리비") == "cost"          # 이름 자체는 살아 있다
+    assert lg.group_of("주거/관리비") == "주거"
+
+    lg.add(Entry("2026-11-05", "주거/관리비", 600_000, "월세"))
+    assert "주거/관리비" in lg.cost_categories()         # 쓰고 있으면 나온다
+    lg.remove(0)
+    assert "주거/관리비" not in lg.categories()
+
+    lg.set_budget("주거/관리비", 500_000)                # 예산만 걸어 둔 때도
+    assert "주거/관리비" in lg.cost_categories()
+
+
+def test_category_rows_are_two_levels():
+    from capital_calc.ledger import LEDGER_GROUP_LIST, Ledger
+
+    lg = Ledger()
+    rows = lg.category_rows()
+    assert [r["group"] for r in rows if r["first"]] == LEDGER_GROUP_LIST
+    assert rows[0]["value"] == "급여" and rows[0]["group"] == "수입"
+    for r in rows:
+        assert lg.group_of(r["value"]) == r["group"]
+        assert r["kind"] == lg.kind_of(r["value"])
+
+
+def test_custom_category_keeps_its_first_level_across_save():
+    """직접 만든 분류의 1차는 새 칸에 담긴다 — 예전 파일은 그대로 열린다."""
+    from capital_calc.ledger import Ledger
+
+    lg = Ledger()
+    assert lg.add_category("반려동물", "cost") == ""
+    assert lg.group_of("반려동물") == "기타"             # 안 고르면 기타
+    assert lg.add_category("정수기", "cost", "주거") == ""
+    assert lg.group_of("정수기") == "주거"
+    assert lg.add_category("부모님 용돈", "income") == ""
+    assert lg.group_of("부모님 용돈") == "수입"
+
+    rows = {r["value"]: r for r in lg.category_rows()}
+    assert rows["정수기"]["group"] == "주거" and rows["정수기"]["custom"] is True
+
+    again = Ledger.from_dict(lg.to_dict())
+    assert again.group_of("정수기") == "주거"
+    assert again.group_of("반려동물") == "기타"
+
+    # 예전 파일 (custom_groups 키가 없다) 도 그대로 열린다
+    old = dict(lg.to_dict())
+    old.pop("custom_groups")
+    back = Ledger.from_dict(old)
+    assert back.group_of("정수기") == "기타" and "정수기" in back.custom
+
+    lg.remove_category("정수기")
+    assert "정수기" not in lg.custom_groups

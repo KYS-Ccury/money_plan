@@ -21,7 +21,12 @@ from pathlib import Path
 
 
 class Category(str, Enum):
-    """분류. 나열 순서가 곧 화면 순서다 — 자본 → 수입 → 지출, 각 묶음 안에서 월 → 일시."""
+    """2차 분류. 저장 파일에는 이 **값(한글 이름)** 이 들어간다.
+
+    여기 나열한 순서는 **번호(cat_index) 순서**다 — QML·백엔드가 분류를 가리키는
+    주소이고, 한 번 정하면 바꾸지 않는다 (바꾸면 번호를 쓰는 자리를 다 고쳐야 한다).
+    **사람이 보는 순서는 CATEGORY_TREE 가 정한다.**
+    """
 
     # ── 자본 (가지고 있는 것) ──
     CASH = "현금/자산"          # 자본
@@ -35,7 +40,7 @@ class Category(str, Enum):
     RENT = "월세"               # 월 지출 (적용 기간)
     MAINT = "관리비"            # 월 지출 (적용 기간)
     FIXED = "고정 지출"         # 월 지출 (적용 기간) — 보험료·통신비·식비처럼 매달 나가는 돈
-    DEPOSIT = "주거"            # 전세·반전세·월세·매매. 보증금/매매가는 일시 지출, 월세는 월 지출
+    DEPOSIT = "보증금/매매가"            # 전세·반전세·월세·매매. 보증금/매매가는 일시 지출, 월세는 월 지출
     EXPENSE = "일시 지출"       # 일시 지출 (지출일 지정 가능)
 
 
@@ -45,6 +50,7 @@ CATEGORY_ALIASES: dict[str, str] = {
     "기타 수입(월)": Category.INCOME.value,
     "고정 지출(월)": Category.FIXED.value,
     "보증금": Category.DEPOSIT.value,
+    "주거": Category.DEPOSIT.value,
 }
 
 # 주거 형태
@@ -70,50 +76,66 @@ HOUSING_INFO: dict[str, dict] = {
             "hint": "집값이 그대로 나가고 돌려받지 않습니다. 취득세·중개수수료는 일시 지출로 따로 넣으세요"},
 }
 
-# 분류 묶음 (화면에서 쓰는 큰 구분)
-GROUP_CAPITAL, GROUP_INCOME, GROUP_COST = "자본", "수입", "지출"
+# 1차 분류 (묶음). 2차 분류(Category)를 '무엇에 쓰는 돈인가' 로 묶는다.
+# 어느 2차가 어느 1차에 속하는지는 아래 CATEGORY_TREE 한 군데서만 정한다.
+GROUP_CAPITAL, GROUP_INCOME = "자본", "수입"
+GROUP_HOUSING, GROUP_LIVING, GROUP_FINANCE = "주거", "생활", "금융"
+
+# ── 돈이 오가는 성격 (shape) ──
+# 예전에는 이 사실이 분류표에 없고 MONTHLY_COST_CATEGORIES 같은 튜플에만 있었다.
+# 그래서 분류를 더하면 표는 고치고도 튜플을 잊어 계산에서 빠질 수 있었다.
+SHAPE_NONE = "none"                    # 가지고만 있다 (현금)
+SHAPE_HOLD = "hold"                    # 가지고 있고 이자가 붙는다 (예금)
+SHAPE_SAVE = "save"                    # 매달 나가고 그만큼 자본으로 쌓인다 (적금)
+SHAPE_LOAN = "loan"                    # 빌린 돈 — 상환·이자로 제 계산을 따른다
+SHAPE_MONTHLY_COST = "monthly_cost"    # 적용 기간 동안 매달 나간다
+SHAPE_MONTHLY_INCOME = "monthly_income"  # 적용 기간 동안 매달 들어온다
+SHAPE_ONCE_COST = "once_cost"          # 한 번 나간다 (되풀이 가능)
+SHAPE_ONCE_INCOME = "once_income"      # 한 번 들어온다 (되풀이 가능)
 
 # 분류별 특성
 #   amount_label : 금액 입력칸 이름
 #   uses_rate    : 연이율을 쓰는가
 #   date_mode    : ""(날짜 없음) | "range"(시작일~종료일) | "once"(하루에 끝나는 돈)
 #   flow         : "cost"(나가는 돈) | "income"(들어오는 돈) | ""(자본·대출처럼 둘 다 아닌 것)
-#   group        : 자본 | 수입 | 지출
+#   group        : 1차 분류. **여기 적지 않는다** — CATEGORY_TREE 가 채운다
+#   shape        : 돈이 어떻게 오가는가. 계산이 갈라지는 바로 그 기준이고,
+#                  MONTHLY_COST_CATEGORIES 같은 묶음 표를 여기서 끌어낸다
 #   uses_growth  : 해마다 오르는 돈인가 (급여 인상, 물가·월세 인상)
 #   returnable   : 돌려받을 수 있는 돈인가 (보증금). 반환일을 넣으면 그 달에 되돌아온다
 CATEGORY_INFO: dict[Category, dict] = {
-    Category.CASH: {"group": GROUP_CAPITAL, "amount_label": "보유 금액", "uses_rate": False,
+    Category.CASH: {"shape": SHAPE_NONE, "amount_label": "보유 금액", "uses_rate": False,
                     "date_mode": "", "flow": "",
                     "hint": "지금 가진 돈. 통장 잔고·현금처럼 이자가 붙지 않는 자본"},
-    Category.BANK: {"group": GROUP_CAPITAL, "amount_label": "예금액", "uses_rate": True,
+    Category.BANK: {"shape": SHAPE_HOLD, "amount_label": "예금액", "uses_rate": True,
                     "date_mode": "", "flow": "",
                     "hint": "원금은 자본에 포함, 이자는 매달 수입"},
-    Category.SAVING: {"group": GROUP_CAPITAL, "amount_label": "월 납입액", "uses_rate": True,
+    Category.SAVING: {"shape": SHAPE_SAVE, "amount_label": "월 납입액", "uses_rate": True,
                       "date_mode": "range", "flow": "cost", "uses_support": True,
                       "hint": "매달 넣는 적금·저축. 납입 기간 동안 매달 나가고 그만큼 자본으로 쌓입니다. "
                               "청년도약계좌처럼 보태 주는 돈이 있으면 월 지원금에 넣으세요"},
-    Category.LOAN: {"group": GROUP_CAPITAL, "amount_label": "대출 원금", "uses_rate": True,
+    Category.LOAN: {"shape": SHAPE_LOAN, "amount_label": "대출 원금", "uses_rate": True,
                     "date_mode": "range", "flow": "",
                     "hint": "대출 기간 동안 원금은 자본에 포함, 이자는 잔액 기준 매달 지출. 정기·중도 상환으로 잔액을 줄일 수 있고 종료일에 잔액 상환"},
-    Category.INCOME: {"group": GROUP_INCOME, "amount_label": "월 수입", "uses_rate": False,
+    Category.INCOME: {"shape": SHAPE_MONTHLY_INCOME, "amount_label": "월 수입", "uses_rate": False,
                       "uses_growth": True, "date_mode": "range", "flow": "income",
                       "hint": "급여·부업처럼 적용 기간 동안 매달 들어오는 돈 (종료일 비우면 계속)"},
-    Category.INCOME_ONCE: {"group": GROUP_INCOME, "amount_label": "수입액", "uses_rate": False,
+    Category.INCOME_ONCE: {"shape": SHAPE_ONCE_INCOME, "amount_label": "수입액", "uses_rate": False,
                            "date_mode": "once", "flow": "income",
                            "hint": "상여금·퇴직금·만기 적금처럼 한 번만 들어오는 돈. 수입일을 비우면 기준일에 들어옵니다"},
-    Category.RENT: {"group": GROUP_COST, "amount_label": "월세", "uses_rate": False,
+    Category.RENT: {"shape": SHAPE_MONTHLY_COST, "amount_label": "월세", "uses_rate": False,
                     "uses_growth": True, "date_mode": "range", "flow": "cost",
                     "hint": "적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
-    Category.MAINT: {"group": GROUP_COST, "amount_label": "월 관리비", "uses_rate": False,
+    Category.MAINT: {"shape": SHAPE_MONTHLY_COST, "amount_label": "월 관리비", "uses_rate": False,
                      "uses_growth": True, "date_mode": "range", "flow": "cost",
                      "hint": "적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
-    Category.FIXED: {"group": GROUP_COST, "amount_label": "월 고정 지출", "uses_rate": False,
+    Category.FIXED: {"shape": SHAPE_MONTHLY_COST, "amount_label": "월 고정 지출", "uses_rate": False,
                      "uses_growth": True, "date_mode": "range", "flow": "cost",
                      "hint": "보험료·통신비·식비·교통비처럼 적용 기간 동안 매달 나가는 돈 (종료일 비우면 계속)"},
-    Category.DEPOSIT: {"group": GROUP_COST, "amount_label": "보증금", "uses_rate": False,
+    Category.DEPOSIT: {"shape": SHAPE_ONCE_COST, "amount_label": "보증금", "uses_rate": False,
                        "date_mode": "once", "flow": "cost", "returnable": True, "housing": True,
                        "hint": "전세·반전세·월세·매매 중에서 고릅니다. 입주일에 보증금(매매가)이 나가고, 만기에 돌려받습니다"},
-    Category.EXPENSE: {"group": GROUP_COST, "amount_label": "지출액", "uses_rate": False,
+    Category.EXPENSE: {"shape": SHAPE_ONCE_COST, "amount_label": "지출액", "uses_rate": False,
                        "date_mode": "once", "flow": "cost",
                        "hint": "이사비·수수료처럼 한 번만 나가는 돈. 지출일을 비우면 기준일에 나갑니다"},
 }
@@ -128,24 +150,77 @@ REPAY_METHOD_LIST: list[tuple[str, str]] = [
 REPAY_METHODS: dict[str, str] = dict(REPAY_METHOD_LIST)
 TERM_METHODS = ("equal_principal", "equal_payment")   # 만기(종료일)가 있어야 계산되는 방식
 
+# ────────────────────────────────── 1차 분류 → 2차 분류
+# 이 표가 **1차·2차와 사람이 보는 순서**를 한 군데서 정한다.
+# 분류를 더하거나 옮길 때 고칠 곳은 여기와 CATEGORY_INFO 둘뿐이다.
+CATEGORY_TREE: dict[str, list[Category]] = {
+    GROUP_CAPITAL: [Category.CASH, Category.BANK],
+    GROUP_INCOME: [Category.INCOME, Category.INCOME_ONCE],
+    GROUP_HOUSING: [Category.DEPOSIT, Category.RENT, Category.MAINT],
+    GROUP_LIVING: [Category.FIXED, Category.EXPENSE],
+    GROUP_FINANCE: [Category.SAVING, Category.LOAN],
+}
+GROUP_LIST: list[str] = list(CATEGORY_TREE)
+GROUP_OF: dict[Category, str] = {c: g for g, cs in CATEGORY_TREE.items() for c in cs}
+
+# 분류표의 'group' 은 손으로 적지 않는다 — 두 군데면 반드시 어긋난다
+for _cat, _group in GROUP_OF.items():
+    CATEGORY_INFO[_cat]["group"] = _group
+
+# 번호(cat_index)의 순서. **CATEGORY_TREE 와 일부러 다르다.**
+# 저장 파일에는 분류가 이름으로 들어가므로 번호는 실행 중에만 쓰는 주소다.
+CATEGORY_LIST: list[Category] = list(Category)
+# 화면에 늘어놓을 순서 (1차 순서대로 평평하게)
+CATEGORY_ORDER: list[Category] = [c for cs in CATEGORY_TREE.values() for c in cs]
+ORDER_OF: dict[Category, int] = {c: i for i, c in enumerate(CATEGORY_ORDER)}
+
+if set(CATEGORY_ORDER) != set(CATEGORY_LIST):      # 분류를 더하고 트리에 안 넣은 때
+    missing = [c.value for c in CATEGORY_LIST if c not in ORDER_OF]
+    raise RuntimeError(f"CATEGORY_TREE 에 빠진 분류: {missing}")
+
+
+def group_of(category: Category) -> str:
+    """2차 분류 → 1차 분류."""
+    return GROUP_OF[category]
+
+
+def _shaped(*shapes: str) -> tuple[Category, ...]:
+    """성격(shape)이 맞는 분류들. 계산이 보는 묶음을 분류표에서 끌어낸다."""
+    return tuple(c for c in CATEGORY_LIST if CATEGORY_INFO[c]["shape"] in shapes)
+
+
+# 자본으로 잡히는가 / 들어오는 돈인가 / 나가는 돈인가.
+# 1차가 다섯이 되어 '자본·수입·지출' 로 가를 수 없는 자리에서 쓴다
+# (가져오기 미리보기 합계, 비중).
+SIDE_CAPITAL, SIDE_INCOME, SIDE_COST = "capital", "income", "cost"
+_SIDE_BY_SHAPE: dict[str, str] = {
+    SHAPE_NONE: SIDE_CAPITAL, SHAPE_HOLD: SIDE_CAPITAL,
+    SHAPE_SAVE: SIDE_CAPITAL, SHAPE_LOAN: SIDE_CAPITAL,
+    SHAPE_MONTHLY_INCOME: SIDE_INCOME, SHAPE_ONCE_INCOME: SIDE_INCOME,
+    SHAPE_MONTHLY_COST: SIDE_COST, SHAPE_ONCE_COST: SIDE_COST,
+}
+
+
+def side_of(category: Category) -> str:
+    """분류 → capital | income | cost."""
+    return _SIDE_BY_SHAPE[CATEGORY_INFO[category]["shape"]]
+
+
 # 매달 같은 금액이 나가는 분류 (적용 기간 동안)
-MONTHLY_COST_CATEGORIES = (Category.RENT, Category.MAINT, Category.FIXED)
+MONTHLY_COST_CATEGORIES = _shaped(SHAPE_MONTHLY_COST)
 # 한 번만 나가는 분류
 INTEREST_TAX = 15.4          # 이자소득세 (소득세 14% + 지방소득세 1.4%)
-INTEREST_CATEGORIES = (Category.BANK, Category.SAVING)   # 이자가 붙는 분류
+INTEREST_CATEGORIES = _shaped(SHAPE_HOLD, SHAPE_SAVE)    # 이자가 붙는 분류
 
-ONCE_COST_CATEGORIES = (Category.DEPOSIT, Category.EXPENSE)
+ONCE_COST_CATEGORIES = _shaped(SHAPE_ONCE_COST)
 # 매달 들어오는 분류 (적용 기간 동안)
-MONTHLY_INCOME_CATEGORIES = (Category.INCOME,)
+MONTHLY_INCOME_CATEGORIES = _shaped(SHAPE_MONTHLY_INCOME)
 # 한 번만 들어오는 분류
-ONCE_INCOME_CATEGORIES = (Category.INCOME_ONCE,)
-
-CATEGORY_LIST: list[Category] = list(Category)
-
+ONCE_INCOME_CATEGORIES = _shaped(SHAPE_ONCE_INCOME)
 
 def categories_in(group: str) -> list[Category]:
-    """묶음(자본/수입/지출)에 속한 분류들 (화면 순서)."""
-    return [c for c in CATEGORY_LIST if CATEGORY_INFO[c]["group"] == group]
+    """1차 분류에 속한 2차 분류들 (화면 순서)."""
+    return list(CATEGORY_TREE.get(group, ()))
 
 
 # ---------------------------------------------------------------- 날짜 유틸

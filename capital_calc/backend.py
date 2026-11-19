@@ -30,11 +30,14 @@ from PySide6.QtCore import (
 from .export_excel import composition, export_plan
 from .export_pdf import export_summary
 from .import_ledger import parse_file, parse_text
+from .import_plan import parse_file as parse_plan_file
+from .import_plan import parse_text as parse_plan_text
 from .ledger import sort_key
 from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Fixed,
                      Ledger, kind_of, month_key, prev_period, same_day_in, sample_ledger,
                      shift_month)
-from .model import INTEREST_CATEGORIES, INTEREST_TAX
+from .model import (CATEGORY_TREE, INTEREST_CATEGORIES, INTEREST_TAX, ORDER_OF,
+                     SIDE_CAPITAL, SIDE_COST, SIDE_INCOME, group_of, side_of)
 from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
                      REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS, month_offset,
                      Category, Item, Plan, Workspace, add_months, parse_date, sample_plan, won)
@@ -394,8 +397,16 @@ class ItemListModel(QAbstractListModel):
         self.endRemoveRows()
 
 
+def _display_pos(cat_index: int) -> int:
+    """분류 번호 → 화면에 놓이는 자리. 번호 순서가 아니라 1차 순서로 늘어놓는다
+    (CATEGORY_TREE). 트리에 없는 번호는 맨 뒤로 보낸다."""
+    if 0 <= cat_index < len(CATEGORY_LIST):
+        return ORDER_OF[CATEGORY_LIST[cat_index]]
+    return len(CATEGORY_LIST)
+
+
 class GroupedItems(QSortFilterProxyModel):
-    """분류별로 묶어 보여주는 프록시. 분류 순서(CATEGORY_LIST)로 정렬한다.
+    """분류별로 묶어 보여주는 프록시. 1차 분류 순서(CATEGORY_TREE)로 정렬한다.
     같은 분류 안에서는 원본 순서를 유지한다 (안정 정렬).
 
     접기는 '걸러내기'가 아니라 '화면에서 숨기기'다. 줄을 걸러내면 그 분류의
@@ -427,7 +438,7 @@ class GroupedItems(QSortFilterProxyModel):
         a = self.sourceModel().data(left, ItemListModel.CategoryIndexRole)
         b = self.sourceModel().data(right, ItemListModel.CategoryIndexRole)
         if a != b:
-            return a < b
+            return _display_pos(a) < _display_pos(b)
         return left.row() < right.row()        # 같은 분류: 원본 순서
 
     def is_collapsed(self, cat_index: int) -> bool:
@@ -635,7 +646,8 @@ class Backend(QObject):
     undoChanged = Signal()          # 되돌리기 더미 변경
     dirtyChanged = Signal()         # 저장 안 된 변경 유무
     selectionChanged = Signal()     # 가계부에서 고른 줄 변경
-    importChanged = Signal()        # 가져오기 미리보기 변경
+    importChanged = Signal()        # 가계부 가져오기 미리보기 변경
+    planImportChanged = Signal()    # 계획(항목) 가져오기 미리보기 변경
     saved = Signal(str)        # 저장 완료 (경로)
     exported = Signal(str)     # 엑셀 내보내기 완료 (경로)
     loaded = Signal(str)       # 불러오기 완료 (경로)
@@ -655,6 +667,8 @@ class Backend(QObject):
         self._selected: set[int] = set()        # 가계부에서 고른 줄 (entries 번호)
         self._import: list[dict] = []           # 가져오기 미리보기 (아직 넣지 않은 내역)
         self._import_info: dict = {}
+        self._plan_import: list[dict] = []      # 계획 가져오기 미리보기 (아직 넣지 않은 항목)
+        self._plan_import_info: dict = {}
         self._ledger_model.set_selection(self._selected)
         self._ledger_year = ""
         self._ledger_month = 0          # 0 = 그 해 전체
@@ -780,7 +794,7 @@ class Backend(QObject):
         try:
             cat = Category(category_name)
         except ValueError:
-            return {"count": 0, "total": 0.0, "monthly": 0.0, "catIndex": -1}
+            return {"count": 0, "total": 0.0, "monthly": 0.0, "catIndex": -1, "group": ""}
         basis = self._plan.basis
         all_items = [i for i in self._plan.items if i.category == cat]
         items = [i for i in all_items if i.active]       # 합계는 켜진 것만
@@ -796,6 +810,7 @@ class Backend(QObject):
             "total": sum(i.amount for i in items),
             "monthly": monthly,
             "catIndex": CATEGORY_LIST.index(cat),
+            "group": group_of(cat),
         }
 
     # ---- 시나리오 ----
@@ -932,7 +947,23 @@ class Backend(QObject):
 
     @Property("QVariantList", constant=True)
     def categories(self) -> list[str]:
+        """2차 분류 이름들 — **번호(cat_index) 순서**다 (사람이 보는 순서가 아니다)."""
         return [c.value for c in CATEGORY_LIST]
+
+    @Slot(result="QVariantList")
+    def categoryChoices(self) -> list[dict]:
+        """분류 고르는 목록을 1차 → 2차 두 단으로.
+
+        [{index, label, group, first}] — index 는 addItem 이 받는 번호(cat_index)이고,
+        줄 순서는 1차 순서다. first 가 켜진 줄 위에 1차 이름을 얹으면 두 단이 된다.
+        번호와 줄 번호가 다르므로 팝업은 반드시 index 를 보고 말해야 한다.
+        """
+        out = []
+        for group, cats in CATEGORY_TREE.items():
+            for n, cat in enumerate(cats):
+                out.append({"index": CATEGORY_LIST.index(cat), "label": cat.value,
+                            "group": group, "first": n == 0})
+        return out
 
     def _get_months(self) -> int:
         return self._plan.months
@@ -1633,6 +1664,147 @@ class Backend(QObject):
         self._items.clear()
         self._set_status("모든 항목을 삭제했습니다.")
 
+    # ---- 계획(항목) 가져오기 ----
+    # 가계부 가져오기와 같은 흐름이다: 미리보기를 먼저 만들고(아직 넣지 않는다),
+    # 무엇을 넣을지 사용자가 정한 다음에야 계획에 들어간다.
+    PLAN_IMPORT_PREVIEW = 200
+
+    def _plan_dupe_keys(self) -> set:
+        return {(it.name.strip(), it.category.value, round(it.amount)) for it in self._plan.items}
+
+    def _mark_plan_import(self, rows: list[dict], problems: list[str], how: str, source: str) -> dict:
+        """읽어 온 항목에 '이미 있는 항목인가' 를 표시하고 미리보기를 만든다."""
+        # 읽긴 읽었는데 한 줄도 못 건졌고 까닭도 없으면(그림 파일을 고른 때처럼)
+        # 창에 아무 말도 안 뜬다. 그러면 사용자는 뭘 잘못했는지 알 수 없다.
+        if not rows and not problems:
+            problems = ["이름·분류·금액을 찾지 못했습니다 (머리글이 있는 파일인지 보세요)"]
+        seen = self._plan_dupe_keys()
+        self._plan_import = []
+        for r in rows:
+            r = dict(r)
+            key = (r["name"].strip(), r["category"], round(r["amount"]))
+            r["dupe"] = key in seen
+            seen.add(key)                 # 파일 안에서 같은 항목이 두 번 나오는 것도 중복으로 본다
+            self._plan_import.append(r)
+        dupes = sum(1 for r in self._plan_import if r["dupe"])
+        # 1차가 다섯이 되었으니 묶음 이름으로 더하지 않는다.
+        # '자본으로 잡히는가 / 들어오는가 / 나가는가' 로 모은다
+        sides = {SIDE_CAPITAL: 0.0, SIDE_INCOME: 0.0, SIDE_COST: 0.0}
+        for r in self._plan_import:
+            sides[side_of(Category(r["category"]))] += r["amount"]
+        self._plan_import_info = {
+            "ok": bool(self._plan_import),
+            "source": source, "how": how,
+            "count": len(self._plan_import), "dupes": dupes,
+            "fresh": len(self._plan_import) - dupes,
+            "capital": sides[SIDE_CAPITAL],
+            "income": sides[SIDE_INCOME],
+            "cost": sides[SIDE_COST],
+            "problems": problems[:30], "problemCount": len(problems),
+        }
+        self.planImportChanged.emit()
+        return self._plan_import_info
+
+    @Slot(str, result="QVariantMap")
+    def previewPlanImportFile(self, url_or_path: str) -> dict:
+        """파일을 읽어 미리보기를 만든다 (아직 계획에 넣지 않는다)."""
+        path = self._to_path(url_or_path)
+        try:
+            rows, problems, how = parse_plan_file(path)
+        except Exception as e:                      # 파일이 깨졌거나 열 수 없을 때
+            self._plan_import, self._plan_import_info = [], {
+                "ok": False, "source": path.name, "how": "",
+                "count": 0, "dupes": 0, "fresh": 0,
+                "capital": 0.0, "income": 0.0, "cost": 0.0,
+                "problems": [f"읽지 못했습니다: {e}"], "problemCount": 1,
+            }
+            self.planImportChanged.emit()
+            self.failed.emit(f"가져오기 실패: {path.name} — {e}")
+            return self._plan_import_info
+        return self._mark_plan_import(rows, problems, how, path.name)
+
+    @Slot(str, result="QVariantMap")
+    def previewPlanImportText(self, text: str) -> dict:
+        """붙여넣은 글로 미리보기를 만든다."""
+        rows, problems, how = parse_plan_text(text or "")
+        return self._mark_plan_import(rows, problems, how, "붙여넣은 글")
+
+    @Property("QVariantMap", notify=planImportChanged)
+    def planImportInfo(self) -> dict:
+        return dict(self._plan_import_info)
+
+    @Property("QVariantList", notify=planImportChanged)
+    def planImportRows(self) -> list[dict]:
+        """미리보기 줄 [{name, category, amount, amountText, tail, dupe, …}]"""
+        out = []
+        for r in self._plan_import[:self.PLAN_IMPORT_PREVIEW]:
+            cat = Category(r["category"])
+            info = CATEGORY_INFO[cat]
+            bits = []
+            if r["rate"]:
+                bits.append(f"연 {r['rate']:g}%")
+            if r["monthly"]:
+                bits.append("월세 " + won(r["monthly"]))
+            if r["support"]:
+                bits.append("지원 " + won(r["support"]))
+            if r["growth"]:
+                bits.append(f"+{r['growth']:g}%/년")
+            if r["every"]:
+                bits.append(f"{r['every']}개월마다")
+            if r["start"]:
+                bits.append(r["start"] + (" ~ " + r["end"] if r["end"] else ""))
+            label = cat.value
+            if cat == Category.DEPOSIT and r["housing"]:
+                label += f" ({HOUSING_TYPES.get(r['housing'], '')})"
+            out.append({**r, "categoryLabel": label,
+                        "group": info["group"], "side": side_of(cat),
+                        "amountText": won(r["amount"]),
+                        "tail": "  ·  ".join(bits)})
+        return out
+
+    @Slot()
+    def cancelPlanImport(self) -> None:
+        if self._plan_import or self._plan_import_info:
+            self._plan_import, self._plan_import_info = [], {}
+            self.planImportChanged.emit()
+
+    @Slot(bool, bool, result=int)
+    @Slot(bool, result=int)
+    @Slot(result=int)
+    @undoable("계획 가져오기")
+    def applyPlanImport(self, skip_dupes: bool = True, replace: bool = False) -> int:
+        """미리보기의 항목을 계획에 넣는다. 넣은 개수를 돌려준다.
+
+        replace 가 참이면 지금 시나리오의 항목을 모두 지우고 새로 채운다
+        (엑셀에서 고쳐 온 것을 통째로 되돌려 넣을 때). 이때는 중복이랄 게 없다.
+        """
+        if not self._plan_import:
+            return 0
+        rows = self._plan_import if (replace or not skip_dupes) else \
+            [r for r in self._plan_import if not r.get("dupe")]
+        if not rows:
+            self._set_status("넣을 항목이 없습니다 (모두 이미 있는 항목).")
+            return 0
+        if replace:
+            self._items.clear()
+        for r in rows:
+            cat = Category(r["category"])
+            self._items.add(Item(
+                r["name"], cat, r["amount"], r["rate"],
+                start_date=r["start"] or None,
+                end_date=r["end"] or None,
+                housing_type=r["housing"],
+                monthly=r["monthly"],
+                growth=r["growth"],
+                support=r["support"],
+                every=r["every"],
+            ))
+        n = len(rows)
+        self._plan_import, self._plan_import_info = [], {}
+        self.planImportChanged.emit()
+        self._set_status(("계획을 " if replace else "계획으로 ") + f"{n}개 항목을 가져왔습니다.")
+        return n
+
     @Slot()
     def save(self) -> None:
         """현재 경로에 저장."""
@@ -1778,6 +1950,40 @@ class Backend(QObject):
             "mode": mode if mode in ("plan", "ledger", "overview") else "plan",
             "has": num("width") > 0 and num("height") > 0,
         }
+
+    @Slot(result="QVariantMap")
+    def ledgerWindowState(self) -> dict:
+        """가계부를 따로 띄워 두었는지, 그 창은 어디에 얼마만 했는지."""
+        st = QSettings(str(_window_file()), QSettings.Format.IniFormat)
+
+        def num(key: str) -> int:
+            try:
+                return int(st.value(f"ledger/{key}", -1))
+            except (TypeError, ValueError):
+                return -1
+
+        return {
+            "x": num("x"), "y": num("y"),
+            "width": num("width"), "height": num("height"),
+            "popped": str(st.value("ledger/popped", "false")).lower() == "true",
+            "has": num("width") > 0 and num("height") > 0,
+        }
+
+    @Slot(int, int, int, int, bool)
+    def saveLedgerWindowState(self, x: int = -1, y: int = -1, w: int = -1, h: int = -1,
+                              popped: bool = False) -> None:
+        """가계부 창을 닫거나 본 창을 닫을 때 QML 이 불러 준다.
+
+        크기만 따로 적어 두므로, 띄워 둔 채 끄고 다시 켜면 그 자리에 그대로 뜬다.
+        """
+        st = QSettings(str(_window_file()), QSettings.Format.IniFormat)
+        if w > 200 and h > 200:
+            st.setValue("ledger/x", int(x))
+            st.setValue("ledger/y", int(y))
+            st.setValue("ledger/width", int(w))
+            st.setValue("ledger/height", int(h))
+        st.setValue("ledger/popped", "true" if popped else "false")
+        st.sync()
 
     @Slot(int, int, int, int, bool, str)
     def saveWindowState(self, x: int, y: int, w: int, h: int,
@@ -2277,9 +2483,10 @@ class Backend(QObject):
     # ---- 계획 항목을 가계부로 ----
     #   계획의 분류 → 가계부 분류. 없는 분류(현금·예금)는 기록할 거리가 아니다
     PLAN_TO_LEDGER = {
-        Category.RENT: "주거/관리비",
-        Category.MAINT: "주거/관리비",
-        Category.DEPOSIT: "주거/관리비",
+        # 가계부 주거 1차가 갈라진 뒤로는 이름이 그대로 맞아떨어진다
+        Category.RENT: "월세",
+        Category.MAINT: "관리비",
+        Category.DEPOSIT: "보증금",
         Category.FIXED: "기타 지출",
         Category.EXPENSE: "기타 지출",
         Category.INCOME: "급여",
@@ -3045,18 +3252,21 @@ class Backend(QObject):
 
     @Property("QVariantList", notify=ledgerChanged)
     def ledgerCategories(self) -> list[dict]:
-        """가계부 분류 [{value, kind, custom}] — 수입 먼저, 지출 다음."""
-        lg = self._ws.ledger
-        return ([{"value": c, "kind": "income", "custom": c in lg.custom}
-                 for c in lg.income_categories()]
-                + [{"value": c, "kind": "cost", "custom": c in lg.custom}
-                   for c in lg.cost_categories()])
+        """가계부 분류 [{value, kind, custom, group, first}] — 1차 → 2차 두 단.
 
+        안 쓰는 예전 이름(주거/관리비)은 여기 안 나온다. 쓰고 있으면 나온다.
+        """
+        return self._ws.ledger.category_rows()
+
+    @Slot(str, str, str, result=str)
     @Slot(str, str, result=str)
     @undoable("분류 추가")
-    def addLedgerCategory(self, name: str, kind: str) -> str:
-        """분류를 직접 만든다. 만들었으면 빈 문자열, 못 만들었으면 까닭을 돌려준다."""
-        why = self._ws.ledger.add_category(name, kind)
+    def addLedgerCategory(self, name: str, kind: str, group: str = "") -> str:
+        """분류를 직접 만든다. 만들었으면 빈 문자열, 못 만들었으면 까닭을 돌려준다.
+
+        group(1차)을 비우면 '기타'(수입이면 '수입')에 붙는다.
+        """
+        why = self._ws.ledger.add_category(name, kind, group)
         if why:
             self.failed.emit(why)
         else:
