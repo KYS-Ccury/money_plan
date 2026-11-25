@@ -4,6 +4,9 @@ capital_data.json.bak
 capital_data.json.tmp
 capital_data_window.ini
 
+# 받아 온 피그마 시안 (vite+react 프로젝트) — 앱 코드가 아니라 개인 참고물이다
+Figma/
+
 __pycache__/
 *.py[cod]
 .pytest_cache/
