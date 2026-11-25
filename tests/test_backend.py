@@ -141,6 +141,35 @@ def test_backend_export_and_composition(tmp_path):
     assert b.compositionOf("없는 그룹") == []
 
 
+def test_composition_slot_takes_the_month():
+    """`compositionOf(group, m)` 의 두 번째 인자가 살아서 들어가야 한다.
+
+    화면의 비중 카드가 미래 보기 시점을 이 인자로 넘긴다. 전에 `@Slot` 을
+    (str) 과 (str, int) 둘로 겹쳐 두었는데, 그러면 QML 이 인자 하나짜리를
+    잡아 **m 이 조용히 버려질** 수 있었다 — 1년 뒤를 골라도 도넛은 오늘이었다.
+    시그니처를 하나만 두었으니, 그 하나가 m 을 제대로 쓰는지 못 박는다.
+    """
+    b = Backend(Plan(months=12, target=0, start_date="2027-01-14"))
+    #           이름        분류(4=월 수입) 금액       이율  원금포함 시작일          종료일
+    b.addItem("꿍이급여", 4, 2_400_000, 0.0, False, "2026-11-01", "")
+    b.addItem("또니 월급", 4, 2_000_000, 0.0, False, "2027-06-01", "")
+
+    def names(m):
+        return {c["label"] for c in b.compositionOf("월 수입", m)}
+
+    assert names(0) == {"꿍이급여"}                 # 아직 시작 전
+    assert names(12) == {"꿍이급여", "또니 월급"}    # 1년 뒤에는 둘 다
+    assert b.compositionTotal("월 수입", 0) == 2_400_000
+    assert b.compositionTotal("월 수입", 12) == 4_400_000
+
+    # 인자를 하나만 주면 오늘이다 (엑셀 내보내기가 그렇게 부른다)
+    assert b.compositionOf("월 수입") == b.compositionOf("월 수입", 0)
+
+    # 머리에 적는 '언제 기준' 글씨
+    assert b.monthText(0) == "2027년 1월"
+    assert b.monthText(12) == "2028년 1월"
+
+
 def test_monthly_repay_via_backend():
     b = Backend(Plan(months=12, target=0, start_date="2026-01-01"))
     b.addItem("대출", 3, 12_000_000, 12.0, True, "", "", "[]", 10.0)
@@ -2498,3 +2527,208 @@ def test_version_and_changelog_agree():
     assert heads, "CHANGELOG.md 에 '## 판번호 — 날짜' 칸이 없습니다"
     assert heads[0][0] == __version__, (
         f"CHANGELOG 맨 위는 {heads[0][0]} 인데 __version__ 은 {__version__} 입니다")
+
+
+def test_a_deposit_can_be_marked_as_an_asset_through_the_backend():
+    """팝업이 넘기는 길(addItem/updateItem)로도 '자산으로 보기' 가 들어가는지.
+
+    모델만 맞고 슬롯이 그 값을 안 받으면 화면에서는 아무 일도 일어나지 않는다.
+    """
+    b = Backend(Plan(months=36, start_date="2026-01-01"))
+    b.addItem("현금", 0, 200_000_000, 0, True)
+    # 9 = 보증금/매매가. 마지막 인자가 '자산으로 보기'
+    b.addItem("전세 보증금", 9, 150_000_000, 0, True, "2026-04-01", "2028-04-01", "[]",
+              0.0, "", "jeonse", 0.0, 0.0, 0.0, False, 0, "", False, False, 0, True)
+    dep = b._plan.items[1]
+    assert dep.category.value == "보증금/매매가" and dep.as_asset is True
+    assert b._plan.net_at(4) == 200_000_000          # 맡겨도 순 자본은 그대로
+    assert b.categoryInfo(9)["canBeAsset"] is True
+    assert b.categoryInfo(0)["canBeAsset"] is False
+
+    # 끄면 예전처럼 입주 달에 깎인다
+    b.updateItem(1, "전세 보증금", 9, 150_000_000, 0, True, "2026-04-01", "2028-04-01", "[]",
+                 0.0, "", "jeonse", 0.0, 0.0, 0.0, False, 0, "", False, False, 0, False)
+    assert b._plan.items[1].as_asset is False
+    assert b._plan.net_at(4) == 50_000_000
+
+
+def test_items_at_shows_each_item_as_it_will_be_later():
+    """'그때 목록' 이 읽는 값 — 적금은 불어나고, 아직 안 낸 보증금은 흐리게.
+
+    여기서 새로 셈하는 것은 없다. model.py 의 시점별 값을 줄 모양으로 옮길 뿐이라,
+    보는 것은 '어느 줄이 어떤 모습으로 서는가' 다.
+    """
+    b = Backend(Plan(months=36, start_date="2026-01-01"))
+    b.addItem("현금", 0, 10_000_000, 0, True)
+    b.addItem("청약", 2, 500_000, 0, True, "2026-01-01")            # 2 = 적금/저축(월)
+    b.addItem("전세 보증금", 9, 50_000_000, 0, True, "2026-03-01", "", "[]",
+              0.0, "", "jeonse", 0.0, 0.0, 0.0, False, 0, "", False, False, 0, True)
+
+    now = {r["name"]: r for r in b.itemsAt(0)}
+    later = {r["name"]: r for r in b.itemsAt(4)}
+
+    assert now["현금"]["amountText"] == later["현금"]["amountText"]   # 날짜가 없으면 그대로
+    assert later["청약"]["tone"] == "plus"                            # 4번 넣어 불어났다
+    assert later["청약"]["amountText"] != now["청약"]["amountText"]
+    assert now["전세 보증금"]["off"] is True                          # 아직 안 냈다
+    assert now["전세 보증금"]["tail"] == "아직"
+    assert later["전세 보증금"]["off"] is False                       # 2개월째에 냈다
+    assert later["전세 보증금"]["tail"] == "묶임"                     # 자산으로 보고 있다
+    assert [r["group"] for r in b.itemsAt(0)] == ["자본", "금융", "주거"]
+
+
+def test_month_snapshot_matches_the_plan():
+    """그때 목록 밑의 숫자가 계획이 말하는 값과 같아야 한다."""
+    b = Backend(Plan(months=36, start_date="2026-01-01"))
+    b.addItem("현금", 0, 10_000_000, 0, True)
+    b.addItem("전세 보증금", 9, 50_000_000, 0, True, "2026-03-01", "", "[]",
+              0.0, "", "jeonse", 0.0, 0.0, 0.0, False, 0, "", False, False, 0, True)
+
+    s = b.monthSnapshot(4)
+    p = b._plan
+    assert s["capital"] == p.capital_at(4)
+    assert s["tied"] == p.tied_capital_at(4) == 50_000_000
+    assert s["spendable"] == p.spendable_at(4) == -40_000_000     # 낼 돈이 없다
+    assert s["net"] == p.net_at(4)
+    assert s["dateText"]
+
+
+def test_colour_mode_is_remembered_next_to_the_window_state():
+    """색 설정은 계획 파일이 아니라 창 상태 ini 에 적힌다 (그 PC 의 취향이므로).
+
+    bg 는 '모드의 바탕색 대신 직접 고른 색' 이라 보통 비어 있다. 모드만 고른
+    것과 바탕색까지 직접 고른 것을 갈라 둬야 다음에 켤 때 그대로 선다.
+    """
+    b = Backend(Plan(months=12))
+    assert b.appearance() == {"bg": "", "mode": ""}   # 처음에는 화면이 기본 모드를 쓴다
+
+    b.saveAppearance("", "forest")                    # 모드만 고름
+    assert b.appearance() == {"bg": "", "mode": "forest"}
+    assert b.dirty is False                           # 계획은 바뀌지 않았다
+
+    b.saveAppearance("#101820", "forest")             # 바탕색까지 직접 고름
+    assert b.appearance() == {"bg": "#101820", "mode": "forest"}
+
+    b.saveAppearance("", "ivory")
+    assert b.appearance() == {"bg": "", "mode": "ivory"}
+
+
+def test_pages_split_the_list_but_never_the_numbers():
+    """장(페이지)은 엑셀 시트처럼 **보기** 묶음이다.
+
+    어느 장을 펴 두든 요약·순 자본은 모든 장의 항목을 함께 센다. 장을 지워도
+    항목은 첫 장으로 옮겨 갈 뿐 사라지지 않는다 (통째로 견주는 것은 시나리오다).
+    """
+    b = Backend(Plan(months=12, start_date="2026-01-01"))
+    b.addItem("현금", 0, 10_000_000, 0, True)
+    assert b.pages == ["기본"] and b.activePage == ""
+
+    assert b.addPage("집") is True
+    assert b.pages == ["기본", "집"]
+    assert b.activePage == "집"                 # 만들면 그 장을 편다
+    b.addItem("월세", 6, 600_000, 0, True)       # 펴 둔 장에 들어간다
+    assert b._plan.items[1].page == "집"
+
+    # 목록은 그 장만 보여 주지만
+    assert b.groupedItems.rowCount() == 1
+    b.activePage = ""                            # '전체'
+    assert b.groupedItems.rowCount() == 2
+
+    # 숫자는 모든 장을 함께 센다
+    assert b.monthlyCost == 600_000
+    b.activePage = "기본"
+    assert b.monthlyCost == 600_000              # 펴 둔 장과 상관없다
+
+    # 이름을 바꾸면 그 장의 항목도 따라간다
+    assert b.renamePage("집", "첫 집") is True
+    assert b.pages == ["기본", "첫 집"] and b._plan.items[1].page == "첫 집"
+    assert b.renamePage("기본", "뭐든") is True    # 첫 장도 이름은 바꾼다
+    assert b.pages[0] == "뭐든"
+    assert b._plan.items[0].page == ""            # 첫 장 항목은 page 가 빈 값 그대로다
+    assert b.renamePage("뭐든", "기본") is True
+
+    # 지우면 항목은 첫 장으로 (사라지지 않는다)
+    assert b.removePage("첫 집") is True
+    assert b.pages == ["기본"]
+    assert b.itemCount == 2 and b._plan.items[1].page == ""
+    assert b.monthlyCost == 600_000
+
+
+def test_moving_an_item_to_another_page_changes_nothing_but_the_page():
+    b = Backend(Plan(months=12, start_date="2026-01-01"))
+    b.addItem("현금", 0, 10_000_000, 0, True)
+    b.addPage("집")
+    before = b.net
+    assert b.setItemPage(0, "집") is True
+    assert b._plan.items[0].page == "집"
+    assert b.net == before
+    assert b.setItemPage(0, "기본") is True
+    assert b._plan.items[0].page == ""          # 첫 장은 빈 값으로 적는다
+
+
+def test_pages_survive_a_save_and_load(tmp_path):
+    """빈 장도 남아 있어야 한다 (항목으로는 알 수 없으므로 따로 적는다)."""
+    b = Backend(Plan(months=12))
+    b.addPage("집")
+    b.addPage("빈 장")
+    out = tmp_path / "plan.json"
+    b.saveTo(str(out))
+
+    c = Backend(Plan(months=12))
+    c.loadFrom(str(out))
+    assert c.pages == ["기본", "집", "빈 장"]
+
+
+def test_the_first_page_can_be_renamed_without_touching_its_items():
+    """첫 장은 이름표만 갈아 끼운다.
+
+    첫 장의 항목은 page 를 **빈 값**으로 들고 있다. 그래서 이름을 바꿔도 항목을
+    하나도 건드리지 않고, 저장했다 열어도 그대로다. 다만 지울 수는 없다 —
+    다른 장을 지웠을 때 그 항목이 돌아갈 자리가 하나는 있어야 한다.
+    """
+    b = Backend(Plan(months=12))
+    b.addItem("현금", 0, 1_000_000, 0, True)
+    assert b.pages == ["기본"]
+
+    assert b.renamePage("기본", "우리 집 살림") is True
+    assert b.pages == ["우리 집 살림"]
+    assert b.activePage in ("", "우리 집 살림")
+    assert b._plan.items[0].page == ""            # 항목은 그대로
+    assert b.removePage("우리 집 살림") is False   # 첫 장은 못 지운다
+
+    # 새 장을 만들어도 첫 장 이름과 섞이지 않는다
+    b.addPage("집")
+    assert b.pages == ["우리 집 살림", "집"]
+    assert b.renamePage("집", "우리 집 살림") is False   # 이름이 겹치면 안 된다
+
+    # 저장 → 불러오기
+    import json
+    from capital_calc.model import Plan as P
+    again = P.from_dict(json.loads(json.dumps(b._plan.to_dict())))
+    assert again.page_list() == ["우리 집 살림", "집"]
+
+
+def test_warn_role_marks_saving_without_maturity():
+    """만기 없는 적금에만 경고가 붙고, 역할 이름(warn)이 QML 에 나간다."""
+    from PySide6.QtCore import Qt
+
+    pl = Plan(months=12, start_date="2026-11-25")
+    pl.add(Item("만기 있는 적금", Category.SAVING, 500_000,
+                start_date="2026-12-01", end_date="2027-06-01"))
+    pl.add(Item("만기 없는 적금", Category.SAVING, 500_000, start_date="2026-12-01"))
+    pl.add(Item("고정 지출", Category.FIXED, 500_000, start_date="2026-12-01"))
+    b = Backend(pl)
+    m = b.items
+
+    assert b"warn" in m.roleNames().values()
+    warn = [m.data(m.index(r), Qt.ItemDataRole.UserRole + 34) for r in range(m.rowCount())]
+    assert warn[0] == ""
+    assert "만기" in warn[1]
+    assert warn[2] == ""
+
+    sub = m.data(m.index(1), Qt.ItemDataRole.UserRole + 15)
+    assert "만기(종료일) 없음" in sub
+
+    assert b.categoryInfo(2)["isSaving"] is True      # 2 = 적금/저축(월)
+    assert b.categoryInfo(0)["isSaving"] is False
+

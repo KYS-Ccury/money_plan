@@ -47,18 +47,25 @@ def _autowidth(ws, min_width: int = 10, max_width: int = 48) -> None:
         ws.column_dimensions[get_column_letter(col)].width = max(min_width, min(max_width, int(n * 1.4) + 2))
 
 
-def composition(plan: Plan) -> dict[str, list[tuple[str, float]]]:
-    """비중 계산 (항목 이름 기준). 0 이하 값은 제외."""
+def composition(plan: Plan, m: int = 0) -> dict[str, list[tuple[str, float]]]:
+    """m개월 시점의 비중 (항목 이름 기준). 0 이하 값은 제외.
+
+    m 을 안 주면 오늘이다 — 엑셀 '비중' 시트가 그렇게 쓴다. 화면의 '미래 보기' 는
+    고른 시점을 넘겨, 그때 끝난 적금이 빠지고 그때 생긴 월세가 들어오도록 한다.
+    끝난 항목은 `monthly_cost_at()` 이 이미 0 을 돌려주므로 따로 거르지 않아도
+    `> 0` 조건에 걸러진다.
+    """
     basis = plan.basis
+    m = max(0, int(m))
     out: dict[str, list[tuple[str, float]]] = {"보유 자금": [], "월 지출": [], "월 수입": []}
     for it in plan.live:                      # 꺼 둔 항목은 비중에서도 뺀다
-        c = it.capital_at(0, basis)
+        c = it.capital_at(m, basis)
         if c > 0:
             out["보유 자금"].append((it.name, c))
-        cost = it.monthly_cost_at(0, basis)
+        cost = it.monthly_cost_at(m, basis)
         if cost > 0:
             out["월 지출"].append((it.name, cost))
-        inc = it.monthly_income_at(0, basis)
+        inc = it.monthly_income_at(m, basis)
         if inc > 0:
             out["월 수입"].append((it.name, inc))
     return out
@@ -208,7 +215,8 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
     # '첫 달 상환액'·'총 이자'·'월 환산' 은 계산해서 보여 주는 값이라 다시 읽지 않는다.
     _header(ws, 1, ["이름", "분류", "금액", "연이율(%)", "원금 자본 포함", "시작일", "종료일",
                     "상환 방식", "첫 달 상환액", "총 이자", "중도 상환", "월 환산(0개월)", "연 상승률(%)",
-                    "월 지원금", "만기까지 묶임", "받는 날", "복리", "세후 이자", "가계부 분류", "켜짐"])
+                    "월 지원금", "만기까지 묶임", "받는 날", "복리", "세후 이자", "가계부 분류", "켜짐",
+                    "자산으로 포함", "되풀이", "장(페이지)"])
     basis = plan.basis
     for r, it in enumerate(plan.items, start=2):
         info = CATEGORY_INFO[it.category]
@@ -247,6 +255,11 @@ def export_plan(plan: Plan, path: str | Path, scenarios: list[Plan] | None = Non
             ws.cell(row=r, column=18, value="예" if it.after_tax else "아니오")
         ws.cell(row=r, column=19, value=it.ledger_category or None)
         ws.cell(row=r, column=20, value="예" if it.active else "아니오")
+        ws.cell(row=r, column=21, value=("예" if it.as_asset else "아니오")
+                if it.category == Category.DEPOSIT else None)
+        # 되풀이 주기와 장은 '다시 읽기 위한' 칸이다 — 없으면 왕복에서 조용히 사라진다
+        ws.cell(row=r, column=22, value=(f"{it.every}개월마다" if it.every else None))
+        ws.cell(row=r, column=23, value=it.page or None)
     _autowidth(ws)
 
     # ---------------------------------------------------------- 월별 추이 (+ 선 그래프)

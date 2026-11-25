@@ -33,6 +33,7 @@ HEADER_KEYS: list[tuple[str, tuple[str, ...]]] = [
     # 잡히지 않도록 이들을 금액·종료일보다 먼저 본다.
     ("include_principal", ("원금자본포함", "원금포함", "자본포함")),
     ("locked", ("묶임", "묶기", "locked")),
+    ("as_asset", ("자산으로", "자산", "asasset")),
     ("pay_day", ("받는날", "나가는날", "결제일", "납입일", "payday")),
     ("compound", ("복리", "compound")),
     ("after_tax", ("세후", "이자소득세", "aftertax")),
@@ -44,6 +45,8 @@ HEADER_KEYS: list[tuple[str, tuple[str, ...]]] = [
     ("start", ("시작일", "입주일", "지출일", "수입일", "시작", "날짜", "일자", "date", "start")),
     ("amount", ("금액", "원금", "보유", "잔액", "가격", "amount", "value")),
     ("every", ("되풀이", "반복", "주기", "every")),
+    # '장' 한 글자는 다른 머리글에 섞여 들기 쉬워 긴 낱말로만 본다
+    ("page", ("장페이지", "페이지", "시트", "page", "sheet")),
     ("note", ("메모", "비고", "note", "memo")),
 ]
 
@@ -229,7 +232,8 @@ def _row_dict(name: str, cat: Category, housing: str, amount: float, *, rate: fl
               locked: bool | None = None, pay_day: int = 0, compound: bool | None = None,
               after_tax: bool | None = None, repay_method: str = "", repay_rate: float = 0.0,
               repayments: list[dict] | None = None, active: bool | None = None,
-              ledger_category: str = "") -> dict:
+              ledger_category: str = "", as_asset: bool | None = None,
+              page: str = "") -> dict:
     """미리보기 한 줄. 분류에 뜻이 없는 값은 여기서 털어 낸다.
 
     예/아니오 설정은 **None 이면 '안 적혀 있다'** 는 뜻이라 Item 의 기본값을 쓴다
@@ -243,6 +247,8 @@ def _row_dict(name: str, cat: Category, housing: str, amount: float, *, rate: fl
         repay_method = ""
     if cat != Category.SAVING:
         locked = None
+    if cat != Category.DEPOSIT:
+        as_asset = None
     if not info["uses_rate"]:
         compound, after_tax = None, None
     if info["shape"] not in MONTHLY_SHAPES:
@@ -285,6 +291,8 @@ def _row_dict(name: str, cat: Category, housing: str, amount: float, *, rate: fl
         "repayments": list(repayments or []),
         "active": True if active is None else bool(active),
         "ledgerCategory": (ledger_category or "").strip(),
+        "asAsset": bool(as_asset),
+        "page": (page or "").strip(),
     }
 
 
@@ -359,6 +367,7 @@ def rows_from_table(rows: list[list[str]], default_year: int | None = None) -> t
             growth=parse_percent(cell(row, "growth")),
             support=abs(parse_amount(cell(row, "support")) or 0.0),
             every=parse_count(cell(row, "every")),
+            page=cell(row, "page"),
             note=_clean(cell(row, "note")),
             category_text=cat_text,
             include_principal=parse_yesno(cell(row, "include_principal")),
@@ -371,6 +380,7 @@ def rows_from_table(rows: list[list[str]], default_year: int | None = None) -> t
             repayments=parse_repayments(cell(row, "repayments"), default_year),
             active=active,
             ledger_category=_clean(cell(row, "ledger_category")),
+            as_asset=parse_yesno(cell(row, "as_asset")),
         ))
     return split_rent_rows(out), problems
 

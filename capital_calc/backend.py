@@ -38,7 +38,8 @@ from .ledger import (LEDGER_COST_CATEGORIES, LEDGER_INCOME_CATEGORIES, Entry, Fi
                      shift_month)
 from .model import (CATEGORY_TREE, INTEREST_CATEGORIES, INTEREST_TAX, MONTHLY_SHAPES, ORDER_OF,
                      SIDE_CAPITAL, SIDE_COST, SIDE_INCOME, group_of, side_of)
-from .model import (CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
+from .model import (PAGE_DEFAULT,
+                     CATEGORY_INFO, CATEGORY_LIST, HOUSING_INFO, HOUSING_TYPE_LIST, HOUSING_TYPES,
                      REPAY_METHOD_LIST, REPAY_METHODS, TERM_METHODS, month_offset,
                      Category, Item, Plan, Workspace, add_months, parse_date, sample_plan, won)
 
@@ -88,6 +89,9 @@ class ItemListModel(QAbstractListModel):
     AfterTaxRole = Qt.ItemDataRole.UserRole + 29    # 이자에서 세금을 떼는가
     CompoundRole = Qt.ItemDataRole.UserRole + 30    # 복리인가
     PayDayRole = Qt.ItemDataRole.UserRole + 31      # 매달 며칠에 오가는지 (0 = 정하지 않음)
+    AsAssetRole = Qt.ItemDataRole.UserRole + 32     # 보증금을 자산으로 보아 순 자본에 넣는가
+    PageRole = Qt.ItemDataRole.UserRole + 33        # 어느 장(페이지)에 둔 항목인가
+    WarnRole = Qt.ItemDataRole.UserRole + 34        # 줄에 띄울 경고 ("" = 없음)
 
     _ROLES = {
         NameRole: b"name",
@@ -121,6 +125,9 @@ class ItemListModel(QAbstractListModel):
         AfterTaxRole: b"afterTax",
         CompoundRole: b"compound",
         PayDayRole: b"payDay",
+        AsAssetRole: b"asAsset",
+        PageRole: b"page",
+        WarnRole: b"warn",
     }
 
     def __init__(self, plan: Plan, parent: QObject | None = None):
@@ -189,12 +196,21 @@ class ItemListModel(QAbstractListModel):
             return it.monthly
         if role == self.PayDayRole:
             return it.pay_day
+        if role == self.AsAssetRole:
+            return it.as_asset
+        if role == self.PageRole:
+            return it.page or self._plan.first_page()
         if role == self.GrowthRole:
             return it.growth
         if role == self.SupportRole:
             return it.support
         if role == self.LockedRole:
             return it.locked
+        if role == self.WarnRole:
+            # 지금은 한 가지뿐이지만, 줄에 띄울 경고가 늘면 여기에 모은다
+            if it.open_ended_saving():
+                return "만기(종료일)가 없어 납입이 계획 끝까지 계속 월 지출로 잡힙니다"
+            return ""
         if role == self.SubTextRole:
             if it.date_mode == "once":
                 d = parse_date(it.start_date) or (self._plan.basis if it.is_housing else None)
@@ -216,6 +232,8 @@ class ItemListModel(QAbstractListModel):
                 rm = it.return_month(self._plan.basis)
                 if rm is not None:
                     parts.append(f"{it.end_date[:7]} 반환" + (f" ({rm}개월 뒤)" if rm > 0 else ""))
+                if it.as_asset:
+                    parts.append("순 자본에 자산으로 포함")
                 return "  ·  ".join(parts)
             # 이자가 붙는 분류는 단리/복리·세후/세전을 늘 밝힌다 (숫자의 전제이므로)
             interest_note = ""
@@ -240,6 +258,8 @@ class ItemListModel(QAbstractListModel):
                 parts.append(f"{n}개월 후 {won(it.saving_balance_at(n, basis))} ({k}회 납입)")
                 if it.support > 0 and k > 0:
                     parts.append(f"받은 지원금 {won(it.support_total_at(n, basis))}")
+                if it.open_ended_saving():
+                    parts.append("⚠ 만기(종료일) 없음 — 계속 납입합니다")
                 if it.is_locked(basis):
                     mat = it.maturity_month(basis)
                     parts.append(f"만기까지 묶임 · {mat}개월 뒤 {won(it.saving_balance_at(mat, basis))} 수령")
@@ -421,6 +441,7 @@ class GroupedItems(QSortFilterProxyModel):
         super().__init__(parent)
         self._collapsed: set[int] = set()
         self._grouped = True          # 끄면 원본 순서 그대로 (ListView 의 모델은 바꾸지 않는다)
+        self._page = ""               # "" 면 모든 장 (= '전체' 탭)
         self.setSourceModel(source)
         self.setSortRole(ItemListModel.CategoryIndexRole)
         self.setDynamicSortFilter(True)
@@ -428,6 +449,28 @@ class GroupedItems(QSortFilterProxyModel):
 
     def roleNames(self) -> dict:  # noqa: N802
         return self.sourceModel().roleNames()
+
+    def set_page(self, page: str) -> None:
+        """보여 줄 장. 빈 문자열이면 모든 장을 함께 본다.
+
+        장은 **보기** 묶음일 뿐이라 여기서만 걸러낸다 — 계산(Plan)은 늘 모든
+        장의 항목을 함께 센다.
+        """
+        page = page or ""
+        if page != self._page:
+            self._page = page
+            self.invalidateFilter()
+
+    @property
+    def page(self) -> str:
+        return self._page
+
+    def filterAcceptsRow(self, row: int, parent: QModelIndex) -> bool:  # noqa: N802
+        if not self._page:
+            return True
+        idx = self.sourceModel().index(row, 0, parent)
+        got = self.sourceModel().data(idx, ItemListModel.PageRole) or PAGE_DEFAULT
+        return got == self._page
 
     def set_grouped(self, on: bool) -> None:
         """분류별 묶기 켜기/끄기. 끄면 걸러내지도 정렬하지도 않는다."""
@@ -771,6 +814,128 @@ class Backend(QObject):
             self.groupsChanged.emit()
 
     groupByCategory = Property(bool, _get_group_by, _set_group_by, notify=groupsChanged)
+
+    # ---- 장(페이지) ----
+    #
+    # 엑셀 시트처럼 항목을 나눠 담는 묶음이다. **계산에는 모든 장이 들어간다** —
+    # 통째로 견주는 것은 시나리오가 하고, 장은 눈으로 나눠 보는 것이다.
+    pagesChanged = Signal()
+
+    @Property("QVariantList", notify=pagesChanged)
+    def pages(self) -> list[str]:
+        return self._plan.page_list()
+
+    @Property("QVariantList", notify=pagesChanged)
+    def pageCounts(self) -> list[int]:
+        """장마다 항목이 몇 개인지 (탭에 작게 적는다). pages 와 같은 순서."""
+        return [len(self._plan.items_on(p)) for p in self._plan.page_list()]
+
+    def _get_active_page(self) -> str:
+        return self._grouped.page
+
+    def _set_active_page(self, page: str) -> None:
+        page = (page or "").strip()
+        if page and page not in self._plan.page_list():
+            return
+        if page != self._grouped.page:
+            self._grouped.set_page(page)
+            self.pagesChanged.emit()
+
+    activePage = Property(str, _get_active_page, _set_active_page, notify=pagesChanged)
+
+    @Slot(str, result=bool)
+    @Slot(result=bool)
+    @undoable("장 추가")
+    def addPage(self, name: str = "") -> bool:
+        """새 장을 만들고 그 장을 편다. 이름이 겹치면 뒤에 숫자를 붙인다."""
+        base = (name or "새 장").strip() or "새 장"
+        have = set(self._plan.page_list())
+        page = base
+        n = 2
+        while page in have:
+            page = f"{base} {n}"
+            n += 1
+        self._plan.pages.append(page)
+        self._mark_dirty()
+        self._grouped.set_page(page)
+        self.pagesChanged.emit()
+        self._set_status(f"장 추가: {page}")
+        return True
+
+    @Slot(str, str, result=bool)
+    @undoable("장 이름 변경")
+    def renamePage(self, old: str, new: str) -> bool:
+        """장 이름 바꾸기. 그 장에 있던 항목도 함께 따라간다."""
+        old, new = (old or "").strip(), (new or "").strip()
+        if not old or not new or old == new:
+            return False
+        if new in self._plan.page_list():
+            self._set_status(f"'{new}' 은 이미 있는 장입니다.")
+            return False
+        if old == self._plan.first_page():
+            # 첫 장은 이름표만 갈아 끼운다 (그 장의 항목은 page 가 빈 값이다)
+            self._plan.page_title = "" if new == PAGE_DEFAULT else new
+            for it in self._plan.items:
+                if it.page == old:
+                    it.page = ""
+        else:
+            self._plan.pages = [new if p == old else p for p in self._plan.pages]
+            for it in self._plan.items:
+                if it.page == old:
+                    it.page = new
+        self._mark_dirty()
+        if self._grouped.page == old:
+            self._grouped.set_page(new)
+        self._items.refresh_all()
+        self.pagesChanged.emit()
+        self._set_status(f"장 이름: {old} → {new}")
+        return True
+
+    @Slot(str, result=bool)
+    @undoable("장 삭제")
+    def removePage(self, page: str) -> bool:
+        """장을 지운다. **항목은 지우지 않고** 첫 장으로 옮긴다.
+
+        장은 보기 묶음이므로, 장을 지웠다고 계획에서 돈이 사라지면 안 된다.
+        """
+        page = (page or "").strip()
+        # 첫 장은 지울 수 없다 — 지운 항목이 돌아갈 자리가 하나는 있어야 한다
+        if not page or page == self._plan.first_page() or page not in self._plan.page_list():
+            return False
+        moved = 0
+        for it in self._plan.items:
+            if it.page == page:
+                it.page = ""
+                moved += 1
+        self._plan.pages = [p for p in self._plan.pages if p != page]
+        self._mark_dirty()
+        if self._grouped.page == page:
+            self._grouped.set_page(self._plan.first_page())
+        self._items.refresh_all()
+        self.pagesChanged.emit()
+        self._set_status(f"장 삭제: {page}"
+                         + (f" (항목 {moved}개는 '{self._plan.first_page()}' 으로)" if moved else ""))
+        return True
+
+    @Slot(int, str, result=bool)
+    @undoable("장 옮기기")
+    def setItemPage(self, row: int, page: str) -> bool:
+        """항목 하나를 다른 장으로 옮긴다 (숫자는 하나도 바뀌지 않는다)."""
+        if not (0 <= row < len(self._plan.items)):
+            return False
+        page = (page or "").strip()
+        if page and page not in self._plan.page_list():
+            return False
+        it = self._plan.items[row]
+        new = "" if page in ("", self._plan.first_page()) else page
+        if it.page == new:
+            return False
+        it.page = new
+        self._mark_dirty()
+        self._items.refresh_all()
+        self.pagesChanged.emit()
+        self._set_status(f"'{it.name}' → {page or self._plan.first_page()} 장")
+        return True
 
     @Slot(int, result=int)
     def sourceRowAt(self, visible_row: int) -> int:
@@ -1192,6 +1357,11 @@ class Backend(QObject):
         return self._plan.real_value(self._plan.target)
 
     @Property(float, notify=summaryChanged)
+    def tiedCapital(self) -> float:
+        """지금 보유 자금 가운데 보증금·매매가에 묶여 있는 돈 (자산으로 볼 때만)."""
+        return self._plan.tied_capital_at(0)
+
+    @Property(float, notify=summaryChanged)
     def capitalAtEnd(self) -> float:
         """기간이 끝나는 시점의 보유 자금. 적금이 쌓이고 예금 이자가 붙어 지금과 다르다."""
         return self._plan.capital_at(self._plan.months)
@@ -1412,6 +1582,8 @@ class Backend(QObject):
             "usesSupport": bool(info.get("uses_support")),
             "usesPayDay": info["shape"] in MONTHLY_SHAPES,
             "canLock": cat == Category.SAVING,
+            "isSaving": cat == Category.SAVING,
+            "canBeAsset": cat == Category.DEPOSIT,
             "hasInterest": cat in INTEREST_CATEGORIES,
             "taxRate": INTEREST_TAX,
             "flow": info["flow"],
@@ -1496,20 +1668,158 @@ class Backend(QObject):
 
     @Property("QVariantMap", notify=summaryChanged)
     def shortfall(self) -> dict:
-        """순 자본이 음수가 되는 구간. has 가 False 면 경고 없음."""
+        """**쓸 수 있는 돈**이 음수가 되는 구간. has 가 False 면 경고 없음.
+
+        net·minNet 은 순 자본이 아니라 그 시점에 쓸 수 있는 돈이다
+        (보증금을 자산으로 켜 두면 순 자본은 안 깎이므로 경고가 안 뜬다).
+        """
         s = self._sf()
         m = s["month"]
         return {
             "has": m is not None,
             "month": -1 if m is None else m,
             "dateText": "" if m is None else self._month_text(m),
-            "net": 0.0 if m is None else self._plan.net_at(m),
+            "net": 0.0 if m is None else self._plan.spendable_at(m),
             "months": s["months"],
             "minMonth": s["min_month"],
             "minNet": s["min_net"],
             "minDateText": self._month_text(s["min_month"]),
             "horizon": s["horizon"],
         }
+
+    # ---- '그때 목록' (오늘 목록 옆에 세우는 두 번째 칸) ----
+    #
+    # 여기서 **새로 셈하는 것은 없다**. model.py 가 이미 가지고 있는 시점별 값을
+    # 모아서 줄 모양으로 돌려줄 뿐이다. 화면이 달마다 다시 부르므로 가볍게 둔다.
+    @Slot(int, result="QVariantList")
+    def itemsAt(self, m: int) -> list[dict]:
+        """m개월 시점의 항목 줄들.
+
+        [{name, sub, category, group, amountText, tail, tone, off}]
+        tone 은 화면이 쓸 색 이름이다 — "plus"(들어옴) | "minus"(나감) |
+        "warn"(묶임) | ""(그대로). off 가 참이면 흐리게 그린다.
+        """
+        b = self._plan.basis
+        m = max(0, int(m))
+        out: list[dict] = []
+        for it in self._plan.items:
+            info = CATEGORY_INFO[it.category]
+            cat = it.category
+            amount_text, tail, tone, sub_text = won(it.amount), "\u2014", "", ""
+            off = not it.active
+
+            if cat == Category.CASH:
+                sub_text = "날짜가 없는 항목 · 그대로"
+            elif cat == Category.BANK:
+                v = it.bank_balance_at(m)
+                amount_text = won(v)
+                d = v - it.amount
+                if d > 0.5:
+                    tail, tone = "+" + won(d), "plus"
+                    sub_text = "이자가 붙어 불어남"
+            elif cat == Category.SAVING:
+                v = it.saving_balance_at(m, b)
+                d = v - it.saving_balance_at(0, b)
+                amount_text = won(v)
+                sub_text = "잔액 " + won(v) + (" · 만기까지 묶임" if it.locked else "")
+                if d > 0.5:
+                    tail, tone = "+" + won(d), "plus"
+            elif cat == Category.LOAN:
+                v = it.remaining_at(m, b)
+                amount_text = won(v)
+                d = v - it.remaining_at(0, b)
+                if v <= 0.5:
+                    tail, tone, sub_text = "다 갚음", "plus", "남은 원금 없음"
+                elif d < -0.5:
+                    tail, tone, sub_text = "-" + won(-d), "plus", "원금이 줄어듦"
+                else:
+                    sub_text = "이자만 내는 중 · 잔액 그대로"
+            elif cat == Category.DEPOSIT:
+                paid = it.once_month(b)
+                r = it.return_month(b)
+                if m < paid:
+                    amount_text, tail, off = "\u2014", "아직", True
+                    sub_text = f"{paid - m}개월 뒤 입주 · 아직 안 냄"
+                elif r is not None and m >= r:
+                    amount_text, tail, tone = "\u2014", "돌려받음", "plus"
+                    sub_text = (it.end_date or "")[:7] + " 반환됨"
+                else:
+                    tail, tone = ("묶임", "warn") if it.as_asset else ("일시", "warn")
+                    sub_text = (it.housing_label + " · "
+                                + ("순 자본에 자산으로 포함" if it.as_asset
+                                   else "일시 지출로 나감"))
+            elif info["shape"] in MONTHLY_SHAPES:
+                inc = it.monthly_income_at(m, b)
+                cost = it.monthly_cost_at(m, b)
+                v = inc if inc > 0 else cost
+                amount_text = won(v)
+                if m > 0:
+                    total = sum(it.monthly_income_at(k, b) + it.monthly_cost_at(k, b)
+                                for k in range(m))
+                    word = "들어옴" if inc > 0 else "나감"
+                    sub_text = f"{m}개월치 {won(total)} {word}"
+                if inc > 0:
+                    tone = "plus"
+                elif cost > 0:
+                    tone = "minus"
+            else:                                   # 일시 지출·수입
+                times = it.count_upto(m, b)
+                flow_in = it.once_income() > 0
+                if times <= 0:
+                    first = it.first_month(b)
+                    off = True
+                    tail = "아직"
+                    sub_text = (f"{first - m}개월 뒤" if first is not None else "기준일 전에 지났음")
+                else:
+                    tail, tone = (("+" if flow_in else "-") + won(it.amount * times),
+                                  "plus" if flow_in else "minus")
+                    sub_text = f"{times}번 " + ("들어옴" if flow_in else "나감")
+
+            out.append({
+                "name": it.name + ("  (꺼짐)" if not it.active else ""),
+                "sub": sub_text,
+                "category": cat.value,
+                "group": info["group"],
+                "amountText": amount_text,
+                "tail": tail,
+                "tone": tone,
+                "off": off,
+            })
+        return out
+
+    @Slot(int, result="QVariantMap")
+    def monthSnapshot(self, m: int) -> dict:
+        """그때 목록 밑에 세우는 숫자 — 그 시점의 보유 자금·묶인 돈·쓸 수 있는 돈·순 자본."""
+        p = self._plan
+        m = max(0, int(m))
+        return {
+            "month": m,
+            "dateText": self._month_text(m),
+            "capital": p.capital_at(m),
+            "tied": p.tied_capital_at(m),
+            "spendable": p.spendable_at(m),
+            "net": p.net_at(m),
+        }
+
+    # ---- 모양 (색 모드) ----
+    @Slot(result="QVariantMap")
+    def appearance(self) -> dict:
+        """저장해 둔 색 모드와 직접 고른 바탕색. 둘 다 비면 화면이 기본값을 쓴다.
+
+        bg 는 '모드의 바탕색 대신 직접 고른 색' 이다 — 비어 있는 것이 보통이다.
+        """
+        st = QSettings(str(_window_file()), QSettings.Format.IniFormat)
+        return {"bg": str(st.value("appearance/bg", "") or ""),
+                "mode": str(st.value("appearance/mode", "") or "")}
+
+    @Slot(str, str)
+    @Slot(str)
+    def saveAppearance(self, bg: str, mode: str = "") -> None:
+        """색 설정을 창 상태와 같은 ini 에 적어 둔다 (계획 파일은 건드리지 않는다)."""
+        st = QSettings(str(_window_file()), QSettings.Format.IniFormat)
+        st.setValue("appearance/bg", (bg or "").strip())
+        st.setValue("appearance/mode", (mode or "").strip())
+        st.sync()
 
     @Slot(float, float, result=float)
     def monthlyInterest(self, amount: float, rate: float) -> float:
@@ -1550,7 +1860,8 @@ class Backend(QObject):
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
                    support: float = 0.0, locked: bool = False, every: int = 0,
                    ledger_category: str = "", after_tax: bool = False,
-                   compound: bool = False, pay_day: int = 0) -> Item:
+                   compound: bool = False, pay_day: int = 0,
+                   as_asset: bool = False) -> Item:
         cat = CATEGORY_LIST[max(0, min(cat_index, len(CATEGORY_LIST) - 1))]
         mode = CATEGORY_INFO[cat]["date_mode"]
         sd = parse_date(start_date) if mode in ("range", "once") else None   # once 면 지출일·수입일
@@ -1576,8 +1887,11 @@ class Backend(QObject):
             # 세금·복리는 이자가 붙는 분류에서만 뜻이 있다
             after_tax=bool(after_tax) and cat in INTEREST_CATEGORIES,
             compound=bool(compound) and cat in INTEREST_CATEGORIES,
+            # 맡겨 둔 돈으로 보는 것은 보증금·매매가에서만 뜻이 있다
+            as_asset=bool(as_asset) and cat == Category.DEPOSIT,
         )
 
+    @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool, int, bool)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool, int)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool)
     @Slot(str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str)
@@ -1597,14 +1911,18 @@ class Backend(QObject):
                 housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
                 support: float = 0.0, locked: bool = False, every: int = 0,
                 ledger_category: str = "", after_tax: bool = False,
-                compound: bool = False, pay_day: int = 0) -> None:
+                compound: bool = False, pay_day: int = 0, as_asset: bool = False) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
                                growth, support, locked, every, ledger_category, after_tax, compound,
-                               pay_day)
+                               pay_day, as_asset)
+        # 지금 펴 둔 장에 들어간다 ('전체' 를 보고 있으면 첫 장)
+        page = self._grouped.page
+        item.page = "" if page in ("", self._plan.first_page()) else page
         self._items.add(item)
         self._set_status(f"추가: {item.name}")
 
+    @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool, int, bool)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool, int)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str, bool, bool)
     @Slot(int, str, int, float, float, bool, str, str, str, float, str, str, float, float, float, bool, int, str)
@@ -1624,13 +1942,14 @@ class Backend(QObject):
                    housing_type: str = "", monthly: float = 0.0, growth: float = 0.0,
                    support: float = 0.0, locked: bool = False, every: int = 0,
                    ledger_category: str = "", after_tax: bool = False,
-                   compound: bool = False, pay_day: int = 0) -> None:
+                   compound: bool = False, pay_day: int = 0, as_asset: bool = False) -> None:
         item = self._make_item(name, cat_index, amount, rate, include_principal, start_date, end_date,
                                repayments_json, monthly_repay_rate, repay_method, housing_type, monthly,
                                growth, support, locked, every, ledger_category, after_tax, compound,
-                               pay_day)
+                               pay_day, as_asset)
         old = self._plan.items[row] if 0 <= row < len(self._plan.items) else None
         item.active = old.active if old else True      # 꺼 둔 항목은 고쳐도 꺼진 채로
+        item.page = old.page if old else ""            # 장도 그대로 (옮기기는 setItemPage 가 한다)
         self._items.update(row, item)
         self._set_status(f"수정: {item.name}")
 
@@ -1786,6 +2105,8 @@ class Backend(QObject):
                 bits.append(f"매달 {r['payDay']}일")
             if r.get("locked"):
                 bits.append("만기까지 묶음")
+            if r.get("asAsset"):
+                bits.append("자산으로 포함")
             if cat == Category.LOAN and not r.get("includePrincipal", True):
                 bits.append("원금 자본 미포함")
             if not r.get("active", True):
@@ -1847,6 +2168,8 @@ class Backend(QObject):
                 repayments=list(r.get("repayments") or []),
                 active=r.get("active", True),
                 ledger_category=r.get("ledgerCategory", ""),
+                as_asset=r.get("asAsset", False),
+                page=r.get("page", ""),
             ))
         n = len(rows)
         self._plan_import, self._plan_import_info = [], {}
@@ -1999,6 +2322,41 @@ class Backend(QObject):
             "mode": mode if mode in ("plan", "ledger", "overview") else "plan",
             "has": num("width") > 0 and num("height") > 0,
         }
+
+    @Slot(result="QVariantMap")
+    def itemWindowState(self) -> dict:
+        """항목 목록을 따로 띄워 두었는지, 그 창은 어디에 얼마만 했는지.
+
+        가계부 창과 같은 방식이다 — 계획 파일이 아니라 창 상태 ini 에 적는다.
+        """
+        st = QSettings(str(_window_file()), QSettings.Format.IniFormat)
+
+        def num(key: str) -> int:
+            try:
+                return int(st.value(f"itemwin/{key}", -1))
+            except (TypeError, ValueError):
+                return -1
+
+        return {
+            "x": num("x"), "y": num("y"),
+            "width": num("width"), "height": num("height"),
+            "popped": str(st.value("itemwin/popped", "false")).lower() == "true",
+            "has": num("width") > 0 and num("height") > 0,
+        }
+
+    @Slot(int, int, int, int, bool)
+    @Slot(bool)
+    def saveItemWindowState(self, x: int = -1, y: int = -1, w: int = -1, h: int = -1,
+                            popped: bool = False) -> None:
+        """항목 창을 닫거나 본 창을 닫을 때 QML 이 불러 준다."""
+        st = QSettings(str(_window_file()), QSettings.Format.IniFormat)
+        if w > 200 and h > 200:
+            st.setValue("itemwin/x", int(x))
+            st.setValue("itemwin/y", int(y))
+            st.setValue("itemwin/width", int(w))
+            st.setValue("itemwin/height", int(h))
+        st.setValue("itemwin/popped", "true" if popped else "false")
+        st.sync()
 
     @Slot(result="QVariantMap")
     def ledgerWindowState(self) -> dict:
@@ -2183,17 +2541,27 @@ class Backend(QObject):
         return True
 
     # ---- 비중 ----
-    @Slot(str, result="QVariantList")
-    def compositionOf(self, group: str) -> list[dict]:
-        """'보유 자금' | '월 지출' | '월 수입' 의 항목별 비중 [{label, value, share}] (큰 순)."""
-        entries = composition(self._plan).get(group, [])
+    # @Slot 을 겹쳐 쓰지 않는다 — 오버로드가 둘이면 QML 이 인자 하나짜리를 잡아
+    # m 을 버릴 수 있다. 파이썬에서 하나만 주고 부르는 자리는 기본값이 받는다.
+    @Slot(str, int, result="QVariantList")
+    def compositionOf(self, group: str, m: int = 0) -> list[dict]:
+        """m개월 시점의 '보유 자금'|'월 지출'|'월 수입' 비중 [{label, value, share}] (큰 순).
+
+        m 을 안 주면 오늘이다. 화면의 비중 카드는 '미래 보기' 로 고른 시점을 넘긴다.
+        """
+        entries = composition(self._plan, m).get(group, [])
         total = sum(v for _, v in entries)
         entries = sorted(entries, key=lambda x: -x[1])
         return [{"label": n, "value": v, "share": (v / total) if total else 0.0} for n, v in entries]
 
-    @Slot(str, result=float)
-    def compositionTotal(self, group: str) -> float:
-        return sum(v for _, v in composition(self._plan).get(group, []))
+    @Slot(str, int, result=float)
+    def compositionTotal(self, group: str, m: int = 0) -> float:
+        return sum(v for _, v in composition(self._plan, m).get(group, []))
+
+    @Slot(int, result=str)
+    def monthText(self, m: int) -> str:
+        """m개월 뒤가 몇 년 몇 월인지 (비중 카드 머리처럼 시점만 적을 때 쓴다)."""
+        return self._month_text(max(0, int(m)))
 
     def _set_data_path(self, path: Path) -> None:
         if path != self._data_path:
@@ -3143,6 +3511,7 @@ class Backend(QObject):
             "scenario": p.name, "months": p.months,
             "basis": p.start_date, "end": self.endDate,
             "capital": s.capital, "capitalAtEnd": self.capitalAtEnd,
+            "tied": self.tiedCapital,
             "required": s.required, "periodIncome": s.period_income,
             "net": s.net, "target": p.target, "gap": self.gap,
             "progress": self.progress, "peak": self.peakNet,

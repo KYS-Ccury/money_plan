@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from capital_calc.model import (Workspace, Category, Item, Plan, add_months, month_offset,  # noqa: E402
-                                sample_plan, won)
+                                sample_plan, split_housing_rent, won)
 
 
 def test_item_derived_values():
@@ -504,13 +504,19 @@ def test_planned_flows():
     p.add(Item("월세", Category.RENT, 500_000))
     p.add(Item("이사비", Category.EXPENSE, 1_200_000, start_date="2026-03-01"))
     p.add(Item("성과급", Category.INCOME_ONCE, 2_000_000, start_date="2026-04-01"))
-    p.add(Item("전셋집", Category.DEPOSIT, 20_000_000, housing_type="banjeonse", monthly=300_000,
-               start_date="2026-02-01", end_date="2026-08-01"))
+    # 주거 항목의 '월세' 칸은 이제 계산에 쓰지 않는다 (불러올 때 split_housing_rent()
+    # 가 따로 선 월세 항목으로 갈라낸다). 그래서 갈라낸 뒤의 모습으로 세운다.
+    house = Item("전셋집", Category.DEPOSIT, 20_000_000, housing_type="banjeonse",
+                 monthly=300_000, start_date="2026-02-01", end_date="2026-08-01")
+    for it in split_housing_rent([house]):
+        p.add(it)
+    assert [i.name for i in p.items[-2:]] == ["전셋집", "전셋집 월세"]
+    assert house.monthly == 0.0
 
     assert p.planned_out_at(0) == 500_000                       # 월세만
     assert p.planned_in_at(0) == 3_000_000
 
-    # 2월: 보증금이 나가고 월세(주거)도 시작
+    # 2월: 보증금이 나가고 주거에 딸렸던 월세도 시작
     assert p.planned_out_at(1) == 500_000 + 300_000 + 20_000_000
     # 3월: 이사비
     assert p.planned_out_at(2) == 500_000 + 300_000 + 1_200_000
@@ -1096,3 +1102,145 @@ def test_lump_repayment_shows_as_a_once_cost_not_a_monthly_one():
     # 원금을 자본에 넣으면 상환은 자본이 줄어드는 것으로 반영되므로 여기 안 선다
     loan.include_principal = True
     assert p.summary().once_cost == 0
+
+
+def test_a_deposit_can_be_counted_as_an_asset():
+    """보증금을 '맡겨 둔 자산' 으로 보면 순 자본이 그만큼 남아 있어야 한다.
+
+    묶여 있는 동안에는 보유 자금에 들어가고 일시 지출로도 빠지므로 순 자본이
+    그대로다 (현금 → 보증금 으로 모양만 바뀐다). 돌려받는 달에도 튀지 않는다.
+    """
+    def build(as_asset):
+        p = Plan(months=36, start_date="2026-01-01")
+        p.add(Item("현금", Category.CASH, 200_000_000))
+        p.add(Item("전세 보증금", Category.DEPOSIT, 150_000_000, housing_type="jeonse",
+                   start_date="2026-04-01", end_date="2028-04-01", as_asset=as_asset))
+        return p
+
+    off, on = build(False), build(True)
+
+    # 맡기기 전 (2026-04 = 3개월째에 나간다) 은 둘 다 같다
+    assert off.net_at(2) == on.net_at(2) == 200_000_000
+    # 맡긴 뒤: 끄면 보증금만큼 깎이고, 켜면 그대로다
+    assert off.net_at(4) == 50_000_000
+    assert on.net_at(4) == 200_000_000
+    # 보유 자금에는 현금 + 보증금이 함께 서고, 같은 금액이 일시 지출로 빠진다
+    assert on.capital_at(4) == 350_000_000
+    # 돌려받는 달(27개월) 과 그다음 달에도 켠 쪽은 튀지 않는다
+    assert on.net_at(27) == on.net_at(28) == 200_000_000
+    assert off.net_at(27) == 200_000_000            # 끈 쪽은 이때 되돌아온다
+    assert off.net_at(26) == 50_000_000
+
+
+def test_as_asset_is_only_for_deposits_and_defaults_to_off():
+    """예전 파일이 불러오기만으로 숫자가 달라지면 안 된다."""
+    assert Item("현금", Category.CASH, 1000).as_asset is False
+    # 보증금이 아닌 분류에 켜 두어도 털어 낸다
+    assert Item("적금", Category.SAVING, 1000, as_asset=True).as_asset is False
+    # 저장 → 불러오기 왕복
+    it = Item("보증금", Category.DEPOSIT, 1000, housing_type="jeonse", as_asset=True)
+    assert Item.from_dict(it.to_dict()).as_asset is True
+    assert Item.from_dict({"name": "옛 보증금", "category": Category.DEPOSIT.value,
+                           "amount": 1000}).as_asset is False
+
+
+def test_a_deposit_paid_before_the_basis_counts_from_the_start():
+    """이미 맡겨 둔 보증금도 자산으로 보면 처음부터 순 자본에 있다.
+
+    기준일 전에 나간 돈은 일시 지출로 세지 않으므로(count_upto=0), 켜 두면
+    반환일에 공짜로 생기는 것처럼 보이던 돈이 처음부터 제자리에 선다.
+    """
+    p = Plan(months=36, start_date="2026-06-01")
+    p.add(Item("현금", Category.CASH, 10_000_000))
+    p.add(Item("살고 있는 전세", Category.DEPOSIT, 90_000_000, housing_type="jeonse",
+               start_date="2025-03-01", end_date="2027-03-01", as_asset=True))
+    assert p.net_at(0) == 100_000_000
+    assert p.net_at(8) == 100_000_000      # 2027-03 반환 (9개월째) 바로 전
+    assert p.net_at(9) == 100_000_000      # 반환된 달에도 그대로
+
+
+def test_tied_capital_tells_cash_apart_from_a_deposit():
+    """보유 자금 가운데 보증금에 묶인 돈이 얼마인지 셀 수 있어야 한다.
+
+    자산으로 켜면 보유 자금이 커지는데, 그게 다 현금인 줄 알면 계획을 잘못
+    세운다. 끈 보증금은 애초에 보유 자금에 없으므로 0 이다.
+    """
+    p = Plan(months=36, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 200_000_000))
+    dep = p.add(Item("전세 보증금", Category.DEPOSIT, 150_000_000, housing_type="jeonse",
+                     start_date="2026-04-01", end_date="2028-04-01", as_asset=True))
+
+    assert p.tied_capital_at(0) == 0                # 아직 안 맡겼다
+    assert p.tied_capital_at(3) == 150_000_000      # 맡긴 뒤
+    assert p.capital_at(3) - p.tied_capital_at(3) == 200_000_000   # 쓸 수 있는 돈
+    assert p.tied_capital_at(27) == 0               # 돌려받으면 다시 현금이다
+
+    dep.as_asset = False
+    assert p.tied_capital_at(3) == 0                # 끄면 보유 자금에 아예 없다
+
+
+def test_a_deposit_you_cannot_afford_still_raises_the_warning():
+    """자산으로 켠 보증금이 현금 부족 경고를 가리면 안 된다.
+
+    1억을 가지고 1.5억짜리 전세에 들어가면 순 자본은 1억 그대로지만(현금이
+    보증금으로 바뀐 것으로 보므로) **낼 돈이 없다**. 경고는 순 자본이 아니라
+    '쓸 수 있는 돈' 을 봐야 한다.
+    """
+    p = Plan(months=36, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 100_000_000))
+    p.add(Item("전세 보증금", Category.DEPOSIT, 150_000_000, housing_type="jeonse",
+               start_date="2026-03-01", as_asset=True))
+
+    assert p.net_at(2) == 100_000_000          # 순 자본은 멀쩡해 보인다
+    assert p.spendable_at(2) == -50_000_000    # 그러나 5천만원이 모자란다
+    sf = p.shortfall()
+    assert sf["month"] == 2
+    assert sf["min_net"] == -50_000_000
+
+    # 월 1천만씩 모으면서 입주를 미루면 어느 달부터 낼 수 있는지가 드러난다
+    def with_salary(move_in):
+        q = Plan(months=36, start_date="2026-01-01")
+        q.add(Item("현금", Category.CASH, 100_000_000))
+        q.add(Item("전세 보증금", Category.DEPOSIT, 150_000_000, housing_type="jeonse",
+                   start_date=move_in, as_asset=True))
+        q.add(Item("급여", Category.INCOME, 10_000_000, pay_day=25))
+        return q
+
+    assert with_salary("2026-03-01").shortfall()["month"] == 2   # 2천만 더 — 아직 모자란다
+    assert with_salary("2026-06-01").shortfall()["month"] is None  # 5천만 모으면 딱 된다
+
+
+def test_without_the_asset_flag_the_warning_is_what_it_always_was():
+    """보증금을 자산으로 보지 않는 계획에서는 쓸 수 있는 돈 = 순 자본이다."""
+    p = Plan(months=36, start_date="2026-01-01")
+    p.add(Item("현금", Category.CASH, 100_000_000))
+    p.add(Item("전세 보증금", Category.DEPOSIT, 150_000_000, housing_type="jeonse",
+               start_date="2026-03-01"))
+    assert [p.spendable_at(m) for m in (0, 2, 5)] == [p.net_at(m) for m in (0, 2, 5)]
+    assert p.shortfall()["month"] == 2
+
+
+def test_open_ended_saving_never_stops():
+    """만기를 안 넣은 적금은 계획 끝까지 월 지출로 깔린다 (그래서 경고한다)."""
+    plan = Plan(months=12, start_date="2026-11-25")
+    closed = plan.add(Item("만기 있는 적금", Category.SAVING, 500_000,
+                           start_date="2026-12-01", end_date="2027-06-01"))
+    opened = plan.add(Item("만기 없는 적금", Category.SAVING, 500_000,
+                           start_date="2026-12-01"))
+    basis = plan.basis
+
+    assert not closed.open_ended_saving()
+    assert opened.open_ended_saving()
+
+    # 만기가 있으면 그 달부터 납입이 멈춘다 (종료일은 '이 날부터 끝')
+    assert closed.monthly_cost_at(6, basis) == 500_000     # 2027-05
+    assert closed.monthly_cost_at(7, basis) == 0           # 2027-06
+    assert closed.saving_balance_at(24, basis) == closed.saving_balance_at(7, basis)
+
+    # 만기가 없으면 멈추지 않는다
+    assert opened.monthly_cost_at(7, basis) == 500_000
+    assert opened.monthly_cost_at(24, basis) == 500_000
+
+    # 적금이 아니면 이 경고와 무관하다
+    assert not plan.add(Item("월세", Category.FIXED, 500_000,
+                             start_date="2026-12-01")).open_ended_saving()

@@ -53,6 +53,7 @@ Popup {
     property real growth: 0                 // 연 상승률 % (급여 인상, 물가·월세 인상)
     property real support: 0                // 적금 월 지원금 (청년도약계좌처럼 보태 주는 돈)
     property bool locked: false             // 만기 전까지 못 쓰는 돈으로 볼지 (적금)
+    property string page: ""                // 어느 장(페이지)에 둘지 (계산과는 상관없다)
     // 주거 형태별 입력 안내 (금액 이름, 월세 사용 여부, 반환 가능 여부)
     readonly property var houseInfo: backend.housingInfo(housingType)
     // 대출 상환 미리보기 (원금·이율·방식·기간이 바뀌면 다시 계산)
@@ -120,6 +121,9 @@ Popup {
         growth = 0
         support = 0
         locked = false
+        assetCheck.checked = false
+        // 새 항목은 지금 펴 둔 장에 ('전체' 를 보고 있으면 첫 장)
+        setPage(backend.activePage || backend.pages[0])
         repModel.clear()
         open(); nameField.forceActiveFocus()
     }
@@ -133,7 +137,7 @@ Popup {
     }
     function openForEdit(row, name, catIndex, amount, rate, includePrincipal, startDate, endDate, repayments,
                          monthlyRepayRate, repayMethod, housingType, monthly, growth, support, locked, every,
-                         ledgerCategory, afterTax, compound, payDay) {
+                         ledgerCategory, afterTax, compound, payDay, asAsset, page) {
         editRow = row
         nameField.text = name
         setCategory(catIndex)
@@ -155,9 +159,22 @@ Popup {
         setLedgerCategory(ledgerCategory || "")
         dlg.afterTax = afterTax === true
         dlg.compound = compound === true
+        assetCheck.checked = asAsset === true
+        setPage(page || backend.pages[0])
         loadRepayments(repayments)
         open(); nameField.forceActiveFocus()
     }
+    function setPage(p) {
+        // ComboBox 의 indexOfValue 는 valueRole 이 있어야 돈다 (여기 모델은 그냥
+        // 문자열 목록이다). 그래서 목록에서 직접 찾는다.
+        dlg.page = p || backend.pages[0]
+        var list = backend.pages
+        var i = -1
+        for (var k = 0; k < list.length; k++)
+            if (list[k] === dlg.page) { i = k; break }
+        pageBox.currentIndex = i >= 0 ? i : 0
+    }
+
     // 가계부 분류는 '자동' 을 포함한 목록에서 고른다
     function setLedgerCategory(c) {
         dlg.ledgerCategory = c || ""
@@ -185,12 +202,15 @@ Popup {
         var lk = dlg.info.canLock ? dlg.locked : false
         var method = dlg.info.isLoan ? dlg.repayMethod : ""
         var mr = (dlg.info.isLoan && dlg.repayMethod === "rate") ? monthlyRepayRate : 0
+        var asset = dlg.info.canBeAsset === true && assetCheck.checked
+        // 장은 숫자와 상관이 없어서 따로 옮긴다 (addItem/updateItem 은 건드리지 않는다)
         if (editRow < 0)
             backend.addItem(nameField.text, dlg.catIndexNow(), amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound,
-                           dlg.info.usesPayDay ? dlg.payDay : 0)
+                           dlg.info.usesPayDay ? dlg.payDay : 0, asset)
         else
             backend.updateItem(editRow, nameField.text, dlg.catIndexNow(), amount, rate, principalCheck.checked, sd, ed, repaymentsJson(), mr, method, ht, mo, gr, sp, lk, repeating ? dlg.every : 0, dlg.ledgerCategory, dlg.afterTax, dlg.compound,
-                               dlg.info.usesPayDay ? dlg.payDay : 0)
+                               dlg.info.usesPayDay ? dlg.payDay : 0, asset)
+        backend.setItemPage(editRow < 0 ? backend.itemCount - 1 : editRow, dlg.page)
         close()
     }
 
@@ -266,6 +286,28 @@ Popup {
                     onClicked: dlg.makeYearly()
                     ToolTip.visible: hovered; ToolTip.delay: 500
                     ToolTip.text: "분류를 '일시 지출' 로 옮기고 되풀이를 '해마다' 로 맞춥니다"
+                }
+            }
+
+            // ── 어느 장에 둘지 ──
+            // 장은 항목이 많아졌을 때 나눠 담는 묶음이다. 어느 장에 있든
+            // 요약·그래프는 모든 장을 함께 세므로 숫자는 바뀌지 않는다.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                visible: pageBox.model.length > 1
+                Text { text: "장"; color: Theme.textDim; font.pixelSize: 12 }
+                ComboBox {
+                    id: pageBox
+                    objectName: "itemPage"
+                    Layout.preferredWidth: 180
+                    model: backend.pages
+                    onActivated: dlg.page = pageBox.currentText
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "나눠 담는 묶음일 뿐이라 숫자는 바뀌지 않습니다"
+                    color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap
                 }
             }
 
@@ -502,7 +544,11 @@ Popup {
                 }
                 Text {
                     visible: returnField.visible
-                    text: "계약이 끝나 보증금을 돌려받는 달입니다. 그 달부터 순 자본에 다시 들어옵니다."
+                    // 자산으로 보면 보증금은 애초에 순 자본을 떠난 적이 없다 —
+                    // 그 경우 '다시 들어온다' 는 말은 틀린 안내다.
+                    text: assetCheck.checked
+                          ? "계약이 끝나 보증금을 돌려받는 달입니다. 자산으로 보고 있으므로 그 달에 보증금이 현금으로 바뀔 뿐, 순 자본은 그대로입니다."
+                          : "계약이 끝나 보증금을 돌려받는 달입니다. 그 달부터 순 자본에 다시 들어옵니다."
                     color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true
                 }
                 Text {
@@ -600,10 +646,16 @@ Popup {
                     }
                 }
                 Text {
-                    text: dlg.info.isLoan && dlg.loanInfo.needsEnd
+                    // 적금은 '비우면 계속' 이 거의 늘 실수다 — 만기가 없으면 납입이
+                    // 계획 끝까지 월 지출로 깔려 순 자본이 낮게 나온다.
+                    readonly property bool savingNoEnd: dlg.info.isSaving && dlg.endDate.trim() === ""
+                    readonly property bool loanNeedsEnd: dlg.info.isLoan && dlg.loanInfo.needsEnd
+                    text: loanNeedsEnd
                           ? "기준일 " + backend.basisDate + " 을 0개월로 계산합니다. 이 상환 방식은 종료일(만기)이 있어야 합니다."
-                          : "기준일 " + backend.basisDate + " 을 0개월로 계산합니다. 종료일을 비우면 기간 끝까지 계속 적용됩니다."
-                    color: dlg.info.isLoan && dlg.loanInfo.needsEnd ? Theme.yellow : Theme.textDim
+                          : savingNoEnd
+                            ? "⚠ 만기(종료일)를 비우면 납입이 계획 끝까지 계속 나갑니다 — 월 지출에서 빠지지 않아 순 자본이 실제보다 낮게 나옵니다. 적금 만기를 넣어 주세요."
+                            : "기준일 " + backend.basisDate + " 을 0개월로 계산합니다. 종료일을 비우면 기간 끝까지 계속 적용됩니다."
+                    color: (loanNeedsEnd || savingNoEnd) ? Theme.yellow : Theme.textDim
                     font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true
                 }
             }
@@ -640,6 +692,24 @@ Popup {
                     visible: dlg.info.isLoan
                     text: "대출 원금을 보유 자금에 포함"
                 }
+                // 보증금·매매가는 쓴 돈이 아니라 맡겨 둔 돈이다. 켜면 보유 자금에
+                // 그대로 남아 순 자본이 그만큼 오른다 (돌려받을 때도 튀지 않는다).
+                CheckBox {
+                    id: assetCheck
+                    objectName: "assetCheck"
+                    visible: dlg.info.canBeAsset === true
+                    text: dlg.housingType === "buy"
+                          ? "집값을 자산으로 보아 순 자본에 포함"
+                          : "보증금을 자산으로 보아 순 자본에 포함"
+                }
+                Text {
+                    visible: assetCheck.visible
+                    Layout.fillWidth: true; Layout.preferredWidth: 1
+                    text: assetCheck.checked
+                          ? "맡겨 둔 동안 순 자본에 그대로 남습니다 (현금이 보증금으로 모양만 바뀝니다). 돌려받는 달에도 순 자본은 그대로입니다."
+                          : "끄면 맡기는 순간 순 자본에서 빠지고, 반환일에 다시 들어옵니다 (예전과 같습니다)."
+                    color: Theme.textDim; font.pixelSize: 11; wrapMode: Text.Wrap
+                }
             }
 
             // ── 상환 방식 (대출) ──
@@ -670,7 +740,7 @@ Popup {
                     Layout.fillWidth: true
                     Layout.preferredHeight: previewText.implicitHeight + 16
                     radius: 8
-                    color: dlg.loanInfo.needsEnd ? "#2a2616" : "#111420"
+                    color: dlg.loanInfo.needsEnd ? Theme.redSoft : Theme.row
                     border.color: dlg.loanInfo.needsEnd ? Theme.yellow : Theme.cardBorder
                     Behavior on color { ColorAnimation { duration: Theme.fast } }
                     Text {
@@ -731,7 +801,7 @@ Popup {
                         required property var model
                         Layout.fillWidth: true
                         height: 64; radius: 8
-                        color: "#111420"; border.color: Theme.cardBorder
+                        color: Theme.row; border.color: Theme.cardBorder
 
                         // 등장 애니메이션
                         opacity: 0; Component.onCompleted: opacity = 1

@@ -93,7 +93,7 @@ Item {
         return out
     }
 
-    Rectangle { anchors.fill: parent; color: "#111420"; radius: 8; border.color: Theme.cardBorder }
+    Rectangle { anchors.fill: parent; color: Theme.row; radius: 8; border.color: Theme.cardBorder }
 
     // 그리기 영역 (아래쪽은 축 라벨 공간)
     Item {
@@ -108,7 +108,7 @@ Item {
                 required property int index
                 x: 0; width: plot.width; height: 1
                 y: index / 4 * plot.height
-                color: "#262a36"
+                color: Theme.cardBorder
             }
         }
 
@@ -126,7 +126,7 @@ Item {
             visible: chart.ready
             preferredRendererType: Shape.CurveRenderer
             ShapePath {
-                strokeColor: "#3a3f52"; strokeWidth: 1; fillColor: "transparent"
+                strokeColor: Theme.cardBorder; strokeWidth: 1; fillColor: "transparent"
                 strokeStyle: ShapePath.DashLine; dashPattern: [4, 4]
                 startX: 0; startY: chart.yOf(0)
                 PathLine { x: plot.width; y: chart.yOf(0) }

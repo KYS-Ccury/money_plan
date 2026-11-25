@@ -28,10 +28,11 @@ Window {
     // 본 창에 매달지 않는다. 매달아 두면 늘 위에 떠 있어서 나란히 놓고 보기 불편하다
     transientParent: null
 
-    Material.theme: Material.Dark
+    Material.theme: Theme.light ? Material.Light : Material.Dark
     Material.accent: Theme.accent
     Material.primary: Theme.accent
     Material.background: Theme.bg
+    Material.foreground: Theme.text
 
     function focusHere() {
         w.show()

@@ -22,14 +22,20 @@ Flickable {
     // **처음 값도 바인딩이 아니라 그냥 값이다.** 바인딩으로 두면 이 화면을 안 보는
     // 동안에도 계획이 바뀔 때마다 백엔드를 다시 부른다 (이 화면은 만들어 둔 채로
     // 숨어 있으므로 그게 바로 예전에 창을 느리게 만든 그 일이다).
-    property var plan: ({ scenario: "", months: 12, basis: "", end: "", capital: 0,
+    property var plan: ({ scenario: "", months: 12, basis: "", end: "", capital: 0, tied: 0,
                           net: 0, target: 0, gap: 0, progress: 0, goalMonth: -1,
                           goalDateText: "", itemCount: 0,
                           shortfallMonth: -1, shortfallText: "" })
     property var led: ({ has: false, months: 0, income: 0, cost: 0, net: 0,
                          avgNet: 0, bestLabel: "", worstLabel: "" })
-    property var now: ({ label: "", count: 0, income: 0, cost: 0, net: 0,
-                         vsPlan: { has: false } })
+    // vsPlan 은 backend._plan_vs_actual() 의 'empty' 와 **같은 칸을 다 갖춰야** 한다.
+    // StatRow.value 는 double 이라, 칸이 없으면 undefined 가 들어가 처음 한 번
+    // "Unable to assign [undefined] to double" 이 뜬다 (refresh 전에도 바인딩은 돈다).
+    property var now: ({ label: "", ym: "", count: 0, income: 0, cost: 0, net: 0,
+                         vsPlan: { has: false, scenario: "", months: 0,
+                                   planIn: 0, planOut: 0, planNet: 0,
+                                   actIn: 0, actOut: 0, actNet: 0,
+                                   inDiff: 0, outDiff: 0, netDiff: 0, outPct: 0 } })
     property var fixed: ({ count: 0, net: 0 })
     property int scenarioCount: 1
     property int scenarioIndex: 0
@@ -142,7 +148,11 @@ Flickable {
             Tile {
                 label: "지금 보유 자금"
                 value: backend.won(view.plan.capital)
-                sub: view.plan.scenario + "  ·  항목 " + view.plan.itemCount + "개"
+                // 묶인 돈이 있으면 시나리오 이름 대신 '쓸 수 있는 돈' 을 알려 준다
+                sub: view.plan.tied > 0
+                     ? "쓸 수 있는 돈 " + backend.won(view.plan.capital - view.plan.tied)
+                       + "  ·  묶인 돈 " + backend.won(view.plan.tied)
+                     : view.plan.scenario + "  ·  항목 " + view.plan.itemCount + "개"
                 valueColor: Theme.green
             }
             Tile {
@@ -186,7 +196,7 @@ Flickable {
                 anchors.verticalCenter: parent.verticalCenter
                 anchors.left: parent.left; anchors.leftMargin: 12
                 text: "돈이 비는 때가 있습니다 — " + view.plan.shortfallText
-                      + " (" + view.plan.shortfallMonth + "개월 뒤) 부터 순 자본이 마이너스입니다."
+                      + " (" + view.plan.shortfallMonth + "개월 뒤) 부터 쓸 수 있는 돈이 마이너스입니다."
                 color: Theme.red; font.pixelSize: 12
             }
         }

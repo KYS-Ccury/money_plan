@@ -21,6 +21,14 @@ ApplicationWindow {
     // 어느 길로 들어와도 (탭·단축키·저장해 둔 화면) 그때 만들어진다
     onModeChanged: if (win.mode === "overview") win.overviewReady = true
 
+    // 왼쪽 사이드바를 세울 자리가 있는가. 좁으면 접고, 그때는 상단 바의
+    // 전환 단추가 대신 선다 (화면을 못 바꾸게 되면 안 되므로).
+    readonly property bool sideBarShown: win.width >= 900
+
+    // 미래 보기를 켜 두었는가. 이제 칸을 따로 세우지 않고 목록의 줄에
+    // '그때 금액 · 달라지는 만큼' 두 칸이 더해진다.
+    property bool futureOpen: false
+
     // ───────────── 가계부를 따로 띄우기
     // 계획을 고치면서 가계부를 같이 봐야 할 때가 있다. 그래서 가계부만 떼어
     // 다른 창으로 내보낸다. 같은 backend 를 보므로 양쪽 숫자가 저절로 맞는다.
@@ -28,6 +36,101 @@ ApplicationWindow {
     property bool ledgerPopped: false
     property var ledgerWindow: null
     Component { id: ledgerWindowComp; LedgerWindow { } }
+
+    // ── 항목 목록 따로 띄우기 ──
+    // 본 창 안에서는 요약·그래프와 자리를 나눠 쓰느라 목록이 몇 줄뿐이다.
+    // 항목이 많아지면 목록만 큰 창으로 떼어 낸다 (가계부와 같은 방식).
+    property bool itemsPopped: false
+    property var itemWindow: null
+    Component { id: itemWindowComp; ItemWindow { } }
+
+    // 항목 목록이 지금 어디에 있든 그것을 가리킨다
+    function itemPane() {
+        if (win.itemsPopped && win.itemWindow)
+            return win.itemWindow.pane
+        return itemListPane
+    }
+
+    function focusItemWindow() {
+        if (win.itemsPopped && win.itemWindow)
+            win.itemWindow.focusHere()
+    }
+
+    // gx, gy 를 주면 (끌어서 떼어 냈을 때) 그 자리에 창을 띄운다.
+    function popItemsOut(gx, gy) {
+        if (win.itemsPopped)
+            return
+        if (!win.itemWindow) {
+            win.itemWindow = itemWindowComp.createObject(win)
+            if (!win.itemWindow) {             // 못 만들면 그냥 본 창에 둔다
+                toast.show("항목 창을 띄우지 못했습니다.", "error")
+                return
+            }
+            win.itemWindow.putBack.connect(win.popItemsIn)
+            var st = backend.itemWindowState()
+            if (st.has) {
+                win.itemWindow.width = Math.max(win.itemWindow.minimumWidth, st.width)
+                win.itemWindow.height = Math.max(win.itemWindow.minimumHeight, st.height)
+                var scr = win.screen
+                if (st.x > -10000 && st.y > -10000 && scr
+                    && st.x + 100 < scr.virtualX + scr.desktopAvailableWidth
+                    && st.y + 60 < scr.virtualY + scr.desktopAvailableHeight
+                    && st.x + st.width > scr.virtualX && st.y + st.height > scr.virtualY) {
+                    win.itemWindow.x = st.x
+                    win.itemWindow.y = st.y
+                }
+            }
+        }
+        // 끌어서 떼어 냈으면 손이 놓인 자리에 창을 둔다 (화면 밖으로는 안 나가게).
+        // 좌표를 못 받았으면(단추로 띄운 경우) 지난번 자리를 그대로 쓴다.
+        if (gx !== undefined && gy !== undefined && gx > 0 && gy > 0) {
+            var scr = win.screen
+            var x = gx - win.itemWindow.width / 2
+            var y = gy - 28
+            if (scr) {
+                x = Math.max(scr.virtualX + 10,
+                             Math.min(x, scr.virtualX + scr.desktopAvailableWidth
+                                         - win.itemWindow.width - 10))
+                y = Math.max(scr.virtualY + 10,
+                             Math.min(y, scr.virtualY + scr.desktopAvailableHeight
+                                         - win.itemWindow.height - 10))
+            }
+            win.itemWindow.x = x
+            win.itemWindow.y = y
+        }
+        win.itemsPopped = true
+        win.mode = "plan"                      // 본 창은 계획 화면에 둔다
+        win.itemWindow.focusHere()
+        win.rememberItemWindow(true)
+    }
+
+    function popItemsIn() {
+        if (!win.itemsPopped && !win.itemWindow)
+            return
+        win.rememberItemWindow(false)
+        win.itemsPopped = false
+        if (win.itemWindow) {
+            var old = win.itemWindow
+            win.itemWindow = null
+            old.hide()
+            old.destroy(1)      // 제 신호(putBack) 안에서 불릴 수 있어 한 박자 뒤에 지운다
+        }
+    }
+
+    function toggleItemWindow() {
+        if (win.itemsPopped)
+            win.popItemsIn()
+        else
+            win.popItemsOut()
+    }
+
+    function rememberItemWindow(popped) {
+        if (win.itemWindow)
+            backend.saveItemWindowState(win.itemWindow.x, win.itemWindow.y,
+                                        win.itemWindow.width, win.itemWindow.height, popped)
+        else
+            backend.saveItemWindowState(popped)
+    }
 
     // 가계부가 지금 어디에 있든 그것을 가리킨다 (단축키·외부 호출은 이것만 쓴다)
     function ledgerPane() {
@@ -107,6 +210,12 @@ ApplicationWindow {
     // 지난번 창 크기·위치·화면을 그대로 띄운다.
     // 모니터를 바꿨을 수도 있으니 화면 밖으로 나가면 가운데로 되돌린다.
     Component.onCompleted: {
+        // 색 먼저 — 창 상태가 없어서 아래에서 일찍 빠져나가도 색은 들어가야 한다
+        var look = backend.appearance()
+        if (look.mode)
+            Theme.mode = look.mode
+        Theme.customBg = look.bg || ""
+
         var st = backend.windowState()
         if (!st.has)
             return
@@ -125,32 +234,27 @@ ApplicationWindow {
         win.mode = st.mode
         if (backend.ledgerWindowState().popped)   // 지난번에 띄워 두었으면 그대로 띄운다
             win.popLedgerOut()
+        if (backend.itemWindowState().popped)
+            win.popItemsOut()
     }
 
     function rememberWindow() {
         var maxed = win.visibility === Window.Maximized || win.visibility === Window.FullScreen
         backend.saveWindowState(win.x, win.y, win.width, win.height, maxed, win.mode)
         win.rememberLedgerWindow(win.ledgerPopped)
+        win.rememberItemWindow(win.itemsPopped)
     }
 
-    Material.theme: Material.Dark
+    Material.theme: Theme.light ? Material.Light : Material.Dark
     Material.accent: Theme.accent
     Material.primary: Theme.accent
     Material.background: Theme.bg
+    Material.foreground: Theme.text
 
-    function openAddDialog() { itemDialog.openForAdd() }   // 테스트/외부 호출용
+    function openAddDialog() { win.itemPane().openAdd() }   // 테스트/외부 호출용
     function showToast(msg) { toast.show(msg, "ok") }       // 테스트/외부 호출용
     function openEditDialog(row) {                          // 테스트/외부 호출용: 해당 행의 수정 팝업
-        var m = backend.items, idx = m.index(row, 0)
-        itemDialog.openForEdit(row, m.data(idx, Qt.UserRole + 1), m.data(idx, Qt.UserRole + 3),
-                               m.data(idx, Qt.UserRole + 4), m.data(idx, Qt.UserRole + 6), m.data(idx, Qt.UserRole + 10),
-                               m.data(idx, Qt.UserRole + 12), m.data(idx, Qt.UserRole + 13), m.data(idx, Qt.UserRole + 14),
-                               m.data(idx, Qt.UserRole + 16), m.data(idx, Qt.UserRole + 18),
-                               m.data(idx, Qt.UserRole + 19), m.data(idx, Qt.UserRole + 20),
-                               m.data(idx, Qt.UserRole + 21), m.data(idx, Qt.UserRole + 22),
-                               m.data(idx, Qt.UserRole + 23), m.data(idx, Qt.UserRole + 27),
-                               m.data(idx, Qt.UserRole + 28), m.data(idx, Qt.UserRole + 29),
-                               m.data(idx, Qt.UserRole + 30), m.data(idx, Qt.UserRole + 31))
+        win.itemPane().openEdit(row)
     }
 
     function openEntryDialog() {                            // 테스트/외부 호출용
@@ -166,8 +270,8 @@ ApplicationWindow {
         win.mode = "overview"
     }
 
-    ItemDialog { id: itemDialog }
     GoalsDialog { id: goalsDialog }
+    ThemeDialog { id: themeDialog }
 
     // 단축키 (창 어디서나)
     Shortcut { sequences: ["Ctrl+Z"]; onActivated: backend.undo() }
@@ -188,7 +292,7 @@ ApplicationWindow {
         sequences: ["Ctrl+N"]
         onActivated: {
             if (win.mode === "ledger") win.ledgerPane().openAdd()
-            else if (win.mode === "plan") itemDialog.openForAdd()
+            else if (win.mode === "plan") win.itemPane().openAdd()
         }
     }
     // 가계부 검색칸으로 (다른 화면이면 가계부로 넘어가면서)
@@ -201,6 +305,7 @@ ApplicationWindow {
     Shortcut { sequences: ["Ctrl+3"]; onActivated: win.openOverview() }
     // 가계부를 따로 띄우기 / 본 창으로 되돌리기
     Shortcut { sequences: ["Ctrl+Shift+2"]; onActivated: win.toggleLedgerWindow() }
+    Shortcut { sequences: ["Ctrl+Shift+1"]; onActivated: win.toggleItemWindow() }
 
     // 저장 안 된 채로 닫으려 할 때. forceClose 를 세워 두고 다시 닫는다
     property bool forceClose: false
@@ -358,13 +463,6 @@ ApplicationWindow {
         onAccepted: backend.loadFrom(selectedFile.toString())
     }
     ConfirmDialog {
-        id: deleteDialog
-        property int row: -1
-        title: "항목 삭제"
-        okText: "삭제"
-        onAccepted: backend.removeItem(row)
-    }
-    ConfirmDialog {
         id: removeScenarioDialog
         title: "시나리오 삭제"
         okText: "삭제"
@@ -409,9 +507,36 @@ ApplicationWindow {
         onAccepted: backend.clearItems()
     }
 
-    ColumnLayout {
+    // 왼쪽 사이드바 + 본문. 시안('모아')처럼 화면 전환과 시나리오를 세로로 세운다.
+    RowLayout {
         anchors.fill: parent
-        anchors.margins: Theme.pad
+        spacing: 0
+
+        SideBar {
+            id: sideBar
+            objectName: "sideBar"
+            visible: win.sideBarShown
+            Layout.fillHeight: true
+            Layout.preferredWidth: 230
+            Layout.minimumWidth: 230
+            Layout.maximumWidth: 230
+            mode: win.mode
+            ledgerPopped: win.ledgerPopped
+            itemsPopped: win.itemsPopped
+            onItemsPopRequested: win.toggleItemWindow()
+            onModePicked: (m) => {
+                if (m === "ledger") win.showLedger()
+                else win.mode = m
+            }
+            onLedgerPopRequested: win.toggleLedgerWindow()
+            onRenameRequested: (i, n) => renameDialog.openFor(i, n)
+            onSettingsRequested: themeDialog.start()
+        }
+
+        ColumnLayout {
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        Layout.margins: Theme.pad
         spacing: 12
 
         // ───────────── 상단 바: 제목 + 버튼, 그 아래 슬라이더 입력
@@ -430,10 +555,15 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
-                    Text { text: "자본금 계산기"; color: Theme.text; font.pixelSize: 20; font.bold: true }
+                    // 사이드바가 서면 이름·전환 단추는 거기 있으므로 여기선 숨긴다
+                    Text {
+                        text: "자본금 계산기"; color: Theme.text; font.pixelSize: 20; font.bold: true
+                        visible: !win.sideBarShown
+                    }
                     Text {
                         text: "v" + backend.version
                         color: Theme.textDim; font.pixelSize: 11
+                        visible: !win.sideBarShown
                         Layout.alignment: Qt.AlignBottom
                         Layout.bottomMargin: 3
                         ToolTip.visible: verHover.hovered; ToolTip.delay: 500
@@ -441,8 +571,9 @@ ApplicationWindow {
                         HoverHandler { id: verHover }
                     }
 
-                    // 계획 / 가계부 전환
+                    // 계획 / 가계부 전환 (사이드바가 접혔을 때만 — 좁은 창)
                     Row {
+                        visible: !win.sideBarShown
                         spacing: 0
                         leftPadding: 12
                         Repeater {
@@ -471,7 +602,7 @@ ApplicationWindow {
                                     anchors.centerIn: parent
                                     text: modelData.t + (parent.popped ? " ⧉" : "")
                                     color: parent.popped ? Theme.text
-                                         : (parent.on ? "#ffffff" : Theme.textDim)
+                                         : (parent.on ? Theme.card : Theme.textDim)
                                     font.pixelSize: 13
                                     font.bold: parent.on
                                 }
@@ -484,6 +615,7 @@ ApplicationWindow {
                     Button {
                         objectName: "ledgerWindowButton"
                         text: win.ledgerPopped ? "가계부 본 창으로" : "가계부 따로 띄우기"
+                        visible: !win.sideBarShown
                         flat: true; leftPadding: 10; rightPadding: 10
                         Material.foreground: win.ledgerPopped ? Theme.accent : Theme.textDim
                         onClicked: win.toggleLedgerWindow()
@@ -503,7 +635,7 @@ ApplicationWindow {
                     Button {
                         text: "＋ 항목 추가"; highlighted: true
                         visible: win.mode === "plan"
-                        onClicked: itemDialog.openForAdd()
+                        onClicked: win.itemPane().openAdd()
                     }
                     Button {
                         objectName: "undoButton"
@@ -594,13 +726,23 @@ ApplicationWindow {
                     }
                     Button { text: "예시 데이터"; flat: true; leftPadding: 10; rightPadding: 10; onClicked: backend.loadSample() }
                     Button { text: "전체 삭제"; flat: true; leftPadding: 10; rightPadding: 10; Material.foreground: Theme.red; onClicked: clearDialog.open() }
+                    Button {
+                        objectName: "themeButton"
+                        // 사이드바가 접혔을 때만 — 평소에는 사이드바 아래 '설정' 이 연다
+                        visible: !win.sideBarShown
+                        text: "모양"; flat: true; leftPadding: 10; rightPadding: 10
+                        onClicked: themeDialog.start()
+                        ToolTip.visible: hovered; ToolTip.delay: 500
+                        ToolTip.text: "바탕색을 고릅니다 (이 PC 에만 저장됩니다)"
+                    }
                 }
 
                 // 시나리오 탭: 클릭 = 전환, 더블클릭 = 이름 변경
                 // 여기도 Flow — 시나리오가 늘어나면 단추가 창 밖으로 밀려 나간다
                 Flow {
                     Layout.fillWidth: true
-                    visible: win.mode === "plan"
+                    // 시나리오도 사이드바로 옮겼다 (좁을 때만 여기 선다)
+                    visible: win.mode === "plan" && !win.sideBarShown
                     spacing: 6
                     Text { text: "시나리오"; color: Theme.textDim; font.pixelSize: 12; rightPadding: 4 }
                     Repeater {
@@ -688,15 +830,93 @@ ApplicationWindow {
                         value: backend.endDate
                         onEdited: (v) => backend.endDate = v
                     }
-                    // 기간은 기준일과 종료일 사이에서 나온다. 직접 치는 칸은 없고,
-                    // 자주 쓰는 길이만 단추로 두고 ±는 종료일을 한 달씩 민다.
+                    // 기간은 기준일과 종료일 사이에서 나온다. 치는 칸과 ± 와 단추가
+                    // 모두 같은 `backend.months` 를 밀고, 그러면 종료일이 따라 움직인다.
+                    //
+                    // 읽기만 하던 `기간 N개월` 글씨 자리에 **입력칸을 앉혔다.** 폭이
+                    // 모자라 단추 줄에 끼울 수가 없었고(이 칸은 넷이 한 줄에 서는
+                    // 그리드 안이다), 읽던 숫자와 고치는 숫자가 같은 자리에 있는 편이
+                    // 눈이 덜 움직인다.
                     ColumnLayout {
+                        id: periodBox
                         Layout.fillWidth: false
                         Layout.alignment: Qt.AlignBottom
                         spacing: 2
-                        Text {
-                            text: "기간  " + backend.months + "개월"
-                            color: Theme.textDim; font.pixelSize: 12
+
+                        // 600개월(50년)에서 끊는다. 기간은 달마다 수지를 다시 세므로
+                        // 손이 미끄러져 99999 가 들어가면 그 자리에서 한참 멈춘다.
+                        readonly property int maxMonths: 600
+                        // 18 → "1년 6개월". 12 로 안 떨어지면 개월로만 읽는다
+                        function periodText(m) {
+                            if (m < 12) return m + "개월"
+                            var y = Math.floor(m / 12), r = m % 12
+                            return r === 0 ? y + "년" : y + "년 " + r + "개월"
+                        }
+                        function commit(v) {
+                            // 칸을 비우면 parseInt 가 NaN 을 준다. 그대로 넘기면 파이썬
+                            // 쪽 int(NaN) 에서 터지므로, 여기서 막고 쓰던 값을 되비친다.
+                            if (isNaN(v)) { monthsField.sync(); return }
+                            v = Math.max(0, Math.min(periodBox.maxMonths, Math.round(v)))
+                            if (v !== backend.months) backend.months = v
+                            monthsField.sync()      // 걸러진 값(600 넘김 등)을 칸에 되비친다
+                        }
+
+                        RowLayout {
+                            spacing: 4
+                            Text {
+                                text: "기간"
+                                color: Theme.textDim; font.pixelSize: 12
+                            }
+                            TextField {
+                                id: monthsField
+                                objectName: "monthsField"
+                                Layout.preferredWidth: 54
+                                implicitHeight: 32
+                                topPadding: 4; bottomPadding: 4
+                                font.pixelSize: 14
+                                horizontalAlignment: TextInput.AlignHCenter
+                                inputMethodHints: Qt.ImhDigitsOnly
+                                validator: IntValidator { bottom: 0; top: periodBox.maxMonths }
+                                text: backend.months
+                                // 치는 중간값("1" → "18")으로 기간이 출렁이지 않게 잠깐 기다린다.
+                                // DateField 도 같은 수를 쓴다.
+                                Timer {
+                                    id: monthsTimer
+                                    interval: 250
+                                    onTriggered: periodBox.commit(parseInt(monthsField.text, 10))
+                                }
+                                function sync() {
+                                    if (!activeFocus) text = String(backend.months)
+                                }
+                                onTextEdited: monthsTimer.restart()
+                                onEditingFinished: {
+                                    monthsTimer.stop()
+                                    periodBox.commit(parseInt(text, 10))
+                                }
+                                // 칸 안에서 ↑↓ 는 한 달, PageUp/PageDown 은 한 해씩
+                                Keys.onUpPressed: periodBox.commit(backend.months + 1)
+                                Keys.onDownPressed: periodBox.commit(backend.months - 1)
+                                Keys.onPressed: function (e) {
+                                    if (e.key === Qt.Key_PageUp) { periodBox.commit(backend.months + 12); e.accepted = true }
+                                    else if (e.key === Qt.Key_PageDown) { periodBox.commit(backend.months - 12); e.accepted = true }
+                                }
+                                Connections {
+                                    target: backend
+                                    function onMonthsChanged() { monthsField.sync() }
+                                }
+                                ToolTip.visible: hovered && !activeFocus; ToolTip.delay: 700
+                                ToolTip.text: "개월 수를 바로 칩니다  ·  ↑↓ 한 달, PageUp/PageDown 한 해"
+                            }
+                            Text {
+                                text: "개월"
+                                color: Theme.textDim; font.pixelSize: 12
+                            }
+                            // 12 가 넘으면 몇 년 몇 달인지 같이 읽어 준다 (18 → 1년 6개월)
+                            Text {
+                                visible: backend.months >= 12
+                                text: "· " + periodBox.periodText(backend.months)
+                                color: Theme.accent; font.pixelSize: 12
+                            }
                         }
                         RowLayout {
                             spacing: 4
@@ -706,12 +926,12 @@ ApplicationWindow {
                                 implicitWidth: 34; implicitHeight: 40
                                 enabled: backend.months > 0
                                 // 꾹 누르면 계속 줄어들어 기간이 저도 모르게 멀리 가 버린다 → 한 번에 한 달
-                                onClicked: backend.months = backend.months - 1
+                                onClicked: periodBox.commit(backend.months - 1)
                                 ToolTip.visible: hovered; ToolTip.delay: 700
                                 ToolTip.text: "종료일을 한 달 당기기"
                             }
                             Repeater {
-                                model: [{t: "6개월", m: 6}, {t: "1년", m: 12},
+                                model: [{t: "3개월", m: 3}, {t: "6개월", m: 6}, {t: "1년", m: 12},
                                         {t: "2년", m: 24}, {t: "3년", m: 36}, {t: "5년", m: 60}]
                                 ToolButton {
                                     required property var modelData
@@ -721,7 +941,7 @@ ApplicationWindow {
                                     // checkable 을 쓰면 누르는 순간 바인딩이 끊겨 기간이 바뀌어도
                                     // 계속 켜진 채로 남는다. 바인딩만으로 지금 기간을 표시한다.
                                     highlighted: backend.months === modelData.m
-                                    onClicked: backend.months = modelData.m
+                                    onClicked: periodBox.commit(modelData.m)
                                     ToolTip.visible: hovered; ToolTip.delay: 700
                                     ToolTip.text: "종료일을 기준일 + " + modelData.t + " 로"
                                 }
@@ -730,7 +950,8 @@ ApplicationWindow {
                                 text: "＋"
                                 font.pixelSize: 14
                                 implicitWidth: 34; implicitHeight: 40
-                                onClicked: backend.months = backend.months + 1
+                                enabled: backend.months < periodBox.maxMonths
+                                onClicked: periodBox.commit(backend.months + 1)
                                 ToolTip.visible: hovered; ToolTip.delay: 700
                                 ToolTip.text: "종료일을 한 달 미루기"
                             }
@@ -751,392 +972,65 @@ ApplicationWindow {
         }
 
         // ───────────── 본문 (계획)
+        // ───────────── 맨 위 큰 숫자 (짙은 초록 카드 + 숫자 카드 셋)
+        // 높이를 '필요한 만큼' 으로 못 박는다. 안 그러면 ColumnLayout 이 남는
+        // 자리를 여기에도 나눠 주어 **목록이 두 줄만 보였다.**
+        HeroSummary {
+            id: heroSummary
+            Layout.fillWidth: true
+            Layout.fillHeight: false
+            Layout.preferredHeight: implicitHeight
+            visible: win.mode === "plan"
+        }
+
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            // 남는 세로 자리는 전부 목록 줄이 갖는다
+            Layout.minimumHeight: 260
             visible: win.mode === "plan"
             spacing: 12
 
-            // 왼쪽: 항목 리스트
-            Card {
+            // 왼쪽: 항목 리스트 (따로 띄웠으면 여기엔 안내만 둔다)
+            ItemListPane {
+                id: itemListPane
+                objectName: "itemListPane"
+                visible: !win.itemsPopped
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                title: "항목 목록  (" + backend.itemCount + "개"
-                       + (backend.offCount > 0 ? ", " + backend.offCount + "개 꺼짐" : "") + ")"
+                futureOpen: win.futureOpen
+                onFutureToggled: (on) => win.futureOpen = on
+                detachable: true
+                onDetachRequested: (gx, gy) => win.popItemsOut(gx, gy)
+            }
 
+            Card {
+                visible: win.itemsPopped
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                title: "항목 목록"
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: 6
-
-                    // 보기 옵션
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
-                        Text { text: "분류별로 묶기"; color: Theme.textDim; font.pixelSize: 12 }
-                        Switch {
-                            checked: backend.groupByCategory
-                            onToggled: backend.groupByCategory = checked
-                            Layout.preferredHeight: 28
-                        }
-                        Text {
-                            visible: backend.groupByCategory
-                            text: "헤더를 누르면 접기/펼치기  ·  ▲▼ 는 같은 분류 안에서 옮깁니다"
-                            color: Theme.textDim; font.pixelSize: 11
-                        }
-                        Item { Layout.fillWidth: true }
-                    }
-
-                    // 헤더
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.rightMargin: 12
-                        spacing: 8
-                        Text { text: "이름"; color: Theme.textDim; font.pixelSize: 12; Layout.preferredWidth: 180 }
-                        Text { text: "분류"; color: Theme.textDim; font.pixelSize: 12; Layout.preferredWidth: 110 }
-                        Text { text: "금액"; color: Theme.textDim; font.pixelSize: 12; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
-                        Text {
-                            text: "연이율"; color: Theme.textDim; font.pixelSize: 12
-                            visible: list.width > 614          // 줄과 같은 눈금 (줄 폭 = 목록 폭 − 14)
-                            Layout.preferredWidth: 64; horizontalAlignment: Text.AlignRight
-                        }
-                        Text { text: "월 환산"; color: Theme.textDim; font.pixelSize: 12; Layout.preferredWidth: 150; horizontalAlignment: Text.AlignRight }
-                        Item { Layout.preferredWidth: list.width > 614 ? 104 : 56 }
-                    }
-                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.cardBorder }
-
-                    ListView {
-                        id: list
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        spacing: 6
-                        // 모델은 바꾸지 않는다. 묶기를 끄면 프록시가 원본 순서로 돌아간다
-                        // (model 이나 section.property 를 런타임에 바꾸면 델리게이트가 파괴되면서 앱이 죽는다)
-                        model: backend.groupedItems
-                        boundsBehavior: Flickable.StopAtBounds
-
-                        // 분류별 묶기: 같은 분류가 연속으로 오도록 프록시가 정렬하고, 섹션 헤더가 그룹을 나눈다
-                        // section.property 는 바꾸지 않는다 (바꾸면 섹션 델리게이트가 파괴되면서 앱이 죽는다).
-                        // 묶기를 끄면 헤더만 숨긴다.
-                        section.property: "category"
-                        section.criteria: ViewSection.FullString
-                        section.labelPositioning: ViewSection.InlineLabels | ViewSection.CurrentLabelAtStart
-                        section.delegate: Rectangle {
-                            id: secHeader
-                            required property string section
-                            readonly property bool grouped: backend.groupByCategory
-                            // backend.net / groupsChanged 참조로 값이 바뀔 때마다 다시 계산
-                            property var info: (backend.net, backend.itemCount, backend.groupSummary(section))
-                            property bool collapsed: (backend.groupByCategory, backend.isGroupCollapsed(info.catIndex))
-                            Connections {
-                                target: backend
-                                function onGroupsChanged() {
-                                    if (secHeader.info)
-                                        secHeader.collapsed = backend.isGroupCollapsed(secHeader.info.catIndex)
-                                }
-                            }
-                            // ListView 가 섹션 아이템의 visible 을 되돌려 놓기 때문에 opacity 로 숨긴다
-                            opacity: grouped ? 1 : 0
-                            enabled: grouped
-                            width: ListView.view.width - 14
-                            height: grouped ? 36 : 0
-                            radius: 8
-                            color: secHover.hovered ? "#232a44" : "#1a1f33"
-                            border.color: Theme.accentSoft
-                            Behavior on color { ColorAnimation { duration: Theme.fast } }
-                            HoverHandler { id: secHover }
-                            // 탭을 처리하는 도중에 모델을 건드리면 이 헤더 자신이 파괴될 수 있다. 한 박자 미룬다
-                            TapHandler { onTapped: Qt.callLater(backend.toggleGroup, secHeader.info.catIndex) }
-
-                            RowLayout {
-                                anchors { fill: parent; leftMargin: 12; rightMargin: 12 }
-                                spacing: 10
-                                Text {
-                                    text: "▾"
-                                    color: Theme.accent; font.pixelSize: 13
-                                    rotation: secHeader.collapsed ? -90 : 0
-                                    Behavior on rotation { NumberAnimation { duration: Theme.fast } }
-                                }
-                                Text {                       // 1차 분류 (주거·생활·금융…)
-                                    text: secHeader.info.group || ""
-                                    visible: text !== ""
-                                    color: Theme.textDim; font.pixelSize: 10
-                                }
-                                Text {
-                                    text: secHeader.section; color: Theme.text; font.pixelSize: 13; font.bold: true
-                                    Layout.maximumWidth: 150
-                                    elide: Text.ElideRight
-                                }
-                                Rectangle {
-                                    width: cntText.implicitWidth + 12; height: 18; radius: 9
-                                    color: Theme.accentSoft
-                                    Text { id: cntText; anchors.centerIn: parent; text: secHeader.info.count + "개"; color: Theme.text; font.pixelSize: 10 }
-                                }
-                                Item { Layout.fillWidth: true }
-                                Text { text: "합계 " + backend.won(secHeader.info.total); color: Theme.text; font.pixelSize: 12 }
-                                Text {
-                                    visible: secHeader.info.monthly !== 0
-                                    text: "월 " + (secHeader.info.monthly > 0 ? "+" : "") + backend.won(secHeader.info.monthly)
-                                    color: secHeader.info.monthly > 0 ? Theme.green : Theme.red
-                                    font.pixelSize: 12
-                                }
-                            }
-                        }
-
-                        ScrollBar.vertical: ScrollBar {
-                            policy: ScrollBar.AsNeeded
-                            visible: list.contentHeight > list.height
-                            contentItem: Rectangle {
-                                implicitWidth: 6; radius: 3
-                                color: parent.pressed ? Theme.accent : Theme.accentSoft
-                                Behavior on color { ColorAnimation { duration: Theme.fast } }
-                            }
-                        }
-
-                        // 추가 / 삭제 / 이동 애니메이션
-                        add: Transition {
-                            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.normal }
-                            NumberAnimation { property: "x"; from: -40; to: 0; duration: Theme.normal; easing.type: Easing.OutCubic }
-                        }
-                        remove: Transition {
-                            NumberAnimation { property: "opacity"; to: 0; duration: Theme.fast }
-                            NumberAnimation { property: "x"; to: 60; duration: Theme.fast; easing.type: Easing.InCubic }
-                        }
-                        displaced: Transition {
-                            NumberAnimation { properties: "x,y"; duration: Theme.normal; easing.type: Easing.OutCubic }
-                        }
-                        move: Transition {
-                            NumberAnimation { properties: "x,y"; duration: Theme.normal; easing.type: Easing.OutCubic }
-                        }
-
-                        delegate: Rectangle {
-                            id: rowItem
-                            objectName: "itemRow"
-                            required property int index
-                            required property string name
-                            required property string category
-                            required property int categoryIndex
-                            required property real amount
-                            required property string amountText
-                            required property real rate
-                            required property string rateText
-                            required property string monthlyText
-                            required property string monthlyKind
-                            required property bool includePrincipal
-                            required property string startDate
-                            required property string endDate
-                            required property var repayments
-                            required property string subText
-                            required property real monthlyRepayRate
-                            required property string repayMethod
-                            required property string housingType
-                            required property real monthly
-                            required property real growth
-                            required property real support
-                            required property bool locked
-                            required property int sourceRow
-                            required property int groupPos      // 같은 분류 안에서 몇 번째
-                            required property int groupCount    // 같은 분류가 몇 개
-                            required property bool active       // 꺼 두면 계산에서 빠진다
-                            required property int every        // 몇 달마다 되풀이 (0 = 한 번만)
-                            required property string ledgerCategory   // 가계부에서 볼 분류
-                            required property bool afterTax    // 이자에서 세금을 떼는가
-                            required property bool compound    // 복리인가
-                            required property int payDay       // 매달 며칠에 오가는지
-
-                            // 접힌 분류의 줄은 목록에서 빼지 않고 높이만 0 으로 접는다
-                            // (빼 버리면 그 분류의 섹션 헤더까지 사라져 다시 펼 수가 없다)
-                            property bool folded: backend.groupByCategory && backend.isGroupCollapsed(rowItem.categoryIndex)
-                            Connections {
-                                target: backend
-                                function onGroupsChanged() {
-                                    rowItem.folded = backend.groupByCategory
-                                                     && backend.isGroupCollapsed(rowItem.categoryIndex)
-                                }
-                            }
-
-                            width: ListView.view.width - 14
-                            // 좁아지면 덜 급한 칸(연이율·▲▼)을 접는다. 안 접으면 칸들이
-                            // 줄보다 넓어져 **오른쪽 끝의 ✕ 가 잘려 나간다** (줄은 clip 이다).
-                            readonly property bool roomy: width > 600
-                            height: folded ? 0 : (subText !== "" ? 54 : 44)
-                            opacity: folded ? 0 : (rowItem.active ? 1 : 0.45)
-                            enabled: !folded
-                            clip: true
-                            Behavior on height { NumberAnimation { duration: Theme.fast } }
-                            Behavior on opacity { NumberAnimation { duration: Theme.fast } }
-                            radius: 8
-                            color: hover.hovered ? Theme.rowHover : Theme.row
-                            Behavior on color { ColorAnimation { duration: Theme.fast } }
-
-                            // 분류별 왼쪽 색 띠
-                            Rectangle {
-                                width: 4; radius: 2
-                                anchors { left: parent.left; top: parent.top; bottom: parent.bottom; margins: 8 }
-                                color: rowItem.monthlyKind === "income" ? Theme.green
-                                     : rowItem.monthlyKind === "cost" ? Theme.red
-                                     : rowItem.monthlyKind === "once" ? Theme.yellow : Theme.accent
-                            }
-
-                            HoverHandler { id: hover }
-                            TapHandler {
-                                onDoubleTapped: itemDialog.openForEdit(backend.sourceRowAt(rowItem.index), rowItem.name, rowItem.categoryIndex,
-                                                                       rowItem.amount, rowItem.rate, rowItem.includePrincipal,
-                                                                       rowItem.startDate, rowItem.endDate, rowItem.repayments,
-                                                                       rowItem.monthlyRepayRate, rowItem.repayMethod,
-                                                                       rowItem.housingType, rowItem.monthly,
-                                                                       rowItem.growth, rowItem.support,
-                                                                       rowItem.locked, rowItem.every,
-                                                                       rowItem.ledgerCategory,
-                                                                       rowItem.afterTax, rowItem.compound,
-                                                                       rowItem.payDay)
-                            }
-
-                            // 이름 아래 작은 글씨 — 줄 전체 폭을 쓴다
-                            // (이름 칸 170px 안에 가두면 이자·지원금 같은 금액이 잘려 안 보인다)
-                            Text {
-                                visible: rowItem.subText !== "" && !rowItem.folded
-                                text: rowItem.subText
-                                color: Theme.textDim; font.pixelSize: 10
-                                elide: Text.ElideRight
-                                anchors {
-                                    left: parent.left; right: parent.right; bottom: parent.bottom
-                                    leftMargin: 18; rightMargin: 12; bottomMargin: 5
-                                }
-                            }
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 18; anchors.rightMargin: 8
-                                anchors.bottomMargin: rowItem.subText !== "" ? 14 : 0
-                                spacing: 8
-                                Text {
-                                    // 칸이 모자라면 이름이 먼저 줄어든다 (금액이 잘리면 쓸모가 없다)
-                                    Layout.fillWidth: true
-                                    Layout.maximumWidth: 170
-                                    Layout.minimumWidth: 70
-                                    text: rowItem.name
-                                    color: Theme.text; font.pixelSize: 14
-                                    font.strikeout: !rowItem.active      // 계산에서 빠져 있다
-                                    elide: Text.ElideRight
-                                }
-                                Rectangle {
-                                    // 칩은 글자만큼만 (창이 좁아도 금액 칸을 덜 빼앗는다)
-                                    Layout.preferredWidth: Math.min(104, catText.implicitWidth + 18)
-                                    Layout.minimumWidth: 48
-                                    height: 22; radius: 11
-                                    color: Theme.accentSoft
-                                    clip: true
-                                    Text {
-                                        id: catText
-                                        anchors.centerIn: parent
-                                        width: Math.min(implicitWidth, parent.width - 8)
-                                        text: rowItem.category; color: Theme.text; font.pixelSize: 11
-                                        elide: Text.ElideRight
-                                        horizontalAlignment: Text.AlignHCenter
-                                    }
-                                }
-                                Text {
-                                    text: rowItem.amountText; color: Theme.text; font.pixelSize: 14
-                                    Layout.preferredWidth: 120
-                                    Layout.minimumWidth: 92
-                                    horizontalAlignment: Text.AlignRight
-                                    elide: Text.ElideLeft          // 금액은 뒷자리가 중요하다
-                                }
-                                Text {
-                                    text: rowItem.rateText; color: Theme.textDim; font.pixelSize: 13
-                                    visible: rowItem.roomy             // 좁으면 접는다 (줄 아래 작은 글씨에도 있다)
-                                    Layout.preferredWidth: 60
-                                    Layout.minimumWidth: 34
-                                    horizontalAlignment: Text.AlignRight
-                                    elide: Text.ElideRight
-                                }
-                                Text {
-                                    text: rowItem.monthlyText
-                                    font.pixelSize: 13
-                                    Layout.preferredWidth: 150
-                                    Layout.minimumWidth: 70
-                                    horizontalAlignment: Text.AlignRight
-                                    elide: Text.ElideLeft
-                                    color: rowItem.monthlyKind === "income" ? Theme.green
-                                         : rowItem.monthlyKind === "cost" ? Theme.red
-                                         : rowItem.monthlyKind === "once" ? Theme.yellow : Theme.textDim
-                                }
-                                RowLayout {
-                                    spacing: 0
-                                    // 단추 칸은 줄어들지 않는다 — 줄어들면 ✕ 가 밖으로 밀린다
-                                    Layout.preferredWidth: rowItem.roomy ? 160 : 96
-                                    Layout.minimumWidth: rowItem.roomy ? 160 : 96
-                                    ToolButton {
-                                        text: rowItem.active ? "⏸" : "▶"
-                                        font.pixelSize: 11; implicitWidth: 32
-                                        Material.foreground: rowItem.active ? Theme.textDim : Theme.yellow
-                                        onClicked: backend.toggleItemActive(backend.sourceRowAt(rowItem.index))
-                                        ToolTip.visible: hovered; ToolTip.delay: 500
-                                        ToolTip.text: rowItem.active
-                                                      ? "잠시 끕니다 (지우지 않고 계산에서만 뺍니다)"
-                                                      : "다시 켭니다"
-                                    }
-                                    ToolButton {
-                                        text: "▤"; font.pixelSize: 12; implicitWidth: 32
-                                        Material.foreground: Theme.accent
-                                        onClicked: backend.toLedger(backend.sourceRowAt(rowItem.index))
-                                        ToolTip.visible: hovered; ToolTip.delay: 500
-                                        ToolTip.text: "이 항목을 가계부에 기록 (이름이 겹치면 넣지 않습니다)"
-                                    }
-                                    // 묶어 보면 보이는 차례와 원본 차례가 달라서, 같은 분류 안에서만 옮긴다
-                                    ToolButton {
-                                        text: "▲"; font.pixelSize: 11; implicitWidth: 32
-                                        visible: rowItem.roomy
-                                        enabled: backend.groupByCategory ? rowItem.groupPos > 0
-                                                                         : rowItem.index > 0
-                                        ToolTip.visible: hovered; ToolTip.delay: 700
-                                        ToolTip.text: backend.groupByCategory ? "같은 분류 안에서 위로" : "위로"
-                                        onClicked: {
-                                            var r = backend.sourceRowAt(rowItem.index)
-                                            if (backend.groupByCategory) backend.moveInGroup(r, -1)
-                                            else backend.moveItem(r, -1)
-                                        }
-                                    }
-                                    ToolButton {
-                                        text: "▼"; font.pixelSize: 11; implicitWidth: 32
-                                        visible: rowItem.roomy
-                                        enabled: backend.groupByCategory ? rowItem.groupPos < rowItem.groupCount - 1
-                                                                         : rowItem.index < backend.itemCount - 1
-                                        ToolTip.visible: hovered; ToolTip.delay: 700
-                                        ToolTip.text: backend.groupByCategory ? "같은 분류 안에서 아래로" : "아래로"
-                                        onClicked: {
-                                            var r = backend.sourceRowAt(rowItem.index)
-                                            if (backend.groupByCategory) backend.moveInGroup(r, 1)
-                                            else backend.moveItem(r, 1)
-                                        }
-                                    }
-                                    ToolButton {
-                                        text: "✕"; font.pixelSize: 12; implicitWidth: 32
-                                        Material.foreground: Theme.red
-                                        onClicked: {
-                                            // 저장해 둔 번호는 그 사이 삭제가 있었으면 밀려 있다. 누르는 순간 다시 확인한다
-                                            deleteDialog.row = backend.sourceRowAt(rowItem.index)
-                                            deleteDialog.message = "'" + rowItem.name + "' 항목을 삭제할까요?"
-                                            deleteDialog.open()
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // 비어 있을 때
-                        Text {
-                            anchors.centerIn: parent
-                            visible: backend.itemCount === 0
-                            text: "항목이 없습니다.  ＋ 항목 추가 를 눌러 시작하세요."
-                            color: Theme.textDim
-                        }
-                    }
+                    spacing: 10
+                    Item { Layout.fillHeight: true }
                     Text {
-                        text: "행 더블클릭: 수정   ⏸: 잠시 끄기   ▤: 가계부에 기록   ▲▼: 순서   ✕: 삭제"
-                        color: Theme.textDim; font.pixelSize: 11
+                        Layout.alignment: Qt.AlignHCenter
+                        text: "항목 목록은 따로 띄운 창에 있습니다."
+                        color: Theme.textDim; font.pixelSize: 13
                     }
+                    Button {
+                        Layout.alignment: Qt.AlignHCenter
+                        text: "그 창으로 가기"
+                        flat: true
+                        onClicked: win.focusItemWindow()
+                    }
+                    Button {
+                        Layout.alignment: Qt.AlignHCenter
+                        text: "본 창으로 되돌리기"
+                        highlighted: true
+                        onClicked: win.popItemsIn()
+                    }
+                    Item { Layout.fillHeight: true }
                 }
             }
 
@@ -1172,6 +1066,16 @@ ApplicationWindow {
                         anchors.fill: parent
                         spacing: 6
                         StatRow { label: "보유 자금 (지금)"; value: backend.capital; valueColor: Theme.green }
+                        // 보증금을 자산으로 보면 보유 자금에 그 돈이 들어 있다.
+                        // 그게 다 현금인 줄 알면 계획을 잘못 세우므로 갈라 적는다.
+                        Text {
+                            visible: backend.tiedCapital > 0
+                            text: "쓸 수 있는 돈 " + backend.won(backend.capital - backend.tiedCapital)
+                                  + "  ·  보증금에 묶인 돈 " + backend.won(backend.tiedCapital)
+                            color: Theme.textDim; font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true; Layout.preferredWidth: 1
+                        }
                         // 적금은 매달 '월 지출' 로 빠져나가지만 그만큼 통장에 쌓인다.
                         // 그 쌓인 돈이 어디로 갔는지 보이지 않아 숫자가 안 맞아 보였다.
                         StatRow {
@@ -1289,11 +1193,11 @@ ApplicationWindow {
                         Text {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
-                            text: warnCard.sf.dateText + " (" + warnCard.sf.month + "개월 뒤) 부터 순 자본이 마이너스입니다"
+                            text: warnCard.sf.dateText + " (" + warnCard.sf.month + "개월 뒤) 부터 쓸 수 있는 돈이 마이너스입니다"
                             color: Theme.red; font.pixelSize: 14; font.bold: true
                         }
                         StatRow {
-                            label: "그 시점 순 자본"
+                            label: "그 시점 쓸 수 있는 돈"
                             value: warnCard.sf.net
                             valueColor: Theme.red
                         }
@@ -1307,7 +1211,9 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
                             text: warnCard.sf.horizon + "개월 중 " + warnCard.sf.months + "개월이 부족합니다.  "
-                                  + "대출 상환 시점을 미루거나 월 지출을 줄여 보세요."
+                                  + (backend.tiedCapital > 0
+                                     ? "보증금에 묶인 돈은 여기서 빼고 셉니다. 입주 시점을 미루거나 보증금을 줄여 보세요."
+                                     : "대출 상환 시점을 미루거나 월 지출을 줄여 보세요.")
                             color: Theme.textDim; font.pixelSize: 11
                         }
                     }
@@ -1340,7 +1246,7 @@ ApplicationWindow {
                         Rectangle {
                             Layout.fillWidth: true
                             height: 26; radius: 13
-                            color: "#111420"
+                            color: Theme.row
                             border.color: Theme.cardBorder
                             Rectangle {
                                 id: bar
@@ -1538,7 +1444,8 @@ ApplicationWindow {
                             Layout.topMargin: 4
                             implicitHeight: predCol.implicitHeight + 20
                             radius: 8
-                            color: backend.goalMonth < 0 ? "#2a1b1f" : (backend.goalMonth <= backend.months ? "#17302a" : "#2a2616")
+                            color: backend.goalMonth < 0 ? Theme.redSoft
+                                 : (backend.goalMonth <= backend.months ? Theme.greenSoft : Theme.row)
                             border.color: backend.goalMonth < 0 ? Theme.red : (backend.goalMonth <= backend.months ? Theme.green : Theme.yellow)
                             Behavior on color { ColorAnimation { duration: Theme.normal } }
                             Behavior on border.color { ColorAnimation { duration: Theme.normal } }
@@ -1580,6 +1487,16 @@ ApplicationWindow {
                 Card {
                     id: pieCard
                     property string group: "목표 구성"
+
+                    // 미래 보기를 켜 두면 그 시점의 비중을 그린다. 끄면 오늘.
+                    //
+                    // 시점은 위쪽 '기간' 하나로 모았다 — 큰 숫자(`n개월 후 순 자본`)·
+                    // 요약·그래프가 보는 달과 같은 달을 본다. 머리에 몇 월 기준인지
+                    // 적어 두어 '오늘 것' 으로 잘못 읽지 않게 한다.
+                    readonly property int atMonth: win.futureOpen ? backend.months : 0
+                    // '목표 구성' 은 기간 전체(앞으로 들어올 돈까지)를 그리는 그림이라
+                    // 한 달을 집어 봐야 뜻이 없다 — 시점을 따르지 않는다.
+                    readonly property bool followsMonth: pieCard.group !== "목표 구성"
                     Layout.fillWidth: true
                     Layout.preferredHeight: 310
                     title: "비중"
@@ -1598,7 +1515,7 @@ ApplicationWindow {
                                        value: pi.groups[i].total,
                                        color: Theme.pendingColor(pi.groups[i].kind) })
                         if (pi.shortfall > 0)
-                            out.push({ label: "아직 모자람", value: pi.shortfall, color: "#39405a" })
+                            out.push({ label: "아직 모자람", value: pi.shortfall, color: Theme.cardBorder })
                         var total = 0
                         for (var j = 0; j < out.length; j++) total += out[j].value
                         for (var k = 0; k < out.length; k++)
@@ -1620,6 +1537,17 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             spacing: 6
                             Text { text: "구성"; color: Theme.textDim; font.pixelSize: 12 }
+                            Text {
+                                visible: pieCard.atMonth > 0
+                                // backend.net 을 끼워 둔다 — 기준일이 바뀌면 이 글씨도 따라가야 한다
+                                text: pieCard.followsMonth
+                                      ? (backend.net, backend.monthText(pieCard.atMonth)) + " 기준"
+                                      : "기간 전체"
+                                color: pieCard.followsMonth ? Theme.accent : Theme.textDim
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                                Layout.maximumWidth: 120
+                            }
                             Item { Layout.fillWidth: true }
                             Repeater {
                                 model: ["목표 구성", "보유 자금", "월 지출", "월 수입"]
@@ -1642,13 +1570,27 @@ ApplicationWindow {
                             // backend.net 참조로 요약이 바뀔 때마다 다시 계산
                             slices: pieCard.group === "목표 구성"
                                     ? (backend.net, backend.target, pieCard.goalSlices())
-                                    : (backend.net, backend.compositionOf(pieCard.group))
+                                    : (backend.net, backend.compositionOf(pieCard.group, pieCard.atMonth))
                             total: pieCard.group === "목표 구성"
                                    ? (backend.net, backend.target, pieCard.goalTotal())
-                                   : (backend.net, backend.compositionTotal(pieCard.group))
+                                   : (backend.net, backend.compositionTotal(pieCard.group, pieCard.atMonth))
                             // 모자랄 때는 조각 합이 목표와 같고, 넘칠 때는 목표보다 크다
-                            centerTitle: pieCard.group !== "목표 구성" ? pieCard.group
+                            centerTitle: pieCard.followsMonth
+                                       ? (pieCard.atMonth > 0
+                                          ? pieCard.group + " (" + pieCard.atMonth + "개월 뒤)"
+                                          : pieCard.group)
                                        : (backend.pendingInflow.shortfall > 0 ? "목표" : "다 모으면")
+                        }
+
+                        // 그 시점에 셀 것이 하나도 없으면 도넛이 빈다 — 왜 비었는지 적는다
+                        Text {
+                            visible: pieCard.followsMonth && pieCard.atMonth > 0
+                                     && backend.compositionTotal(pieCard.group, pieCard.atMonth) <= 0
+                            text: (backend.net, backend.monthText(pieCard.atMonth)) + " 에는 " + pieCard.group
+                                  + " 으로 잡히는 항목이 없습니다."
+                            color: Theme.textDim; font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true; Layout.preferredWidth: 1
                         }
 
                         // 목표가 없으면 도넛이 비므로 그때만 안내한다
@@ -1726,7 +1668,7 @@ ApplicationWindow {
                                     required property var modelData
                                     Layout.fillWidth: true
                                     height: 58; radius: 8
-                                    color: modelData.month === chartCard.horizon ? Theme.accentSoft : "#111420"
+                                    color: modelData.month === chartCard.horizon ? Theme.accentSoft : Theme.row
                                     border.color: modelData.month === chartCard.horizon ? Theme.accent : Theme.cardBorder
                                     Behavior on color { ColorAnimation { duration: Theme.fast } }
                                     TapHandler { onTapped: chartCard.horizon = modelData.month }
@@ -1918,6 +1860,7 @@ ApplicationWindow {
                 NumberAnimation { target: statusText; property: "opacity"; to: 0.2; duration: 80 }
                 NumberAnimation { target: statusText; property: "opacity"; to: 1; duration: 300 }
             }
+        }
         }
         }
     }

@@ -147,6 +147,9 @@ CATEGORY_INFO: dict[Category, dict] = {
                        "hint": "이사비·수수료처럼 한 번만 나가는 돈. 지출일을 비우면 기준일에 나갑니다"},
 }
 
+# 장(페이지) — 항목을 엑셀 시트처럼 나눠 담는 묶음. 첫 장의 이름은 고정이다.
+PAGE_DEFAULT = "기본"
+
 # 대출 상환 방식
 REPAY_METHOD_LIST: list[tuple[str, str]] = [
     ("bullet", "만기 일시 상환"),      # 이자만 내다가 종료일에 원금 전액
@@ -293,6 +296,15 @@ class Item:
     # 자본금 계산은 **달 단위**라 이 값이 숫자를 바꾸지는 않는다. 가계부에 적을 때
     # 그 날짜를 쓰고, 화면에 '매달 25일' 로 보여 준다.
     pay_day: int = 0
+    # 어느 장(페이지)에 둔 항목인가. 빈 값이면 첫 장이다.
+    # **계산과는 상관이 없다** — 장은 항목이 많아졌을 때 눈으로 나눠 보는
+    # 묶음일 뿐이고, 요약·그래프·순 자본은 늘 모든 장을 함께 센다
+    # (통째로 견주는 것은 시나리오가 한다).
+    page: str = ""
+    # 보증금·매매가를 '맡겨 둔 자산' 으로 보아 보유 자금에 그대로 둘지.
+    # **기본값은 False 다** — 켜면 순 자본이 보증금만큼 올라가므로, 예전에 저장해
+    # 둔 계획의 숫자가 불러오기만 해도 달라지면 안 된다.
+    as_asset: bool = False
 
     def __post_init__(self) -> None:
         if self.repay_method not in REPAY_METHODS:
@@ -313,6 +325,8 @@ class Item:
             self.pay_day = 0
         else:
             self.pay_day = min(31, max(0, int(self.pay_day or 0)))
+        if self.category != Category.DEPOSIT:
+            self.as_asset = False
 
     # ---- 기본 파생 값 ----
     def monthly_interest(self) -> float:
@@ -397,6 +411,16 @@ class Item:
             return None
         _start_m, end_m = self.active_range(basis)
         return end_m
+
+    def open_ended_saving(self) -> bool:
+        """만기(종료일)를 안 넣은 적금인가.
+
+        대출·월세는 종료일을 비우면 '계획 끝까지 계속' 이 맞는 뜻이지만, 적금은
+        만기가 있는 것이 보통이다. 비워 두면 `is_active()` 가 끝을 모르므로 납입이
+        **계획 기간 내내** 월 지출로 깔리고, 그만큼 순 자본이 실제보다 낮게 나온다.
+        날짜가 아니라 '빈 칸' 을 보는 값이므로 basis 가 필요 없다.
+        """
+        return self.category == Category.SAVING and not (self.end_date or "").strip()
 
     def is_locked(self, basis: date) -> bool:
         """만기 전까지 손댈 수 없는 돈인가. 만기가 있어야 묶임이 성립한다."""
@@ -686,8 +710,28 @@ class Item:
             return self.amount
         return self.amount + self.net_interest(self.amount * ((1.0 + mr) ** m - 1.0))
 
+    def deposit_value_at(self, m: int, basis: date) -> float:
+        """맡겨 둔 보증금·매매가 중 m개월 시점에 **아직 묶여 있는** 금액.
+
+        as_asset 을 켠 보증금만 해당한다. 이 값은 보유 자금에 더해지는데,
+        같은 금액이 once_cost 로 빠져나가므로 **묶여 있는 동안 순 자본은
+        그대로다** (현금이 보증금으로 모양만 바뀐 것이다). 돌려받는 달부터는
+        0 이 되고, 그 돈은 once_income(보증금 반환)으로 다시 들어온다 — 그래서
+        반환 시점에도 순 자본이 튀지 않는다.
+        """
+        if self.category != Category.DEPOSIT or not self.as_asset:
+            return 0.0
+        if m < self.once_month(basis):        # 아직 맡기기 전 (기준일 전이면 음수라 늘 참)
+            return 0.0
+        r = self.return_month(basis)
+        if r is not None and m >= r:
+            return 0.0                        # 돌려받았다
+        return self.amount
+
     def capital_at(self, m: int, basis: date) -> float:
         """m개월 시점에 보유 자금에 더해지는 금액."""
+        if self.category == Category.DEPOSIT:
+            return self.deposit_value_at(m, basis)
         if self.category == Category.CASH:
             return self.amount
         if self.category == Category.BANK:
@@ -868,6 +912,8 @@ class Item:
             ledger_category=str(d.get("ledger_category") or ""),
             after_tax=bool(d.get("after_tax", False)),
             compound=bool(d.get("compound", False)),
+            as_asset=bool(d.get("as_asset", False)),
+            page=str(d.get("page") or ""),
         )
 
 
@@ -999,6 +1045,14 @@ class Plan:
     goals: list[dict] = field(default_factory=list)
     start_date: str = field(default_factory=lambda: date.today().isoformat())  # 기준일 (0개월)
     name: str = ""                                                              # 시나리오 이름
+    # 장(페이지) 이름들. 첫 장은 여기 적지 않는다 (page_title 이 들고 있다).
+    # 항목이 하나도 없는 장도 남아 있어야 해서 따로 들고 있는다.
+    pages: list[str] = field(default_factory=list)
+    # 첫 장의 이름. 비어 있으면 PAGE_DEFAULT("기본")로 보여 준다.
+    #
+    # **첫 장의 항목은 page 를 빈 값으로 들고 있다.** 그래서 이름을 바꿔도
+    # 항목은 하나도 건드리지 않는다 — 이름표만 갈아 끼우는 셈이다.
+    page_title: str = ""
 
     @property
     def basis(self) -> date:
@@ -1061,6 +1115,16 @@ class Plan:
     def monthly_cost_at(self, m: int) -> float:
         b = self.basis
         return sum(i.monthly_cost_at(m, b) for i in self.live)
+
+    def tied_capital_at(self, m: int) -> float:
+        """보유 자금 가운데 **지금 쓸 수 없는** 돈 (자산으로 보는 보증금·매매가).
+
+        보유 자금에는 들어 있지만 집에 묶여 있어 당장 쓸 수는 없다. 요약에서
+        '쓸 수 있는 돈' 과 갈라 보여 주려고 센다 — 보증금을 자산으로 켜면 보유
+        자금이 커지는데, 그게 다 현금인 줄 알면 계획을 잘못 세우게 된다.
+        """
+        b = self.basis
+        return sum(i.deposit_value_at(m, b) for i in self.live)
 
     def once_repay_at(self, m: int) -> float:
         """m개월째에 한 번에 빠져나가는 대출 상환액 (요약에서 갈라 보여 주려고)."""
@@ -1165,6 +1229,20 @@ class Plan:
             flow += sum(i.monthly_net_at(m, b) for i in self.live)
         return out
 
+    def spendable_series(self, n: int) -> list[float]:
+        """0..n 개월의 **쓸 수 있는 돈** = 순 자본 - 그 달에 보증금에 묶여 있는 돈.
+
+        순 자본은 '얼마나 가졌는가' 이고 이쪽은 '지금 손에 쥐고 쓸 수 있는가' 다.
+        보증금을 자산으로 켜 두면 순 자본은 안 깎이므로, 돈이 모자란지는 순
+        자본으로 알 수 없다 — 1억을 가지고 1.5억짜리 전세에 들어가도 순 자본은
+        1억 그대로다. 부족 경고는 그래서 이 값을 본다.
+        """
+        return [v - self.tied_capital_at(m) for m, v in enumerate(self.net_series(n))]
+
+    def spendable_at(self, m: int) -> float:
+        """m개월 시점에 쓸 수 있는 돈 (묶인 보증금을 뺀 순 자본)."""
+        return self.net_at(m) - self.tied_capital_at(m)
+
     def first_month_reaching(self, amount: float, after: int = 0, limit: int = 600) -> int | None:
         """순 자본이 amount 이상이 되는 첫 달 (after 개월 이후). 못 닿으면 None.
 
@@ -1183,11 +1261,19 @@ class Plan:
     SHORTFALL_HORIZON = 36      # 부족 경고는 최소 3년까지 살펴본다
 
     def shortfall(self, horizon: int | None = None) -> dict:
-        """순 자본이 음수로 떨어지는 구간을 찾는다.
+        """**쓸 수 있는 돈**이 음수로 떨어지는 구간을 찾는다 (= 현금이 비는 때).
+
+        순 자본이 아니라 spendable_series 를 본다. 보증금을 자산으로 켜 두면
+        순 자본은 안 깎이기 때문에, 순 자본만 보면 '낼 돈이 없는데도' 경고가
+        안 뜬다. 보증금을 자산으로 보지 않는 계획에서는 둘이 같은 값이라
+        예전과 똑같이 움직인다.
+
         {month: 처음 부족해지는 개월(없으면 None), months: 부족한 달 수,
-         min_month / min_net: 가장 낮은 시점과 그때 순 자본, horizon: 살펴본 개월}"""
+         min_month / min_net: 가장 낮은 시점과 그때 쓸 수 있는 돈,
+         horizon: 살펴본 개월}
+        """
         h = max(self.months, self.SHORTFALL_HORIZON) if horizon is None else max(0, horizon)
-        series = self.net_series(h)
+        series = self.spendable_series(h)
         first: int | None = None
         count = 0
         min_m, min_v = 0, series[0]
@@ -1229,12 +1315,40 @@ class Plan:
         )
 
     # ---- 저장 / 불러오기 ----
+    def first_page(self) -> str:
+        """첫 장의 이름. 이름을 안 바꿨으면 "기본" 이다."""
+        return (self.page_title or "").strip() or PAGE_DEFAULT
+
+    def page_list(self) -> list[str]:
+        """이 계획의 장 이름들 (왼쪽부터).
+
+        첫 장은 늘 PAGE_DEFAULT 다. 빈 장도 남아 있어야 하므로 이름은 pages 에
+        따로 적어 두고, 혹시 목록에 없는 장을 쓰는 항목이 있으면 뒤에 붙인다
+        (예전 파일을 열거나 장을 지운 직후).
+        """
+        out = [self.first_page()]
+        for p in self.pages:
+            if p and p not in out:
+                out.append(p)
+        for i in self.items:
+            if i.page and i.page not in out:
+                out.append(i.page)
+        return out
+
+    def items_on(self, page: str) -> list["Item"]:
+        """그 장의 항목들. 첫 장은 page 가 비어 있는 항목까지 데려온다."""
+        if page == self.first_page():
+            return [i for i in self.items if not i.page or i.page == page]
+        return [i for i in self.items if i.page == page]
+
     def to_dict(self) -> dict:
         return {
             "name": self.name,
             "months": self.months,
             "target": self.target,
             "inflation": self.inflation,
+            "pages": list(self.pages),
+            "page_title": self.page_title,
             "goals": [{"name": str(g.get("name") or ""),
                        "amount": float(g.get("amount", 0) or 0)} for g in self.goals],
             "start_date": self.start_date,
@@ -1253,6 +1367,8 @@ class Plan:
                    for g in (d.get("goals") or []) if isinstance(g, dict)],
             start_date=str(d.get("start_date") or date.today().isoformat()),
             name=str(d.get("name") or ""),
+            pages=[str(p) for p in (d.get("pages") or []) if str(p).strip()],
+            page_title=str(d.get("page_title") or ""),
         )
 
     def copy(self) -> "Plan":

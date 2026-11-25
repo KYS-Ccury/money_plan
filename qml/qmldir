@@ -1,5 +1,11 @@
 singleton Theme 1.0 Theme.qml
 Card 1.0 Card.qml
+PageTabs 1.0 PageTabs.qml
+ItemListPane 1.0 ItemListPane.qml
+ItemWindow 1.0 ItemWindow.qml
+SideBar 1.0 SideBar.qml
+HeroSummary 1.0 HeroSummary.qml
+ThemeDialog 1.0 ThemeDialog.qml
 CategoryItem 1.0 CategoryItem.qml
 StatRow 1.0 StatRow.qml
 AnimatedMoney 1.0 AnimatedMoney.qml

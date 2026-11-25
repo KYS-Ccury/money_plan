@@ -85,7 +85,7 @@ Item {
                 anchors.fill: parent
                 preferredRendererType: Shape.CurveRenderer
                 ShapePath {
-                    fillColor: "#1c2030"
+                    fillColor: Theme.row
                     strokeColor: "transparent"
                     fillRule: ShapePath.OddEvenFill
                     PathAngleArc {
@@ -120,7 +120,7 @@ Item {
 
                     ShapePath {
                         fillColor: chart.colorOf(wedge.index)
-                        strokeColor: "#171a23"
+                        strokeColor: Theme.card
                         strokeWidth: 2
                         PathAngleArc {
                             centerX: pieArea.cx; centerY: pieArea.cy
